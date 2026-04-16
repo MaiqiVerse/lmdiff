@@ -3,29 +3,47 @@ import pytest
 from modeldiff.config import Config
 from modeldiff.engine import InferenceEngine
 
-TEST_MODEL = "gpt2"
+TEST_MODELS = ["gpt2", "meta-llama/Llama-2-7b-hf"]
+
+_engine_cache: dict[str, InferenceEngine] = {}
+
+
+def _get_engine(model_name: str) -> InferenceEngine:
+    if model_name not in _engine_cache:
+        config = Config(model=model_name)
+        _engine_cache[model_name] = InferenceEngine(config)
+    return _engine_cache[model_name]
+
+
+@pytest.fixture(params=TEST_MODELS, scope="session")
+def engine(request):
+    """Parameterized engine fixture — runs each test against every model."""
+    return _get_engine(request.param)
+
+
+@pytest.fixture(scope="session")
+def tiny_model():
+    return _get_engine("gpt2")
+
+
+@pytest.fixture(scope="session")
+def llama_engine():
+    return _get_engine("meta-llama/Llama-2-7b-hf")
 
 
 @pytest.fixture
 def gpt2_config():
-    return Config(model=TEST_MODEL)
+    return Config(model="gpt2")
 
 
 @pytest.fixture
 def gpt2_config_with_context():
     return Config(
-        model=TEST_MODEL,
+        model="gpt2",
         context=[{"role": "user", "content": "Hello"}],
         system_prompt="You are helpful.",
         name="gpt2-ctx",
     )
-
-
-@pytest.fixture(scope="session")
-def tiny_model():
-    """Session-scoped engine to avoid reloading gpt2 per test."""
-    config = Config(model=TEST_MODEL)
-    return InferenceEngine(config)
 
 
 @pytest.fixture
