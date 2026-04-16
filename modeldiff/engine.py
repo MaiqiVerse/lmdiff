@@ -1,0 +1,227 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+import torch
+import transformers
+
+from modeldiff.config import Config
+
+
+@dataclass
+class GenerationResult:
+    """Output of InferenceEngine.generate()."""
+    prompts: list[str]
+    completions: list[list[str]]
+    token_ids: list[list[list[int]]] | None = None
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class ForwardResult:
+    """Output of InferenceEngine.score() and get_logits()."""
+    prompts: list[str]
+    log_probs: list[np.ndarray] | None = None
+    logits: list[torch.Tensor] | None = None
+    token_ids: list[list[int]] | None = None
+    cross_entropies: list[float] | None = None
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class HiddenStatesResult:
+    """Output of InferenceEngine.forward_with_hidden()."""
+    prompts: list[str]
+    hidden_states: dict[int, list[torch.Tensor]]
+    metadata: dict = field(default_factory=dict)
+
+
+class InferenceEngine:
+    """The ONLY layer that loads models and runs inference."""
+
+    def __init__(self, config: Config, device: str | None = None) -> None:
+        self.config = config
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._model, self._tokenizer = self._load(config)
+
+    def _load(
+        self, config: Config
+    ) -> tuple[transformers.PreTrainedModel, transformers.PreTrainedTokenizerBase]:
+        if isinstance(config.model, str):
+            tokenizer = transformers.AutoTokenizer.from_pretrained(config.model)
+            load_kwargs: dict[str, Any] = {}
+            if self.device == "cuda":
+                load_kwargs["torch_dtype"] = torch.float16
+                load_kwargs["device_map"] = "auto"
+            else:
+                load_kwargs["torch_dtype"] = torch.float32
+            model = transformers.AutoModelForCausalLM.from_pretrained(
+                config.model, **load_kwargs,
+            )
+            if self.device != "cuda":
+                model = model.to(self.device)
+        else:
+            model = config.model
+            tokenizer = transformers.AutoTokenizer.from_pretrained(model.config._name_or_path)
+
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        model.eval()
+        return model, tokenizer
+
+    @property
+    def tokenizer(self) -> transformers.PreTrainedTokenizerBase:
+        return self._tokenizer
+
+    @property
+    def model_name(self) -> str:
+        return self.config.display_name
+
+    def _build_prompt(self, text: str) -> str:
+        parts: list[str] = []
+        if self.config.system_prompt:
+            parts.append(self.config.system_prompt)
+        if self.config.context:
+            for msg in self.config.context:
+                parts.append(msg.get("content", ""))
+        parts.append(text)
+        return "\n".join(parts)
+
+    def _decode_params(self) -> dict[str, Any]:
+        d = self.config.decode
+        strategy = d.get("strategy", "greedy")
+        params: dict[str, Any] = {}
+        if strategy == "greedy":
+            params["do_sample"] = False
+        elif strategy == "sample":
+            params["do_sample"] = True
+            params["temperature"] = d.get("temperature", 1.0)
+            params["top_p"] = d.get("top_p", 1.0)
+            params["top_k"] = d.get("top_k", 0)
+        return params
+
+    @torch.no_grad()
+    def generate(self, prompts: list[str], n_samples: int = 1, max_new_tokens: int = 64) -> GenerationResult:
+        """Generate completions for a list of prompts."""
+        built = [self._build_prompt(p) for p in prompts]
+        decode_params = self._decode_params()
+
+        all_completions: list[list[str]] = []
+        all_token_ids: list[list[list[int]]] = []
+
+        for text in built:
+            inputs = self._tokenizer(text, return_tensors="pt", padding=True).to(self.device)
+            prompt_len = inputs["input_ids"].shape[1]
+
+            if n_samples > 1 and not decode_params.get("do_sample", False):
+                decode_params = {**decode_params, "do_sample": True, "temperature": 0.7}
+
+            outputs = self._model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                num_return_sequences=n_samples,
+                **decode_params,
+            )
+
+            samples: list[str] = []
+            sample_ids: list[list[int]] = []
+            for seq in outputs:
+                new_tokens = seq[prompt_len:]
+                samples.append(self._tokenizer.decode(new_tokens, skip_special_tokens=True))
+                sample_ids.append(new_tokens.tolist())
+
+            all_completions.append(samples)
+            all_token_ids.append(sample_ids)
+
+        return GenerationResult(
+            prompts=prompts,
+            completions=all_completions,
+            token_ids=all_token_ids,
+        )
+
+    @torch.no_grad()
+    def score(self, prompts: list[str], continuations: list[str]) -> ForwardResult:
+        """Score continuations given prompts. Returns per-token log-probs and cross-entropy."""
+        assert len(prompts) == len(continuations)
+
+        all_log_probs: list[np.ndarray] = []
+        all_cross_entropies: list[float] = []
+        all_token_ids: list[list[int]] = []
+
+        for prompt, cont in zip(prompts, continuations):
+            full_text = self._build_prompt(prompt) + cont
+            prompt_text = self._build_prompt(prompt)
+
+            full_enc = self._tokenizer(full_text, return_tensors="pt").to(self.device)
+            prompt_enc = self._tokenizer(prompt_text, return_tensors="pt")
+            prompt_len = prompt_enc["input_ids"].shape[1]
+
+            logits = self._model(**full_enc).logits[0]
+            # shift: logits[t] predicts token[t+1]
+            shift_logits = logits[prompt_len - 1 : -1]
+            target_ids = full_enc["input_ids"][0, prompt_len:]
+
+            log_probs_all = torch.log_softmax(shift_logits, dim=-1)
+            token_log_probs = log_probs_all.gather(1, target_ids.unsqueeze(1)).squeeze(1)
+
+            lp_np = token_log_probs.cpu().float().numpy()
+            all_log_probs.append(lp_np)
+            all_token_ids.append(target_ids.cpu().tolist())
+
+            n_tokens = len(target_ids)
+            ce = -lp_np.sum() / n_tokens if n_tokens > 0 else 0.0
+            all_cross_entropies.append(float(ce))
+
+        return ForwardResult(
+            prompts=prompts,
+            log_probs=all_log_probs,
+            token_ids=all_token_ids,
+            cross_entropies=all_cross_entropies,
+        )
+
+    @torch.no_grad()
+    def forward_with_hidden(self, prompts: list[str], layers: list[int] | None = None) -> HiddenStatesResult:
+        """Run forward pass and return hidden states at specified layers."""
+        built = [self._build_prompt(p) for p in prompts]
+        hidden_map: dict[int, list[torch.Tensor]] = {}
+
+        for text in built:
+            inputs = self._tokenizer(text, return_tensors="pt").to(self.device)
+            out = self._model(**inputs, output_hidden_states=True)
+
+            all_hidden = out.hidden_states
+            target_layers = layers if layers is not None else list(range(len(all_hidden)))
+            for li in target_layers:
+                if li not in hidden_map:
+                    hidden_map[li] = []
+                hidden_map[li].append(all_hidden[li][0].cpu())
+
+        return HiddenStatesResult(prompts=prompts, hidden_states=hidden_map)
+
+    @torch.no_grad()
+    def get_logits(self, prompts: list[str], topk: int = 256) -> ForwardResult:
+        """Get top-k logits for each prompt."""
+        built = [self._build_prompt(p) for p in prompts]
+        all_logits: list[torch.Tensor] = []
+        all_token_ids: list[list[int]] = []
+
+        for text in built:
+            inputs = self._tokenizer(text, return_tensors="pt").to(self.device)
+            logits = self._model(**inputs).logits[0]
+
+            if topk > 0 and topk < logits.shape[-1]:
+                top_vals, top_ids = logits.topk(topk, dim=-1)
+                all_logits.append(top_vals.cpu())
+                all_token_ids.append(top_ids[:, 0].cpu().tolist())
+            else:
+                all_logits.append(logits.cpu())
+                all_token_ids.append(logits.argmax(dim=-1).cpu().tolist())
+
+        return ForwardResult(
+            prompts=prompts,
+            logits=all_logits,
+            token_ids=all_token_ids,
+        )
