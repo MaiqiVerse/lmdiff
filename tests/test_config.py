@@ -68,15 +68,15 @@ class TestSharesToknizerWith:
         b = Config(model="gpt2")
         assert a.shares_tokenizer_with(b)
 
-    def test_different_model(self):
+    def test_different_model_returns_none(self):
         a = Config(model="gpt2")
         b = Config(model="llama-7b")
-        assert not a.shares_tokenizer_with(b)
+        assert a.shares_tokenizer_with(b) is None
 
-    def test_non_string_model(self):
+    def test_non_string_model_returns_none(self):
         a = Config(model="gpt2")
         b = Config(model=object())
-        assert not a.shares_tokenizer_with(b)
+        assert a.shares_tokenizer_with(b) is None
 
 
 class TestWithOverride:

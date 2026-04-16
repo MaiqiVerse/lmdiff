@@ -149,7 +149,9 @@ class TestCrossModel:
     """Tests that compare behavior across gpt2 and llama2."""
 
     def test_different_tokenizers(self, tiny_model, llama_engine):
-        assert not tiny_model.config.shares_tokenizer_with(llama_engine.config)
+        from modeldiff.tokenizer_utils import tokenizers_equivalent
+        assert tiny_model.config.shares_tokenizer_with(llama_engine.config) is None
+        assert not tokenizers_equivalent(tiny_model.tokenizer, llama_engine.tokenizer)
 
     def test_both_generate(self, tiny_model, llama_engine):
         for eng in [tiny_model, llama_engine]:

@@ -31,11 +31,17 @@ class Config:
             return self.model
         return type(self.model).__name__
 
-    def shares_tokenizer_with(self, other: Config) -> bool:
-        """Check if two configs use the same tokenizer (same model string)."""
-        if not isinstance(self.model, str) or not isinstance(other.model, str):
-            return False
-        return self.model == other.model
+    def shares_tokenizer_with(self, other: Config) -> bool | None:
+        """Check if two configs use the same tokenizer.
+
+        Returns True if same model string (fast path), None if tokenizer
+        loading is needed to determine equivalence. The engine layer should
+        use tokenizer_utils.tokenizers_equivalent() for the full check.
+        """
+        if isinstance(self.model, str) and isinstance(other.model, str):
+            if self.model == other.model:
+                return True
+        return None
 
     def with_override(self, **kwargs: Any) -> Config:
         """Return a new Config with specified fields overridden."""
