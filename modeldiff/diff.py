@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from modeldiff.config import Config
 from modeldiff.engine import InferenceEngine
@@ -10,6 +10,10 @@ from modeldiff.metrics.output.behavioral_distance import BehavioralDistance
 from modeldiff.metrics.output.token_entropy import TokenEntropy
 from modeldiff.metrics.output.token_kl import TokenKL
 from modeldiff.probes.loader import ProbeSet
+
+if TYPE_CHECKING:
+    from modeldiff.tasks.base import Task, TaskResult
+    from modeldiff.tasks.capability_radar import RadarResult
 
 _OUTPUT_METRICS: list[type[BaseMetric]] = [BehavioralDistance, TokenEntropy, TokenKL]
 
@@ -30,6 +34,28 @@ class DiffReport:
             if r.name == name:
                 return r
         return None
+
+
+@dataclass
+class PairTaskResult:
+    """Result of running one Task on both engines."""
+    task_name: str
+    result_a: TaskResult
+    result_b: TaskResult
+    delta_accuracy: float
+    per_domain_delta: dict[str, float]
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class FullReport:
+    """Combines metric-level DiffReport with task-level results."""
+    config_a: Config
+    config_b: Config
+    diff_report: DiffReport | None
+    task_results: list[PairTaskResult]
+    radar_result: RadarResult | None = None
+    metadata: dict = field(default_factory=dict)
 
 
 class ModelDiff:
@@ -106,3 +132,53 @@ class ModelDiff:
             results=results,
             metadata=meta,
         )
+
+    def run_task(self, task: Task) -> PairTaskResult:
+        """Run a single Task on both engines and return paired results."""
+        result_a = task.run(self.engine_a)
+        result_b = task.run(self.engine_b)
+
+        per_domain_delta: dict[str, float] = {}
+        for d in result_a.per_domain:
+            acc_a = result_a.per_domain[d]["accuracy"]
+            acc_b = result_b.per_domain.get(d, {}).get("accuracy", 0.0)
+            per_domain_delta[d] = acc_b - acc_a
+
+        return PairTaskResult(
+            task_name=task.name,
+            result_a=result_a,
+            result_b=result_b,
+            delta_accuracy=result_b.accuracy - result_a.accuracy,
+            per_domain_delta=per_domain_delta,
+        )
+
+    def run_tasks(self, tasks: list[Task]) -> FullReport:
+        """Run multiple tasks on both engines."""
+        task_results = [self.run_task(t) for t in tasks]
+        return FullReport(
+            config_a=self.config_a,
+            config_b=self.config_b,
+            diff_report=None,
+            task_results=task_results,
+            metadata={
+                "name_a": self.config_a.display_name,
+                "name_b": self.config_b.display_name,
+                "n_tasks": len(tasks),
+            },
+        )
+
+    def run_radar(
+        self,
+        probes: ProbeSet | None = None,
+        evaluator: Any = None,
+        max_new_tokens: int = 16,
+    ) -> RadarResult:
+        """Convenience: run CapabilityRadar on both engines."""
+        from modeldiff.tasks.capability_radar import CapabilityRadar
+
+        radar = CapabilityRadar(
+            probes=probes or self.probe_set,
+            evaluator=evaluator,
+            max_new_tokens=max_new_tokens,
+        )
+        return radar.run_pair(self.engine_a, self.engine_b)

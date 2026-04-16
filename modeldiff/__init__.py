@@ -1,7 +1,7 @@
 """ModelDiff: compare language model configurations."""
 
 from modeldiff.config import Config
-from modeldiff.diff import DiffReport, ModelDiff
+from modeldiff.diff import DiffReport, FullReport, ModelDiff, PairTaskResult
 from modeldiff.engine import (
     ForwardResult,
     GenerationResult,
@@ -16,6 +16,8 @@ __all__ = [
     "Config",
     "ModelDiff",
     "DiffReport",
+    "PairTaskResult",
+    "FullReport",
     "InferenceEngine",
     "GenerationResult",
     "ForwardResult",
