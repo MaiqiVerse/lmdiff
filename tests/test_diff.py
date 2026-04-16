@@ -275,6 +275,8 @@ class TestRunTaskMock:
         assert abs(ptr.delta_accuracy - (-0.5)) < 1e-6
         assert "math" in ptr.per_domain_delta
         assert "knowledge" in ptr.per_domain_delta
+        assert ptr.metadata["evaluator"] == "exact_match"
+        assert ptr.metadata["n_probes"] == 2
 
     def test_run_tasks_multiple(self):
         from modeldiff.probes.loader import Probe
@@ -314,9 +316,14 @@ class TestRunTaskMock:
         assert fr.diff_report is None
 
     def test_run_radar_mock(self):
+        from modeldiff.probes.loader import Probe
         from modeldiff.tasks.capability_radar import RadarResult
 
-        md = ModelDiff(Config(model="gpt2"), Config(model="distilgpt2"), ["dummy"])
+        multi_probes = ProbeSet([
+            Probe(id="m1", text="1+1=", domain="math", expected="2"),
+            Probe(id="k1", text="France", domain="knowledge", expected="Paris"),
+        ])
+        md = ModelDiff(Config(model="gpt2"), Config(model="distilgpt2"), multi_probes)
 
         fake_radar_result = MagicMock(spec=RadarResult)
 
@@ -331,3 +338,13 @@ class TestRunTaskMock:
         MockRadar.assert_called_once()
         instance.run_pair.assert_called_once()
         assert result is fake_radar_result
+
+    def test_run_radar_single_domain_raises(self):
+        md = ModelDiff(
+            Config(model="gpt2"), Config(model="distilgpt2"),
+            ["hello", "world"],
+        )
+        with patch.object(md, "_engine_a", MagicMock()), \
+             patch.object(md, "_engine_b", MagicMock()):
+            with pytest.raises(ValueError, match="multi-domain ProbeSet"):
+                md.run_radar()

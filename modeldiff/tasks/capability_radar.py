@@ -147,13 +147,13 @@ class CapabilityRadar:
                 domain=d,
                 n_probes=tr_a.n_probes,
                 accuracy=tr_a.accuracy,
-                bd_vs_baseline=bd_result.value,
+                # bd_vs_baseline deliberately None: BD is symmetric,
+                # lives in top-level bd_by_domain only.
             )
             b_results[d] = DomainRadarResult(
                 domain=d,
                 n_probes=tr_b.n_probes,
                 accuracy=tr_b.accuracy,
-                bd_vs_baseline=bd_result.value,
             )
 
             bd_by_domain[d] = bd_result.value

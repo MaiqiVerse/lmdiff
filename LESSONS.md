@@ -12,6 +12,8 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-004: BD inflation by degenerate outputs in smaller/distilled models
 - L-005: Binary task evaluators produce low-SNR signal on base models
 - L-006: ContainsAnswer substring match on short expected is biased
+- L-007: Typer CliRunner mixes stderr warnings into stdout
+- L-008: JSON determinism requires two layers, don't optimize one away
 
 ---
 
@@ -166,3 +168,47 @@ This was validated by L-001: without baseline subtraction, the v01 math artifact
 - Loglikelihood-based evaluator (score expected continuation under the model; no generation needed) — standard in lm-eval-harness for base-model knowledge evaluation
 
 **Validates L-005.** n=30 per domain was not enough to make binary accuracy meaningful on knowledge/math — the ceiling was evaluator design, not sample size.
+
+---
+
+## L-007: Typer CliRunner mixes stderr warnings into stdout
+
+**Date:** 2026-04-16  
+**Phase:** 1  
+**Severity:** Test-infrastructure gotcha — silent parse failures if unhandled.
+
+**Symptom:** E2E CLI test parsed `result.output` as JSON and got JSONDecodeError, even though the CLI command itself produced valid JSON. Transformers emits HF warnings (`Some weights were not initialized...`, progress bars, etc.) to stderr. Typer's CliRunner captures both stdout and stderr by default and merges them into `result.output`, so JSON parsing fails on the mixed stream.
+
+**Root cause:** CliRunner is convenient but not stream-isolated. Anything a dependency prints to stderr during import or model load ends up in `result.output` before the command's actual JSON output.
+
+**Fix:** Introduced `_extract_json()` helper in test_cli_e2e.py that finds the first `{` in output and json.loads from there. Alternative (cleaner) would be to use `mix_stderr=False` on the CliRunner, but that's a newer typer API and not in all versions.
+
+**Signature:** `json.JSONDecodeError` on what "should" be valid CLI JSON output → suspect CliRunner capturing stderr noise.
+
+**Prevented going forward:** `_extract_json()` helper in test_cli_e2e.py. For new CLI E2E tests that expect JSON output, either use `--output FILE` (reads from disk, no stderr mixing) or route through `_extract_json()`.
+
+---
+
+## L-008: JSON determinism requires two layers; don't optimize one away
+
+**Date:** 2026-04-16  
+**Phase:** 1  
+**Severity:** Maintenance trap — code looks redundant but isn't.
+
+**Symptom:** `report/json_report.py` has two seemingly redundant determinism mechanisms:
+  1. Each `to_json_dict` handler writes fields in alphabetical order manually (explicit key ordering in the dict literal)
+  2. `json.dumps(..., sort_keys=True)` in the `to_json()` entry point
+
+A well-meaning optimizer might remove layer 1 ("dict insertion order is preserved in Python 3.7+, and sort_keys handles ordering anyway").
+
+**Why both are needed:**
+- Layer 1 ensures the Python `dict` returned by `to_json_dict` has deterministic insertion order. Any caller using the dict directly (not the JSON string) gets deterministic iteration.
+- Layer 2 ensures the final JSON string is byte-identical across runs even if some nested structure (e.g. a details dict from a metric) has nondeterministic key order from upstream code.
+- Layer 2 alone isn't enough if we ever move to a format that doesn't offer sort_keys (YAML, MessagePack, Parquet metadata).
+- Layer 1 alone isn't enough because nested user-supplied dicts (metric details) may not be sorted.
+
+Both layers are belt-and-suspenders, and **both are load-bearing**.
+
+**Prevented going forward:** This comment/lesson. If refactoring json_report.py, verify `to_json(r) == to_json(r)` byte-for-byte in tests and keep both mechanisms.
+
+**Related test:** `TestDeterministic.test_same_output_twice` in tests/test_json_report.py.
