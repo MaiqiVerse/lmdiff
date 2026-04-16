@@ -10,6 +10,8 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-002: TokenKL requires full vocab (not top-k)
 - L-003: BD without self-entropy baseline is meaningless
 - L-004: BD inflation by degenerate outputs in smaller/distilled models
+- L-005: Binary task evaluators produce low-SNR signal on base models
+- L-006: ContainsAnswer substring match on short expected is biased
 
 ---
 
@@ -99,3 +101,68 @@ This was validated by L-001: without baseline subtraction, the v01 math artifact
 **Implication:** Report BD in two forms — raw + healthy-only — whenever degeneracy rate exceeds 10% for either model. Single-number BD is honest only on well-matched model pairs with low degeneracy.
 
 **Prevented going forward:** Degeneracy detection added to `BehavioralDistance.compute` as `bd_healthy` field + `degeneracy_rate_a/b` in details.
+
+---
+
+## L-005: Binary task evaluators produce low-SNR signal on base models
+
+**Date:** 2026-04-16  
+**Phase:** 1  
+**Severity:** Interpretation trap — affects what task accuracy means in Phase 1.
+
+**Symptom:** Running Task(v01, ContainsAnswer) on gpt2 vs distilgpt2 (v01 at n=10 per domain):
+- overall accuracy: 10% = 10% (3/30 each)
+- per-domain n_correct: 0-3 on 10 probes
+- BD metric shows 0.79 nat distance between same pair
+- Binary match rate cannot distinguish the two models, but distributional metric can
+
+**Root cause:** Base models on completion probes usually produce plausible continuations that are semantically-adjacent but lexically different from `expected`. "import numpy as " → "np" is matched; "The capital of France is " → " a country in Europe..." never hits expected="Paris".
+
+**Design decision for Phase 1:** accept low accuracy as honest measurement, do not tune evaluators to inflate it. Task accuracy is a *floor* on capability, not an estimate of it.
+
+**Implication:**
+- Per-domain n=10 on ContainsAnswer means any single probe flip changes accuracy by 10 percentage points. Do not interpret gpt2=0% vs distilgpt2=10% on knowledge as a meaningful difference.
+- BD (continuous, uses full distribution) is the higher-SNR metric on base models. Task accuracy is the interpretable-but-coarse one.
+- Both should be reported. Neither alone tells the full story.
+
+**Confirmed by L-006:** v01 expansion to n=30 per domain did NOT lift knowledge/math accuracy off the floor. The ceiling was evaluator design, not sample size — see L-006 for follow-up analysis.
+
+**Phase 2 direction (not blocking):**
+- Per-probe multiple expected values (expected: ["Paris", "paris"])
+- FlexibleMatch evaluator (word-boundary regex, punctuation-stripped)
+- Loglikelihood-based evaluator (score expected under model; no generation)
+
+**Not prevented by any rule** — inherent property of measuring base-model capability with strict string match.
+
+---
+
+## L-006: ContainsAnswer substring match on short expected is biased
+
+**Date:** 2026-04-16  
+**Phase:** 1  
+**Severity:** Evaluator design flaw — biases accuracy measurements.
+
+**Symptom:** In v01 0.2.0 (90 probe, 30 per domain) running ContainsAnswer:
+- code (long-ish structural expected like "ZeroDivisionError"): gpt2 47%, distilgpt2 17% — clean differentiation
+- knowledge (short nouns like "Paris", "yen"): gpt2 0%, distilgpt2 3% — floor effect, no signal
+- Noted probes with expected="che" (for cheetah) or expected="blue" (for blue whale) are susceptible to false positives via substring matching unrelated tokens
+
+**Root cause:** ContainsAnswer uses `expected in output` with case-insensitive match. On:
+- Short expected (≤4 chars): high false positive rate — "che" matches "cache"/"chef"/"cheese"; "Au" (gold symbol) matches "Australia"/"August"
+- Long expected ("ZeroDivisionError", "import"): much lower false positive rate, accuracy is more meaningful
+
+**Interaction with base models:** Completion-style base models often emit semantically-adjacent continuations ("The capital of France is a major European city...") that never contain the specific short noun we expect ("Paris"). So:
+- Short expected → either floor-effect 0% (no match) or inflated by false positive substring hits
+- Neither mode is a clean capability measurement
+
+**Implication for interpretation:**
+- Code-domain ContainsAnswer accuracy is the most trustworthy on base models (expected values tend to be longer, more structural)
+- Knowledge-domain ContainsAnswer accuracy on base models is near-zero regardless of true capability — do not treat 0% as "no capability"
+- BD remains the higher-SNR metric for base models; task accuracy is a coarse sanity check
+
+**Not fixed in Phase 1.** Phase 2 directions:
+- FlexibleMatch evaluator: regex-anchored match with word boundaries (\bParis\b not substring Paris)
+- Multiple-expected probes (expected: ["Paris", " Paris", "Paris,"])
+- Loglikelihood-based evaluator (score expected continuation under the model; no generation needed) — standard in lm-eval-harness for base-model knowledge evaluation
+
+**Validates L-005.** n=30 per domain was not enough to make binary accuracy meaningful on knowledge/math — the ceiling was evaluator design, not sample size.

@@ -16,7 +16,7 @@ class TestTaskE2E:
         task = Task("v01-contains", ps, ContainsAnswer(), max_new_tokens=16)
         result = task.run(tiny_model)
 
-        assert result.n_probes == 30
+        assert result.n_probes == 90
         assert 0.0 <= result.accuracy <= 1.0
         assert set(result.per_domain.keys()) == {"math", "knowledge", "code"}
 
@@ -31,7 +31,7 @@ class TestTaskE2E:
         task = Task("v01-contains", ps, ContainsAnswer(), max_new_tokens=16)
         result = task.run(distil_engine)
 
-        assert result.n_probes == 30
+        assert result.n_probes == 90
         assert 0.0 <= result.accuracy <= 1.0
 
         print(f"\n=== distilgpt2 ContainsAnswer on v01 ===")
