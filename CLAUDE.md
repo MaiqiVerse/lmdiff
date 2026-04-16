@@ -157,6 +157,15 @@ Build and test in this exact sequence. Each step must pass tests before moving o
 - `rich` for terminal colors, never raw ANSI codes.
 - When in doubt, keep it simple. No metaprogramming, no decorators-on-decorators.
 
+## Probe design principles
+
+- v0x probe sets target gpt2-family base models (no instruction tuning).
+- All probes MUST be completion-style: the prompt ends at a point where a natural continuation is the answer/content. The model should not need to understand meta-instructions like "Answer with" or "Output only".
+- ✓ good: `"The capital of France is "`, `"17 + 25 = "`, `"def fibonacci(n):"`
+- ✗ bad: `"What is the capital of France? Answer in one word."`, `"Compute 17 + 25 and respond with just the number."`
+- Instruction-style probe sets belong in a separate versioned file (e.g. `v01_instruct.json`) for future chat/instruct models.
+- `expected` field should match what a competent base model would actually emit as continuation, not a canonical answer form.
+
 ## Common mistakes to avoid
 
 - Do NOT import `transformers` outside `engine.py`.
