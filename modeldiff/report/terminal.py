@@ -7,6 +7,7 @@ from rich.table import Table
 
 if TYPE_CHECKING:
     from modeldiff.diff import DiffReport
+    from modeldiff.tasks.capability_radar import RadarResult
 
 
 def print_report(report: DiffReport, console: Console | None = None) -> None:
@@ -114,3 +115,75 @@ def _print_bd_breakdown(bd, name_a: str, name_b: str, console: Console) -> None:
         )
 
     console.print(tbl)
+
+
+def print_radar(result: RadarResult, console: Console | None = None) -> None:
+    """Print a RadarResult as a rich table to the terminal."""
+    console = console or Console()
+
+    pair_mode = result.b_by_domain is not None
+    name_a = result.engine_a_name
+    name_b = result.engine_b_name or ""
+
+    if pair_mode:
+        console.rule(f"[bold]Capability Radar: {name_a} vs {name_b}[/bold]")
+    else:
+        console.rule(f"[bold]Capability Radar: {name_a}[/bold]")
+    console.print()
+
+    tbl = Table(title="Per-Domain Results", show_lines=True)
+    tbl.add_column("Domain", style="cyan", min_width=12)
+    tbl.add_column("N", justify="right", min_width=4)
+    tbl.add_column(f"Acc({name_a})", justify="right", min_width=10)
+
+    if pair_mode:
+        tbl.add_column(f"Acc({name_b})", justify="right", min_width=10)
+        tbl.add_column("\u0394Acc", justify="right", min_width=8)
+        tbl.add_column("BD", justify="right", min_width=8, style="bold")
+        tbl.add_column("BD(healthy)", justify="right", min_width=10)
+        tbl.add_column(f"Degen({name_a})", justify="right", min_width=10)
+        tbl.add_column(f"Degen({name_b})", justify="right", min_width=10)
+
+    rows = result.summary_table()
+    total_n = 0
+    total_correct_a = 0
+    total_correct_b = 0
+
+    for row in rows:
+        n = row["n_probes"]
+        total_n += n
+        total_correct_a += round(row["accuracy_a"] * n)
+        cells = [
+            row["domain"],
+            str(n),
+            f"{row['accuracy_a']:.2%}",
+        ]
+        if pair_mode:
+            total_correct_b += round(row["accuracy_b"] * n)
+            delta = row.get("delta_acc", 0.0)
+            bd = row.get("bd", 0.0)
+            bd_h = row.get("bd_healthy")
+            cells += [
+                f"{row['accuracy_b']:.2%}",
+                f"{delta:+.2%}",
+                f"{bd:.4f}",
+                f"{bd_h:.4f}" if bd_h is not None else "n/a",
+                f"{row.get('degen_a', 0.0):.0%}",
+                f"{row.get('degen_b', 0.0):.0%}",
+            ]
+        tbl.add_row(*cells)
+
+    console.print(tbl)
+
+    # Overall summary line
+    overall_acc_a = total_correct_a / total_n if total_n else 0.0
+    parts = [f"Overall: {name_a} acc={overall_acc_a:.2%}"]
+    if pair_mode and total_n:
+        overall_acc_b = total_correct_b / total_n
+        parts.append(f"{name_b} acc={overall_acc_b:.2%}")
+        if result.bd_by_domain:
+            all_bd = list(result.bd_by_domain.values())
+            mean_bd = sum(all_bd) / len(all_bd)
+            parts.append(f"mean BD={mean_bd:.4f}")
+    console.print("  ".join(parts))
+    console.print()

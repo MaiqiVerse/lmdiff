@@ -65,17 +65,17 @@ class TestFromList:
 class TestFromJson:
     def test_load_v01(self):
         ps = ProbeSet.from_json(V01_PATH)
-        assert len(ps) == 30
+        assert len(ps) == 90
         assert ps.name == "v01"
-        assert ps.version == "0.1.1"
+        assert ps.version == "0.2.1"
         assert set(ps.domains) == {"math", "knowledge", "code"}
 
     def test_v01_domain_counts(self):
         ps = ProbeSet.from_json(V01_PATH)
         by_d = ps.by_domain()
-        assert len(by_d["math"]) == 10
-        assert len(by_d["knowledge"]) == 10
-        assert len(by_d["code"]) == 10
+        assert len(by_d["math"]) == 30
+        assert len(by_d["knowledge"]) == 30
+        assert len(by_d["code"]) == 30
 
 
 class TestToJsonRoundTrip:
@@ -99,9 +99,9 @@ class TestFilter:
     def test_filter_domain(self):
         ps = ProbeSet.from_json(V01_PATH)
         math = ps.filter(domain="math")
-        assert len(math) == 10
+        assert len(math) == 30
         assert all(p.domain == "math" for p in math)
-        assert len(ps) == 30
+        assert len(ps) == 90
 
     def test_filter_ids(self):
         ps = ProbeSet.from_json(V01_PATH)
@@ -148,7 +148,7 @@ class TestRepr:
         ps = ProbeSet.from_json(V01_PATH)
         r = repr(ps)
         assert "v01" in r
-        assert "n=30" in r
+        assert "n=90" in r
         assert "code" in r
         assert "math" in r
         assert "knowledge" in r
