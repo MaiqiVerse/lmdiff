@@ -6,3 +6,4 @@ build/
 .pytest_cache/
 .claude/
 .vscode/
+examples/*_report.json

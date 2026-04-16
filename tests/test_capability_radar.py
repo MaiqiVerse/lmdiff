@@ -244,6 +244,9 @@ class TestRunPairMock:
             assert d in result.degeneracy_rates
             assert "a" in result.degeneracy_rates[d]
             assert "b" in result.degeneracy_rates[d]
+            assert result.a_by_domain[d].bd_vs_baseline is None
+            assert result.b_by_domain[d].bd_vs_baseline is None
+            assert result.bd_by_domain[d] is not None
 
 
 class TestPrintRadarMock:

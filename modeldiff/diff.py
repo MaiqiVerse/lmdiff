@@ -150,6 +150,11 @@ class ModelDiff:
             result_b=result_b,
             delta_accuracy=result_b.accuracy - result_a.accuracy,
             per_domain_delta=per_domain_delta,
+            metadata={
+                "evaluator": task.evaluator.name,
+                "max_new_tokens": task.max_new_tokens,
+                "n_probes": len(task.probes),
+            },
         )
 
     def run_tasks(self, tasks: list[Task]) -> FullReport:
@@ -176,8 +181,17 @@ class ModelDiff:
         """Convenience: run CapabilityRadar on both engines."""
         from modeldiff.tasks.capability_radar import CapabilityRadar
 
+        target_probes = probes or self.probe_set
+        if len(target_probes.domains) < 2:
+            raise ValueError(
+                "run_radar requires a multi-domain ProbeSet. Got "
+                f"{len(target_probes.domains)} domain(s): "
+                f"{target_probes.domains}. Pass probes=<multi-domain ProbeSet> "
+                "explicitly, or construct ModelDiff with a multi-domain ProbeSet."
+            )
+
         radar = CapabilityRadar(
-            probes=probes or self.probe_set,
+            probes=target_probes,
             evaluator=evaluator,
             max_new_tokens=max_new_tokens,
         )
