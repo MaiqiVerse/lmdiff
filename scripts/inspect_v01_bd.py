@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from pathlib import Path
 
 from modeldiff.config import Config
@@ -13,6 +14,15 @@ V01_PATH = Path(__file__).parent.parent / "modeldiff" / "probes" / "v01.json"
 MAX_NEW_TOKENS = 16
 
 
+def is_degenerate(token_ids: list[int], threshold: float = 0.8) -> bool:
+    """True if >=threshold fraction of tokens are the same id."""
+    if len(token_ids) == 0:
+        return True
+    counts = Counter(token_ids)
+    most_common_count = counts.most_common(1)[0][1]
+    return most_common_count / len(token_ids) >= threshold
+
+
 def main() -> None:
     ps = ProbeSet.from_json(V01_PATH)
     probes = ps.texts
@@ -21,11 +31,6 @@ def main() -> None:
     engine_a = InferenceEngine(Config(model="gpt2"))
     print("Loading distilgpt2...")
     engine_b = InferenceEngine(Config(model="distilgpt2"))
-
-    eos_tok_a = engine_a.tokenizer.eos_token
-    eos_tok_b = engine_b.tokenizer.eos_token
-    eos_id_a = engine_a.tokenizer.eos_token_id
-    eos_id_b = engine_b.tokenizer.eos_token_id
 
     print(f"\nGenerating with max_new_tokens={MAX_NEW_TOKENS}...")
     gen_a = engine_a.generate(probes, n_samples=1, max_new_tokens=MAX_NEW_TOKENS)
@@ -42,77 +47,12 @@ def main() -> None:
     score_ab = engine_b.score(probes, continuations=outputs_a)
     score_ba = engine_a.score(probes, continuations=outputs_b)
 
-    # ── Per-domain detailed diagnostics ──────────────────────────────────
-
-    by_domain = ps.by_domain()
-    for domain in sorted(by_domain):
-        domain_ps = by_domain[domain]
-        print(f"\n{'='*70}")
-        print(f"  DOMAIN: {domain} ({len(domain_ps)} probes)")
-        print(f"{'='*70}")
-
-        shown = 0
-        for probe in domain_ps:
-            if shown >= 3:
-                break
-            idx = ps.ids.index(probe.id)
-            shown += 1
-
-            out_a = outputs_a[idx]
-            out_b = outputs_b[idx]
-            tid_a = ids_a[idx]
-            tid_b = ids_b[idx]
-
-            ce_aa = score_aa.cross_entropies[idx]
-            ce_ab = score_ab.cross_entropies[idx]
-            ce_ba = score_ba.cross_entropies[idx]
-            ce_bb = score_bb.cross_entropies[idx]
-
-            n_tok_a_self = len(score_aa.token_ids[idx])
-            n_tok_a_cross = len(score_ab.token_ids[idx])
-            n_tok_b_self = len(score_bb.token_ids[idx])
-            n_tok_b_cross = len(score_ba.token_ids[idx])
-
-            has_eos_a = eos_id_a in tid_a
-            has_eos_b = eos_id_b in tid_b
-
-            print(f"\n  [{probe.id}] {probe.text!r}")
-            print(f"    output_a (gpt2):      {out_a!r}")
-            print(f"    output_b (distilgpt2): {out_b!r}")
-            print(f"    tokens_a: {len(tid_a)} gen | {n_tok_a_self} score_aa | {n_tok_a_cross} score_ab")
-            print(f"    tokens_b: {len(tid_b)} gen | {n_tok_b_self} score_bb | {n_tok_b_cross} score_ba")
-            if has_eos_a:
-                print(f"    ⚠ output_a contains EOS ({eos_tok_a!r})")
-            if has_eos_b:
-                print(f"    ⚠ output_b contains EOS ({eos_tok_b!r})")
-            print(f"    CE: aa={ce_aa:.4f}  ab={ce_ab:.4f}  ba={ce_ba:.4f}  bb={ce_bb:.4f}")
-
-            if not math.isnan(ce_aa) and not math.isnan(ce_bb):
-                bd_i = 0.5 * (ce_ab - ce_bb) + 0.5 * (ce_ba - ce_aa)
-                print(f"    BD={bd_i:.4f}")
-
-    # ── Aggregate statistics ─────────────────────────────────────────────
+    # ── CE > 5 outlier probe details ─────────────────────────────────────
 
     print(f"\n{'='*70}")
-    print("  AGGREGATE STATISTICS")
+    print("  OUTLIER PROBES (any CE > 5 nats)")
     print(f"{'='*70}")
 
-    for domain in sorted(by_domain):
-        domain_ps = by_domain[domain]
-        indices = [ps.ids.index(p.id) for p in domain_ps]
-        lens_a = [len(ids_a[i]) for i in indices]
-        lens_b = [len(ids_b[i]) for i in indices]
-        print(f"\n  {domain}:")
-        print(f"    avg output length (gpt2):      {sum(lens_a)/len(lens_a):.1f} tokens")
-        print(f"    avg output length (distilgpt2): {sum(lens_b)/len(lens_b):.1f} tokens")
-
-    # Empty / whitespace outputs
-    empty_a = sum(1 for o in outputs_a if not o.strip())
-    empty_b = sum(1 for o in outputs_b if not o.strip())
-    print(f"\n  Empty/whitespace outputs: gpt2={empty_a}, distilgpt2={empty_b}")
-
-    # Outliers: any CE > 5 nats
-    print(f"\n  Outlier probes (any CE > 5 nats):")
     found_outlier = False
     for i, probe in enumerate(ps):
         ce_vals = (
@@ -123,13 +63,105 @@ def main() -> None:
         )
         if any(not math.isnan(c) and c > 5.0 for c in ce_vals):
             found_outlier = True
+            print(f"\n  [{probe.id}] {probe.text!r}")
+            print(f"    output_a (gpt2):       {outputs_a[i]!r}")
+            print(f"    output_b (distilgpt2): {outputs_b[i]!r}")
+            print(f"    token_ids_a: {ids_a[i]}")
+            print(f"    token_ids_b: {ids_b[i]}")
             print(
-                f"    {probe.id:16s}  "
-                f"aa={ce_vals[0]:.2f}  ab={ce_vals[1]:.2f}  "
-                f"ba={ce_vals[2]:.2f}  bb={ce_vals[3]:.2f}"
+                f"    CE: aa={ce_vals[0]:.4f}  ab={ce_vals[1]:.4f}  "
+                f"ba={ce_vals[2]:.4f}  bb={ce_vals[3]:.4f}"
             )
+            print(f"    degenerate_a: {is_degenerate(ids_a[i])}  degenerate_b: {is_degenerate(ids_b[i])}")
     if not found_outlier:
-        print("    (none)")
+        print("  (none)")
+
+    # ── Degeneracy analysis ──────────────────────────────────────────────
+
+    print(f"\n{'='*70}")
+    print("  DEGENERACY ANALYSIS (≥80% repeated token)")
+    print(f"{'='*70}")
+
+    by_domain = ps.by_domain()
+
+    for model_name, all_ids, all_outputs in [
+        ("gpt2", ids_a, outputs_a),
+        ("distilgpt2", ids_b, outputs_b),
+    ]:
+        print(f"\n  --- {model_name} ---")
+        total_degen = 0
+        total_nonascii = 0
+
+        for domain in sorted(by_domain):
+            domain_ps = by_domain[domain]
+            indices = [ps.ids.index(p.id) for p in domain_ps]
+            degen_count = sum(1 for i in indices if is_degenerate(all_ids[i]))
+            nonascii_count = sum(
+                1 for i in indices
+                if all_outputs[i].startswith("\xa0")
+                or "????" in all_outputs[i]
+                or "Â" in all_outputs[i]
+            )
+            total_degen += degen_count
+            total_nonascii += nonascii_count
+            print(
+                f"    {domain:12s}: "
+                f"degenerate={degen_count}/10, "
+                f"non-ASCII-repetition={nonascii_count}/10"
+            )
+
+            if degen_count > 0:
+                for i in indices:
+                    if is_degenerate(all_ids[i]):
+                        probe = ps[i]
+                        counts = Counter(all_ids[i])
+                        top_tok, top_cnt = counts.most_common(1)[0]
+                        print(
+                            f"      {probe.id}: {all_outputs[i]!r:.60s}  "
+                            f"(tok {top_tok} × {top_cnt}/{len(all_ids[i])})"
+                        )
+
+        print(f"    TOTAL: degenerate={total_degen}/30, non-ASCII={total_nonascii}/30")
+
+    # ── Healthy-probe BD ─────────────────────────────────────────────────
+
+    print(f"\n{'='*70}")
+    print("  BD ON HEALTHY PROBES ONLY (both outputs non-degenerate)")
+    print(f"{'='*70}")
+
+    healthy_bd: dict[str, list[float]] = {}
+
+    for i, probe in enumerate(ps):
+        ce_aa = score_aa.cross_entropies[i]
+        ce_ab = score_ab.cross_entropies[i]
+        ce_ba = score_ba.cross_entropies[i]
+        ce_bb = score_bb.cross_entropies[i]
+
+        if any(math.isnan(c) for c in (ce_aa, ce_ab, ce_ba, ce_bb)):
+            continue
+
+        degen_a = is_degenerate(ids_a[i])
+        degen_b = is_degenerate(ids_b[i])
+
+        domain = probe.domain or "unknown"
+        if degen_a or degen_b:
+            continue
+
+        bd_i = 0.5 * (ce_ab - ce_bb) + 0.5 * (ce_ba - ce_aa)
+        healthy_bd.setdefault(domain, []).append(bd_i)
+
+    all_healthy = []
+    for domain in sorted(healthy_bd):
+        vals = healthy_bd[domain]
+        mean = sum(vals) / len(vals)
+        all_healthy.extend(vals)
+        print(f"  {domain:12s}: BD={mean:.4f} ({len(vals)} probes)")
+
+    if all_healthy:
+        overall = sum(all_healthy) / len(all_healthy)
+        print(f"  {'overall':12s}: BD={overall:.4f} ({len(all_healthy)} probes)")
+    else:
+        print("  (no healthy probes)")
 
     print()
 
