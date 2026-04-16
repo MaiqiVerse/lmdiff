@@ -5,6 +5,7 @@
 - Python: use mamba for environment management. **Always invoke commands via `mamba run -n lmdiff <cmd>`**, not `mamba activate lmdiff`. Activation is unreliable on Windows (the shell hook interacts badly with PowerShell and non-interactive sessions used by Claude Code). Create the env once with `mamba create -n lmdiff python=3.12`, then prefix every command — `mamba run -n lmdiff pytest`, `mamba run -n lmdiff python scripts/inspect_v01_bd.py`, etc.
 - GPU: RTX 5090 (Blackwell, sm_120)
 - PyTorch: `pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130`
+- Git: Use git to manage updates. Update the remote for changes. 
 
 ## What is this project
 
