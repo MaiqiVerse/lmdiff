@@ -26,6 +26,8 @@ modeldiff = "modeldiff.cli:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: marks tests that load real models (deselect with '-m \"not slow\"')"]
+addopts = "-m 'not slow'"
 
 [tool.setuptools.packages.find]
 include = ["modeldiff*"]
