@@ -25,7 +25,7 @@ class ForwardResult:
     prompts: list[str]
     log_probs: list[np.ndarray] | None = None
     logits: list[torch.Tensor] | None = None
-    token_ids: list[list[int]] | None = None
+    token_ids: list[list[int]] | list[list[list[int]]] | None = None
     cross_entropies: list[float] | None = None
     metadata: dict = field(default_factory=dict)
 
@@ -53,7 +53,7 @@ class InferenceEngine:
             tokenizer = transformers.AutoTokenizer.from_pretrained(config.model)
             load_kwargs: dict[str, Any] = {}
             if self.device == "cuda":
-                load_kwargs["torch_dtype"] = torch.float16
+                load_kwargs["torch_dtype"] = torch.bfloat16
                 load_kwargs["device_map"] = "auto"
             else:
                 load_kwargs["torch_dtype"] = torch.float32
@@ -117,7 +117,10 @@ class InferenceEngine:
             prompt_len = inputs["input_ids"].shape[1]
 
             if n_samples > 1 and not decode_params.get("do_sample", False):
-                decode_params = {**decode_params, "do_sample": True, "temperature": 0.7}
+                raise ValueError(
+                    "n_samples > 1 requires a sampling decode strategy, "
+                    "but current strategy is greedy"
+                )
 
             outputs = self._model.generate(
                 **inputs,
@@ -152,17 +155,15 @@ class InferenceEngine:
         all_token_ids: list[list[int]] = []
 
         for prompt, cont in zip(prompts, continuations):
-            full_text = self._build_prompt(prompt) + cont
             prompt_text = self._build_prompt(prompt)
+            prompt_ids = self._tokenizer(prompt_text)["input_ids"]
+            cont_ids = self._tokenizer(cont, add_special_tokens=False)["input_ids"]
+            full_ids = torch.tensor([prompt_ids + cont_ids], device=self.device)
+            prompt_len = len(prompt_ids)
 
-            full_enc = self._tokenizer(full_text, return_tensors="pt").to(self.device)
-            prompt_enc = self._tokenizer(prompt_text, return_tensors="pt")
-            prompt_len = prompt_enc["input_ids"].shape[1]
-
-            logits = self._model(**full_enc).logits[0]
-            # shift: logits[t] predicts token[t+1]
+            logits = self._model(input_ids=full_ids).logits[0]
             shift_logits = logits[prompt_len - 1 : -1]
-            target_ids = full_enc["input_ids"][0, prompt_len:]
+            target_ids = full_ids[0, prompt_len:]
 
             log_probs_all = torch.log_softmax(shift_logits, dim=-1)
             token_log_probs = log_probs_all.gather(1, target_ids.unsqueeze(1)).squeeze(1)
@@ -215,7 +216,7 @@ class InferenceEngine:
             if topk > 0 and topk < logits.shape[-1]:
                 top_vals, top_ids = logits.topk(topk, dim=-1)
                 all_logits.append(top_vals.cpu())
-                all_token_ids.append(top_ids[:, 0].cpu().tolist())
+                all_token_ids.append(top_ids.cpu().tolist())
             else:
                 all_logits.append(logits.cpu())
                 all_token_ids.append(logits.argmax(dim=-1).cpu().tolist())

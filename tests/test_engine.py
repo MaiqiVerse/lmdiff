@@ -38,9 +38,17 @@ class TestGenerate:
         result = engine.generate(prompts, n_samples=1, max_new_tokens=10)
         assert len(result.completions) == 2
 
-    def test_multiple_samples(self, engine):
-        result = engine.generate(["Hello"], n_samples=3, max_new_tokens=10)
+    def test_multiple_samples_with_sampling(self, engine):
+        config = engine.config.with_override(
+            decode={"strategy": "sample", "temperature": 0.7},
+        )
+        eng = InferenceEngine(config)
+        result = eng.generate(["Hello"], n_samples=3, max_new_tokens=10)
         assert len(result.completions[0]) == 3
+
+    def test_multiple_samples_greedy_raises(self, engine):
+        with pytest.raises(ValueError, match="n_samples > 1"):
+            engine.generate(["Hello"], n_samples=3, max_new_tokens=10)
 
     def test_token_ids_populated(self, engine):
         result = engine.generate(["Test"], n_samples=1, max_new_tokens=10)
@@ -93,6 +101,13 @@ class TestGetLogits:
         assert isinstance(result, ForwardResult)
         assert len(result.logits) == 1
         assert result.logits[0].shape[-1] == 50
+
+    def test_topk_token_ids_shape(self, engine):
+        topk = 50
+        result = engine.get_logits(["Hello world"], topk=topk)
+        seq_len = result.logits[0].shape[0]
+        assert len(result.token_ids[0]) == seq_len
+        assert len(result.token_ids[0][0]) == topk
 
     def test_full_vocab(self, engine):
         result = engine.get_logits(["Test"], topk=0)
