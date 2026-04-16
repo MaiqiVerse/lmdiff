@@ -10,7 +10,11 @@ if TYPE_CHECKING:
     from modeldiff.tasks.capability_radar import RadarResult
 
 
-def print_report(report: DiffReport, console: Console | None = None) -> None:
+def print_report(
+    report: DiffReport,
+    console: Console | None = None,
+    verbose: bool = False,
+) -> None:
     """Print a DiffReport as a rich table to the terminal."""
     console = console or Console()
 
@@ -38,7 +42,8 @@ def print_report(report: DiffReport, console: Console | None = None) -> None:
         _print_degeneracy_warning(bd, name_a, name_b, console)
         if bd.details.get("per_prompt"):
             console.print()
-            _print_bd_breakdown(bd, name_a, name_b, console)
+            max_rows = None if verbose else 10
+            _print_bd_breakdown(bd, name_a, name_b, console, max_rows=max_rows)
 
     console.print()
 
@@ -89,7 +94,11 @@ def _print_degeneracy_warning(bd, name_a: str, name_b: str, console: Console) ->
         )
 
 
-def _print_bd_breakdown(bd, name_a: str, name_b: str, console: Console) -> None:
+def _print_bd_breakdown(
+    bd, name_a: str, name_b: str, console: Console, max_rows: int | None = 10,
+) -> None:
+    import math as _math
+
     console.print(
         "[dim]CE(X,Y) = engine X scores engine Y's output; "
         "per-token cross-entropy (lower = better fit).[/dim]"
@@ -103,7 +112,30 @@ def _print_bd_breakdown(bd, name_a: str, name_b: str, console: Console) -> None:
     tbl.add_column("BD", justify="right", style="bold")
     tbl.add_column("Asym", justify="right")
 
-    for pp in bd.details["per_prompt"]:
+    all_rows = bd.details["per_prompt"]
+
+    if max_rows is not None and len(all_rows) > max_rows:
+        half = max_rows // 2
+
+        def _sort_key(pp: dict) -> float:
+            v = pp.get("bd", 0.0)
+            return v if not _math.isnan(v) else float("-inf")
+
+        sorted_rows = sorted(all_rows, key=_sort_key, reverse=True)
+        top = sorted_rows[:half]
+        bottom = sorted_rows[-half:]
+        n_hidden = len(all_rows) - max_rows
+        display = top + [None] + bottom  # None = separator
+    else:
+        display = all_rows
+
+    for pp in display:
+        if pp is None:
+            tbl.add_row(
+                f"... {n_hidden} more (--verbose)",
+                "", "", "", "", "", "",
+            )
+            continue
         tbl.add_row(
             pp["probe"][:40],
             f"{pp['ce_aa']:.3f}",

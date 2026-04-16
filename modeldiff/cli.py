@@ -77,6 +77,7 @@ def compare(
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file"),
     n_samples: int = typer.Option(5, help="Number of generation samples"),
     max_new_tokens: int = typer.Option(64, help="Max new tokens for generation"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show all per-probe details"),
 ) -> None:
     """Run metric-level comparison between two model configurations."""
     if level != "output":
@@ -103,7 +104,7 @@ def compare(
     else:
         from modeldiff.report.terminal import print_report
 
-        print_report(report)
+        print_report(report, verbose=verbose)
 
 
 @app.command()

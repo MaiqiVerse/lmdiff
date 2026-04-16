@@ -137,6 +137,48 @@ class TestTerminalReport:
 
         print_report(report, console=console)
 
+    def test_bd_breakdown_truncation(self, capsys):
+        from rich.console import Console
+
+        per_prompt = [
+            {"probe": f"probe_{i}", "ce_aa": 1.0, "ce_ab": 1.5,
+             "ce_ba": 1.2, "ce_bb": 0.9, "bd": 0.1 * i, "asymmetry": 0.01}
+            for i in range(20)
+        ]
+        results = [
+            MetricResult(
+                name="behavioral_distance",
+                level=MetricLevel.OUTPUT,
+                value=0.5,
+                details={
+                    "ce_aa": 1.0, "ce_ab": 1.5, "ce_ba": 1.2, "ce_bb": 0.9,
+                    "asymmetry": 0.01, "bpb_normalized": False,
+                    "per_prompt": per_prompt,
+                },
+            ),
+        ]
+        report = DiffReport(
+            config_a=Config(model="gpt2"),
+            config_b=Config(model="distilgpt2"),
+            results=results,
+            metadata={"name_a": "gpt2", "name_b": "distilgpt2", "level": "output", "n_probes": 20},
+        )
+
+        # verbose=False: should truncate
+        import io
+        buf = io.StringIO()
+        cons = Console(force_terminal=True, width=120, file=buf)
+        print_report(report, console=cons, verbose=False)
+        text = buf.getvalue()
+        assert "more" in text and "--verbose" in text
+
+        # verbose=True: should show all
+        buf2 = io.StringIO()
+        cons2 = Console(force_terminal=True, width=120, file=buf2)
+        print_report(report, console=cons2, verbose=True)
+        text2 = buf2.getvalue()
+        assert "--verbose" not in text2
+
 
 @pytest.mark.slow
 class TestModelDiffE2E:
