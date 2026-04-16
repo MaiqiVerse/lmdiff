@@ -14,19 +14,26 @@ from modeldiff.metrics.output.behavioral_distance import BehavioralDistance
 def _make_mock_engine(
     gen_outputs: list[str],
     score_map: dict[str, list[float]],
+    gen_token_ids: list[list[int]] | None = None,
     token_ids_map: dict[str, list[list[int]]] | None = None,
     config: Config | None = None,
     tokenizer: MagicMock | None = None,
 ) -> MagicMock:
     """Build a mock engine with controlled generate/score outputs.
 
-    score_map keys are "self" or "cross" — the mock uses call order to decide.
+    score_map keys are consumed in insertion order via side_effect.
+    BD calls engine_a.score in order: aa, ba; engine_b.score: bb, ab.
+    gen_token_ids: per-probe token ids for generate result (defaults to [[1,2,3]]).
     """
     engine = MagicMock()
     engine.config = config or Config(model="mock-model")
 
     gen_result = MagicMock()
     gen_result.completions = [[o] for o in gen_outputs]
+    if gen_token_ids is not None:
+        gen_result.token_ids = [[ids] for ids in gen_token_ids]
+    else:
+        gen_result.token_ids = [[[1, 2, 3]] for _ in gen_outputs]
     engine.generate.return_value = gen_result
 
     score_results = []
@@ -58,22 +65,17 @@ class TestBDFormulaMock:
         # Asym = (ce_ab-ce_aa) - (ce_ba-ce_bb) = (3.0-2.0) - (2.8-1.9) = 1.0 - 0.9 = 0.1
         probes = ["test probe"]
 
+        # engine_a.score order: aa, ba
         engine_a = _make_mock_engine(
             gen_outputs=["output_a"],
             score_map={"aa": [2.0], "ba": [2.8]},
         )
+        # engine_b.score order: bb, ab
         engine_b = _make_mock_engine(
             gen_outputs=["output_b"],
-            score_map={"ab": [3.0], "bb": [1.9]},
+            score_map={"bb": [1.9], "ab": [3.0]},
         )
 
-        # BD.compute calls:
-        #   engine_a.generate(probes) -> outputs_a
-        #   engine_b.generate(probes) -> outputs_b
-        #   engine_a.score(probes, outputs_a) -> score_aa  (1st call on engine_a)
-        #   engine_b.score(probes, outputs_a) -> score_ab  (1st call on engine_b)
-        #   engine_a.score(probes, outputs_b) -> score_ba  (2nd call on engine_a)
-        #   engine_b.score(probes, outputs_b) -> score_bb  (2nd call on engine_b)
         metric = BehavioralDistance()
         result = metric.compute(engine_a, engine_b, probes)
 
@@ -101,37 +103,39 @@ class TestBDFormulaMock:
         )
         engine_b = _make_mock_engine(
             gen_outputs=["out_b0", "out_b1"],
-            score_map={"ab": [2.0, 4.0], "bb": [0.8, 2.5]},
+            score_map={"bb": [0.8, 2.5], "ab": [2.0, 4.0]},
         )
 
         result = BehavioralDistance().compute(engine_a, engine_b, probes)
         assert abs(result.value - 0.925) < 1e-6
         assert len(result.details["per_prompt"]) == 2
+        assert result.details["n_probes_used"] == 2
+        assert result.details["n_probes_skipped"] == 0
 
 
 class TestBDSymmetry:
     def test_bd_ab_equals_bd_ba(self):
-        # BD is symmetric by construction: BD(A,B) = BD(B,A)
         probes = ["p"]
 
+        # BD(A,B): engine_a scores aa,ba; engine_b scores bb,ab
         engine_a = _make_mock_engine(
             gen_outputs=["oa"],
             score_map={"aa": [2.0], "ba": [3.0]},
         )
         engine_b = _make_mock_engine(
             gen_outputs=["ob"],
-            score_map={"ab": [2.5], "bb": [1.5]},
+            score_map={"bb": [1.5], "ab": [2.5]},
         )
         bd_ab = BehavioralDistance().compute(engine_a, engine_b, probes).value
 
-        # Now swap: engine_b is "A", engine_a is "B"
+        # BD(B,A): swap roles
         engine_b2 = _make_mock_engine(
             gen_outputs=["ob"],
             score_map={"aa_new": [1.5], "ba_new": [2.5]},
         )
         engine_a2 = _make_mock_engine(
             gen_outputs=["oa"],
-            score_map={"ab_new": [3.0], "bb_new": [2.0]},
+            score_map={"bb_new": [2.0], "ab_new": [3.0]},
         )
         bd_ba = BehavioralDistance().compute(engine_b2, engine_a2, probes).value
 
@@ -141,13 +145,12 @@ class TestBDSymmetry:
 class TestBDSelfDistance:
     def test_self_distance_zero(self):
         # Same engine passed as both A and B.
-        # score is called 4 times on the same mock: aa, ab(=aa), ba(=bb), bb
-        # All CEs equal → BD = 0
+        # engine.score called 4 times: aa, bb, ab(=bb), ba(=aa). All CEs equal → BD = 0
         probes = ["p"]
 
         engine = _make_mock_engine(
             gen_outputs=["out"],
-            score_map={"aa": [2.0], "ab": [2.0], "ba": [2.0], "bb": [2.0]},
+            score_map={"s1": [2.0], "s2": [2.0], "s3": [2.0], "s4": [2.0]},
         )
 
         result = BehavioralDistance().compute(engine, engine, probes)
@@ -156,8 +159,6 @@ class TestBDSelfDistance:
 
 class TestBDNonNegative:
     def test_non_negative_jensen(self):
-        # By Jensen's inequality, cross-entropy >= self-entropy
-        # So CE(A,B) >= CE(A,A) and CE(B,A) >= CE(B,B), thus BD >= 0
         probes = ["p"]
 
         engine_a = _make_mock_engine(
@@ -166,7 +167,7 @@ class TestBDNonNegative:
         )
         engine_b = _make_mock_engine(
             gen_outputs=["ob"],
-            score_map={"ab": [3.0], "bb": [1.8]},
+            score_map={"bb": [1.8], "ab": [3.0]},
         )
 
         result = BehavioralDistance().compute(engine_a, engine_b, probes)
@@ -188,8 +189,8 @@ class TestBDBpbNormalization:
         )
         engine_b = _make_mock_engine(
             gen_outputs=[" earth"],
-            score_map={"ab": [2.0], "bb": [0.8]},
-            token_ids_map={"ab": [[5, 6, 7]], "bb": [[40, 50]]},
+            score_map={"bb": [0.8], "ab": [2.0]},
+            token_ids_map={"bb": [[40, 50]], "ab": [[5, 6, 7]]},
             config=config_b,
         )
 
@@ -202,10 +203,6 @@ class TestBDBpbNormalization:
         assert result.details["bpb_normalized"] is True
         pp = result.details["per_prompt"][0]
         # BPB uses continuation text only: " world" (6 bytes), " earth" (6 bytes)
-        # ce_aa: bpb = (1.0 * 2 / log2) / 6
-        # ce_ab: bpb = (2.0 * 3 / log2) / 6
-        # ce_ba: bpb = (1.5 * 3 / log2) / 6
-        # ce_bb: bpb = (0.8 * 2 / log2) / 6
         log2 = math.log(2)
         exp_aa = (1.0 * 2 / log2) / 6
         exp_ab = (2.0 * 3 / log2) / 6
@@ -230,12 +227,53 @@ class TestBDBpbNormalization:
         )
         engine_b = _make_mock_engine(
             gen_outputs=[" out"],
-            score_map={"ab": [2.0], "bb": [0.8]},
+            score_map={"bb": [0.8], "ab": [2.0]},
             config=config,
         )
 
         result = BehavioralDistance().compute(engine_a, engine_b, probes)
         assert result.details["bpb_normalized"] is False
+
+
+class TestBDEmptyContinuation:
+    def test_nan_probe_skipped(self):
+        probes = ["p0", "p1"]
+
+        engine_a = _make_mock_engine(
+            gen_outputs=["out0", "out1"],
+            score_map={
+                "aa": [float("nan"), 2.0],
+                "ba": [float("nan"), 2.5],
+            },
+        )
+        engine_b = _make_mock_engine(
+            gen_outputs=["ob0", "ob1"],
+            score_map={
+                "bb": [float("nan"), 1.5],
+                "ab": [float("nan"), 3.0],
+            },
+        )
+
+        result = BehavioralDistance().compute(engine_a, engine_b, probes)
+        assert result.details["n_probes_used"] == 1
+        assert result.details["n_probes_skipped"] == 1
+        assert math.isnan(result.details["per_prompt"][0]["bd"])
+        assert not math.isnan(result.details["per_prompt"][1]["bd"])
+
+    def test_all_nan_raises(self):
+        probes = ["p"]
+
+        engine_a = _make_mock_engine(
+            gen_outputs=[""],
+            score_map={"aa": [float("nan")], "ba": [float("nan")]},
+        )
+        engine_b = _make_mock_engine(
+            gen_outputs=[""],
+            score_map={"bb": [float("nan")], "ab": [float("nan")]},
+        )
+
+        with pytest.raises(ValueError, match="all probes had empty continuations"):
+            BehavioralDistance().compute(engine_a, engine_b, probes)
 
 
 class TestBDRequirements:
@@ -286,3 +324,4 @@ class TestBDSmokeReal:
             print(f"    [{pp['probe'][:30]}] bd={pp['bd']:.4f} asym={pp['asymmetry']:.4f}")
         assert result.value > 0
         assert result.details["bpb_normalized"] is False
+        assert result.details["n_probes_used"] == 3

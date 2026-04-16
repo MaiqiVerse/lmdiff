@@ -3,7 +3,14 @@ import pytest
 from modeldiff.config import Config
 from modeldiff.engine import InferenceEngine
 
-TEST_MODELS = ["gpt2", "meta-llama/Llama-2-7b-hf"]
+TEST_MODELS = [
+    pytest.param("gpt2", id="gpt2"),
+    pytest.param(
+        "meta-llama/Llama-2-7b-hf",
+        id="llama2-7b",
+        marks=pytest.mark.slow,
+    ),
+]
 
 _engine_cache: dict[str, InferenceEngine] = {}
 

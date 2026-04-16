@@ -146,18 +146,43 @@ class InferenceEngine:
         )
 
     @torch.no_grad()
-    def score(self, prompts: list[str], continuations: list[str]) -> ForwardResult:
-        """Score continuations given prompts. Returns per-token log-probs and cross-entropy."""
-        assert len(prompts) == len(continuations)
+    def score(
+        self,
+        prompts: list[str],
+        continuations: list[str] | None = None,
+        continuation_ids: list[list[int]] | None = None,
+    ) -> ForwardResult:
+        """Score continuations given prompts. Returns per-token log-probs and cross-entropy.
+
+        Pass exactly one of continuations (strings) or continuation_ids (token id lists).
+        For self-scoring (same engine that generated), prefer continuation_ids to avoid
+        decode→retokenize round-trip errors.
+        """
+        if (continuations is None) == (continuation_ids is None):
+            raise ValueError("pass exactly one of continuations or continuation_ids")
+        n = len(continuations or continuation_ids)
+        if len(prompts) != n:
+            raise ValueError("prompts and continuations must have same length")
 
         all_log_probs: list[np.ndarray] = []
         all_cross_entropies: list[float] = []
         all_token_ids: list[list[int]] = []
 
-        for prompt, cont in zip(prompts, continuations):
-            prompt_text = self._build_prompt(prompt)
+        for idx in range(n):
+            prompt_text = self._build_prompt(prompts[idx])
             prompt_ids = self._tokenizer(prompt_text)["input_ids"]
-            cont_ids = self._tokenizer(cont, add_special_tokens=False)["input_ids"]
+
+            if continuation_ids is not None:
+                cont_ids = continuation_ids[idx]
+            else:
+                cont_ids = self._tokenizer(continuations[idx], add_special_tokens=False)["input_ids"]
+
+            if len(cont_ids) == 0:
+                all_log_probs.append(np.array([], dtype=np.float32))
+                all_token_ids.append([])
+                all_cross_entropies.append(float("nan"))
+                continue
+
             full_ids = torch.tensor([prompt_ids + cont_ids], device=self.device)
             prompt_len = len(prompt_ids)
 
@@ -173,7 +198,7 @@ class InferenceEngine:
             all_token_ids.append(target_ids.cpu().tolist())
 
             n_tokens = len(target_ids)
-            ce = -lp_np.sum() / n_tokens if n_tokens > 0 else 0.0
+            ce = -lp_np.sum() / n_tokens
             all_cross_entropies.append(float(ce))
 
         return ForwardResult(

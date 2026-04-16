@@ -12,12 +12,21 @@ from modeldiff.metrics.output.token_kl import TokenKL, _kl_divergence
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-def _make_engine_stub(logits_list: list[torch.Tensor]) -> MagicMock:
+_SHARED_TOK = MagicMock()
+_SHARED_TOK.vocab_size = 100
+_SHARED_TOK.__class__.__name__ = "MockTokenizer"
+_SHARED_TOK.encode = lambda text: list(range(len(text)))
+
+
+def _make_engine_stub(logits_list: list[torch.Tensor], tokenizer=None) -> MagicMock:
     """Create a mock engine whose get_logits returns the given tensors."""
     engine = MagicMock()
     result = MagicMock()
     result.logits = logits_list
     engine.get_logits.return_value = result
+    engine.tokenizer = tokenizer or _SHARED_TOK
+    engine.config = MagicMock()
+    engine.config.shares_tokenizer_with = MagicMock(return_value=True)
     return engine
 
 
@@ -149,8 +158,20 @@ class TestTokenEntropyMetric:
     def test_requirements(self):
         assert TokenEntropy.requirements()["logits"] is True
 
-    def test_is_applicable_default_true(self):
-        assert TokenEntropy.is_applicable(None, None)
+    def test_is_applicable_same_tokenizer(self):
+        from modeldiff.config import Config
+        c = Config(model="gpt2")
+        assert TokenEntropy.is_applicable(c, c)
+
+    def test_mismatched_tokenizer_raises(self):
+        tok_a = MagicMock()
+        tok_a.vocab_size = 100
+        tok_b = MagicMock()
+        tok_b.vocab_size = 200
+        engine_a = _make_engine_stub([torch.randn(3, 100)], tokenizer=tok_a)
+        engine_b = _make_engine_stub([torch.randn(3, 200)], tokenizer=tok_b)
+        with pytest.raises(ValueError, match="TokenEntropy requires matching tokenizers"):
+            TokenEntropy().compute(engine_a, engine_b, ["probe"])
 
 
 # ── TokenKL metric ──────────────────────────────────────────────────────
@@ -217,3 +238,13 @@ class TestTokenKLMetric:
 
     def test_requirements(self):
         assert TokenKL.requirements()["logits"] is True
+
+    def test_mismatched_tokenizer_raises(self):
+        tok_a = MagicMock()
+        tok_a.vocab_size = 100
+        tok_b = MagicMock()
+        tok_b.vocab_size = 200
+        engine_a = _make_engine_stub([torch.randn(3, 100)], tokenizer=tok_a)
+        engine_b = _make_engine_stub([torch.randn(3, 200)], tokenizer=tok_b)
+        with pytest.raises(ValueError, match="TokenKL requires matching tokenizers"):
+            TokenKL().compute(engine_a, engine_b, ["probe"])

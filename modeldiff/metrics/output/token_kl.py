@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from modeldiff.metrics.base import BaseMetric, MetricLevel, MetricResult
+from modeldiff.tokenizer_utils import tokenizers_equivalent
 
 if TYPE_CHECKING:
     from modeldiff.engine import InferenceEngine
@@ -17,6 +18,11 @@ class TokenKL(BaseMetric):
     name = "token_kl"
     level = MetricLevel.OUTPUT
 
+    @classmethod
+    def is_applicable(cls, config_a: Any, config_b: Any) -> bool:
+        same = config_a.shares_tokenizer_with(config_b)
+        return same is not False
+
     def compute(
         self,
         engine_a: InferenceEngine,
@@ -24,10 +30,17 @@ class TokenKL(BaseMetric):
         probes: list[str],
         **kwargs: Any,
     ) -> MetricResult:
-        topk = kwargs.get("topk", 0)
+        if not tokenizers_equivalent(engine_a.tokenizer, engine_b.tokenizer):
+            raise ValueError(
+                "TokenKL requires matching tokenizers; got "
+                f"{type(engine_a.tokenizer).__name__} vs "
+                f"{type(engine_b.tokenizer).__name__}"
+            )
 
-        result_a = engine_a.get_logits(probes, topk=topk)
-        result_b = engine_b.get_logits(probes, topk=topk)
+        # KL must use full vocab: top-k subsets from A and B have different
+        # token indices, so positional alignment would be meaningless.
+        result_a = engine_a.get_logits(probes, topk=0)
+        result_b = engine_b.get_logits(probes, topk=0)
 
         kl_ab_list: list[np.ndarray] = []
         kl_ba_list: list[np.ndarray] = []

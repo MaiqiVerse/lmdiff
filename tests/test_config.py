@@ -97,6 +97,16 @@ class TestWithOverride:
         assert new.model == "llama-7b"
 
 
+class TestUseChatTemplate:
+    def test_default_false(self):
+        c = Config(model="gpt2")
+        assert c.use_chat_template is False
+
+    def test_override(self):
+        c = Config(model="gpt2").with_override(use_chat_template=True)
+        assert c.use_chat_template is True
+
+
 class TestFixtures:
     def test_gpt2_config(self, gpt2_config):
         assert gpt2_config.model == "gpt2"

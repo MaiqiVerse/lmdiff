@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from modeldiff.metrics.base import BaseMetric, MetricLevel, MetricResult
@@ -44,21 +45,38 @@ class BehavioralDistance(BaseMetric):
 
         outputs_a = [comps[0] for comps in gen_a.completions]
         outputs_b = [comps[0] for comps in gen_b.completions]
+        ids_a = [tids[0] for tids in gen_a.token_ids]
+        ids_b = [tids[0] for tids in gen_b.token_ids]
 
-        score_aa = engine_a.score(probes, outputs_a)
-        score_ab = engine_b.score(probes, outputs_a)
-        score_ba = engine_a.score(probes, outputs_b)
-        score_bb = engine_b.score(probes, outputs_b)
+        # Self-scores use token ids to avoid decode→retokenize round-trip errors.
+        # Cross-scores use strings because the other engine's tokenizer differs.
+        score_aa = engine_a.score(probes, continuation_ids=ids_a)
+        score_bb = engine_b.score(probes, continuation_ids=ids_b)
+        score_ab = engine_b.score(probes, continuations=outputs_a)
+        score_ba = engine_a.score(probes, continuations=outputs_b)
 
         per_prompt: list[dict] = []
         bd_sum = 0.0
         asym_sum = 0.0
+        n_used = 0
+        n_skipped = 0
 
         for i, probe in enumerate(probes):
             ce_aa = score_aa.cross_entropies[i]
             ce_ab = score_ab.cross_entropies[i]
             ce_ba = score_ba.cross_entropies[i]
             ce_bb = score_bb.cross_entropies[i]
+
+            if any(math.isnan(c) for c in (ce_aa, ce_ab, ce_ba, ce_bb)):
+                n_skipped += 1
+                per_prompt.append({
+                    "probe": probe,
+                    "ce_aa": ce_aa, "ce_ab": ce_ab,
+                    "ce_ba": ce_ba, "ce_bb": ce_bb,
+                    "bd": float("nan"), "asymmetry": float("nan"),
+                    "skipped": True,
+                })
+                continue
 
             if use_bpb:
                 text_a = outputs_a[i]
@@ -78,25 +96,28 @@ class BehavioralDistance(BaseMetric):
 
             bd_sum += bd_i
             asym_sum += asym_i
+            n_used += 1
 
             per_prompt.append({
                 "probe": probe,
-                "ce_aa": ce_aa,
-                "ce_ab": ce_ab,
-                "ce_ba": ce_ba,
-                "ce_bb": ce_bb,
-                "bd": bd_i,
-                "asymmetry": asym_i,
+                "ce_aa": ce_aa, "ce_ab": ce_ab,
+                "ce_ba": ce_ba, "ce_bb": ce_bb,
+                "bd": bd_i, "asymmetry": asym_i,
             })
 
-        n = len(probes)
-        bd = bd_sum / n
-        asymmetry = asym_sum / n
+        if n_used == 0:
+            raise ValueError(
+                "all probes had empty continuations; cannot compute BD"
+            )
 
-        mean_ce_aa = sum(p["ce_aa"] for p in per_prompt) / n
-        mean_ce_ab = sum(p["ce_ab"] for p in per_prompt) / n
-        mean_ce_ba = sum(p["ce_ba"] for p in per_prompt) / n
-        mean_ce_bb = sum(p["ce_bb"] for p in per_prompt) / n
+        bd = bd_sum / n_used
+        asymmetry = asym_sum / n_used
+
+        valid = [p for p in per_prompt if not p.get("skipped")]
+        mean_ce_aa = sum(p["ce_aa"] for p in valid) / n_used
+        mean_ce_ab = sum(p["ce_ab"] for p in valid) / n_used
+        mean_ce_ba = sum(p["ce_ba"] for p in valid) / n_used
+        mean_ce_bb = sum(p["ce_bb"] for p in valid) / n_used
 
         return MetricResult(
             name=self.name,
@@ -109,6 +130,8 @@ class BehavioralDistance(BaseMetric):
                 "ce_bb": mean_ce_bb,
                 "asymmetry": asymmetry,
                 "bpb_normalized": use_bpb,
+                "n_probes_used": n_used,
+                "n_probes_skipped": n_skipped,
                 "per_prompt": per_prompt,
             },
         )

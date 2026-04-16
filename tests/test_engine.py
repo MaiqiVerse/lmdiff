@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import torch
 import pytest
@@ -95,6 +97,37 @@ class TestScore:
         assert score_self.cross_entropies[0] < score_random.cross_entropies[0]
 
 
+class TestScoreWithIds:
+    def test_ids_vs_string_match(self, engine):
+        prompt = "The quick brown fox"
+        gen = engine.generate([prompt], n_samples=1, max_new_tokens=16)
+        ids = gen.token_ids[0][0]
+        text = gen.completions[0][0]
+
+        score_ids = engine.score([prompt], continuation_ids=[ids])
+        score_str = engine.score([prompt], continuations=[text])
+
+        assert abs(score_ids.cross_entropies[0] - score_str.cross_entropies[0]) < 1e-4
+
+    def test_no_args_raises(self, engine):
+        with pytest.raises(ValueError, match="exactly one"):
+            engine.score(["test"])
+
+    def test_both_args_raises(self, engine):
+        with pytest.raises(ValueError, match="exactly one"):
+            engine.score(["test"], continuations=["x"], continuation_ids=[[1]])
+
+    def test_empty_continuation_returns_nan(self, engine):
+        result = engine.score(["Hello"], continuations=[""])
+        assert math.isnan(result.cross_entropies[0])
+        assert result.log_probs[0].shape == (0,)
+        assert result.token_ids[0] == []
+
+    def test_empty_ids_returns_nan(self, engine):
+        result = engine.score(["Hello"], continuation_ids=[[]])
+        assert math.isnan(result.cross_entropies[0])
+
+
 class TestGetLogits:
     def test_basic(self, engine):
         result = engine.get_logits(["Hello world"], topk=50)
@@ -135,8 +168,6 @@ class TestForwardWithHidden:
 
 
 class TestContextPrepend:
-    """Non-parameterized test using gpt2 specifically."""
-
     def test_context_prepended(self, gpt2_config_with_context):
         eng = InferenceEngine(gpt2_config_with_context)
         built = eng._build_prompt("Tell me more")
@@ -145,6 +176,7 @@ class TestContextPrepend:
         assert "Tell me more" in built
 
 
+@pytest.mark.slow
 class TestCrossModel:
     """Tests that compare behavior across gpt2 and llama2."""
 

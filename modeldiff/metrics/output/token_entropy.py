@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from modeldiff.metrics.base import BaseMetric, MetricLevel, MetricResult
+from modeldiff.tokenizer_utils import tokenizers_equivalent
 
 if TYPE_CHECKING:
     from modeldiff.engine import InferenceEngine
@@ -17,6 +18,11 @@ class TokenEntropy(BaseMetric):
     name = "token_entropy"
     level = MetricLevel.OUTPUT
 
+    @classmethod
+    def is_applicable(cls, config_a: Any, config_b: Any) -> bool:
+        same = config_a.shares_tokenizer_with(config_b)
+        return same is not False
+
     def compute(
         self,
         engine_a: InferenceEngine,
@@ -24,10 +30,15 @@ class TokenEntropy(BaseMetric):
         probes: list[str],
         **kwargs: Any,
     ) -> MetricResult:
-        topk = kwargs.get("topk", 0)
+        if not tokenizers_equivalent(engine_a.tokenizer, engine_b.tokenizer):
+            raise ValueError(
+                "TokenEntropy requires matching tokenizers; got "
+                f"{type(engine_a.tokenizer).__name__} vs "
+                f"{type(engine_b.tokenizer).__name__}"
+            )
 
-        result_a = engine_a.get_logits(probes, topk=topk)
-        result_b = engine_b.get_logits(probes, topk=topk)
+        result_a = engine_a.get_logits(probes, topk=0)
+        result_b = engine_b.get_logits(probes, topk=0)
 
         entropies_a = [_entropy_from_logits(lg) for lg in result_a.logits]
         entropies_b = [_entropy_from_logits(lg) for lg in result_b.logits]

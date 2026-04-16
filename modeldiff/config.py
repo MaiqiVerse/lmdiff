@@ -16,6 +16,8 @@ class Config:
     ttt: dict | None = None
     agent: Any | None = None
     name: str | None = None
+    use_chat_template: bool = False
+    """When True, engine uses tokenizer.apply_chat_template to build prompts (Phase 2)."""
 
     def __post_init__(self) -> None:
         if self.model is None:
@@ -54,6 +56,7 @@ class Config:
             "ttt": self.ttt,
             "agent": self.agent,
             "name": self.name,
+            "use_chat_template": self.use_chat_template,
         }
         current.update(kwargs)
         return Config(**current)

@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.table import Table
-from rich.text import Text
 
 if TYPE_CHECKING:
     from modeldiff.diff import DiffReport
@@ -65,6 +64,10 @@ def _format_details(r) -> str:
 
 
 def _print_bd_breakdown(bd, name_a: str, name_b: str, console: Console) -> None:
+    console.print(
+        "[dim]CE(X,Y) = engine X scores engine Y's output; "
+        "per-token cross-entropy (lower = better fit).[/dim]"
+    )
     tbl = Table(title="Behavioral Distance per Probe", show_lines=True)
     tbl.add_column("Probe", style="white", max_width=40)
     tbl.add_column(f"CE({name_a},{name_a})", justify="right")
