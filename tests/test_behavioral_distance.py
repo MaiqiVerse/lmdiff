@@ -302,6 +302,99 @@ class TestBDArchitecture:
         assert "from modeldiff.metrics.output.token_kl" not in source
 
 
+class TestBDDegeneracyReporting:
+    def test_degeneracy_detected(self):
+        probes = ["p0", "p1"]
+
+        # probe 0: B is degenerate (all token 198 = \n)
+        # probe 1: both normal
+        engine_a = _make_mock_engine(
+            gen_outputs=["normal_a0", "normal_a1"],
+            gen_token_ids=[[10, 20, 30], [40, 50, 60]],
+            score_map={"aa": [1.0, 1.5], "ba": [1.2, 1.8]},
+        )
+        engine_b = _make_mock_engine(
+            gen_outputs=["\n\n\n\n", "normal_b1"],
+            gen_token_ids=[[198]*16, [70, 80, 90]],
+            score_map={"bb": [0.5, 1.0], "ab": [2.0, 2.5]},
+        )
+
+        result = BehavioralDistance().compute(engine_a, engine_b, probes)
+
+        assert result.details["degeneracy_rate_a"] == 0.0
+        assert result.details["degeneracy_rate_b"] == 0.5
+        assert result.details["per_prompt"][0]["degenerate_b"] is True
+        assert result.details["per_prompt"][0]["degenerate_a"] is False
+        assert result.details["per_prompt"][1]["degenerate_b"] is False
+
+        # bd_healthy based only on probe 1 → n_healthy=1 < 3 → None
+        assert result.details["n_healthy"] == 1
+        assert result.details["bd_healthy"] is None
+
+    def test_bd_healthy_with_enough_probes(self):
+        probes = ["p0", "p1", "p2", "p3"]
+
+        # p0: B degenerate. p1,p2,p3: healthy
+        engine_a = _make_mock_engine(
+            gen_outputs=["a0", "a1", "a2", "a3"],
+            gen_token_ids=[[10, 20, 30, 40]] * 4,
+            score_map={
+                "aa": [1.0, 1.0, 1.0, 1.0],
+                "ba": [1.5, 1.5, 1.5, 1.5],
+            },
+        )
+        engine_b = _make_mock_engine(
+            gen_outputs=["spam", "b1", "b2", "b3"],
+            gen_token_ids=[[198]*16, [70, 80, 90, 91], [71, 81, 92, 93], [72, 82, 94, 95]],
+            score_map={
+                "bb": [0.3, 0.8, 0.8, 0.8],
+                "ab": [3.0, 2.0, 2.0, 2.0],
+            },
+        )
+
+        result = BehavioralDistance().compute(engine_a, engine_b, probes)
+        assert result.details["n_healthy"] == 3
+        assert result.details["bd_healthy"] is not None
+        # healthy probes (p1,p2,p3): bd = 0.5*(2.0-0.8) + 0.5*(1.5-1.0) = 0.85 each
+        assert abs(result.details["bd_healthy"] - 0.85) < 1e-6
+
+    def test_all_degenerate_bd_healthy_none(self):
+        probes = ["p0"]
+
+        engine_a = _make_mock_engine(
+            gen_outputs=["a"],
+            gen_token_ids=[[198]*16],
+            score_map={"aa": [0.5], "ba": [1.0]},
+        )
+        engine_b = _make_mock_engine(
+            gen_outputs=["b"],
+            gen_token_ids=[[198]*16],
+            score_map={"bb": [0.3], "ab": [2.0]},
+        )
+
+        result = BehavioralDistance().compute(engine_a, engine_b, probes)
+        assert result.details["n_healthy"] == 0
+        assert result.details["bd_healthy"] is None
+
+    def test_two_healthy_below_threshold(self):
+        probes = ["p0", "p1"]
+
+        engine_a = _make_mock_engine(
+            gen_outputs=["a0", "a1"],
+            gen_token_ids=[[10, 20, 30, 40], [50, 60, 70, 80]],
+            score_map={"aa": [1.0, 1.0], "ba": [1.5, 1.5]},
+        )
+        engine_b = _make_mock_engine(
+            gen_outputs=["b0", "b1"],
+            gen_token_ids=[[11, 21, 31, 41], [51, 61, 71, 81]],
+            score_map={"bb": [0.8, 0.8], "ab": [2.0, 2.0]},
+        )
+
+        result = BehavioralDistance().compute(engine_a, engine_b, probes)
+        assert result.details["n_healthy"] == 2
+        assert result.details["bd_healthy"] is None  # < 3
+
+
 @pytest.mark.slow
 class TestBDSmokeReal:
     def test_gpt2_self_bd_near_zero(self, tiny_model):

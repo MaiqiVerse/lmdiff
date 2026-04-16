@@ -33,9 +33,11 @@ def print_report(report: DiffReport, console: Console | None = None) -> None:
     console.print(summary)
 
     bd = report.get("behavioral_distance")
-    if bd and bd.details and bd.details.get("per_prompt"):
-        console.print()
-        _print_bd_breakdown(bd, name_a, name_b, console)
+    if bd and bd.details:
+        _print_degeneracy_warning(bd, name_a, name_b, console)
+        if bd.details.get("per_prompt"):
+            console.print()
+            _print_bd_breakdown(bd, name_a, name_b, console)
 
     console.print()
 
@@ -61,6 +63,29 @@ def _format_details(r) -> str:
         else:
             parts.append(f"{k}={v}")
     return ", ".join(parts)
+
+
+def _print_degeneracy_warning(bd, name_a: str, name_b: str, console: Console) -> None:
+    d = bd.details
+    rate_a = d.get("degeneracy_rate_a", 0.0)
+    rate_b = d.get("degeneracy_rate_b", 0.0)
+    if rate_a <= 0.10 and rate_b <= 0.10:
+        return
+    console.print()
+    bd_healthy = d.get("bd_healthy")
+    n_healthy = d.get("n_healthy", 0)
+    if bd_healthy is not None and n_healthy >= 3:
+        console.print(
+            f"[bold yellow]Warning:[/bold yellow] Degeneracy: "
+            f"{name_a}={rate_a:.0%}, {name_b}={rate_b:.0%}. "
+            f"Healthy BD = {bd_healthy:+.4f} (n={n_healthy})"
+        )
+    else:
+        console.print(
+            f"[bold yellow]Warning:[/bold yellow] Degeneracy: "
+            f"{name_a}={rate_a:.0%}, {name_b}={rate_b:.0%}. "
+            f"Too few healthy probes (n={n_healthy}) for bd_healthy."
+        )
 
 
 def _print_bd_breakdown(bd, name_a: str, name_b: str, console: Console) -> None:

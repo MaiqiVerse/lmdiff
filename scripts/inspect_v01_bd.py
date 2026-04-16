@@ -8,19 +8,11 @@ from pathlib import Path
 
 from modeldiff.config import Config
 from modeldiff.engine import InferenceEngine
+from modeldiff.metrics.output._degeneracy import is_degenerate_tokens as is_degenerate
 from modeldiff.probes.loader import ProbeSet
 
 V01_PATH = Path(__file__).parent.parent / "modeldiff" / "probes" / "v01.json"
 MAX_NEW_TOKENS = 16
-
-
-def is_degenerate(token_ids: list[int], threshold: float = 0.8) -> bool:
-    """True if >=threshold fraction of tokens are the same id."""
-    if len(token_ids) == 0:
-        return True
-    counts = Counter(token_ids)
-    most_common_count = counts.most_common(1)[0][1]
-    return most_common_count / len(token_ids) >= threshold
 
 
 def main() -> None:
