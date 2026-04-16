@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +12,17 @@ from typer.testing import CliRunner
 
 from lmdiff.cli import app
 
+# Force a wide terminal so typer/Rich help output isn't truncated/wrapped on
+# narrow CI terminals (default 80 cols on GitHub Actions Linux runners).
+os.environ.setdefault("COLUMNS", "200")
+
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _plain(s: str) -> str:
+    return _ANSI_RE.sub("", s)
 
 
 class TestHelp:
@@ -25,8 +37,10 @@ class TestHelp:
     def test_compare_help(self):
         result = runner.invoke(app, ["compare", "--help"])
         assert result.exit_code == 0
-        assert "MODEL_A" in result.output
-        assert "--verbose" in result.output
+        plain = _plain(result.output)
+        assert "MODEL_A" in plain
+        assert "MODEL_B" in plain
+        assert "verbose" in plain
 
     def test_radar_help(self):
         result = runner.invoke(app, ["radar", "--help"])
