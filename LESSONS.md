@@ -9,6 +9,7 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-001: v01 probe style artifact on base models
 - L-002: TokenKL requires full vocab (not top-k)
 - L-003: BD without self-entropy baseline is meaningless
+- L-004: BD inflation by degenerate outputs in smaller/distilled models
 
 ---
 
@@ -69,3 +70,32 @@ Subtracting self-entropy CE(X,X) from cross-entropy CE(Y,X) gives "excess surpri
 This was validated by L-001: without baseline subtraction, the v01 math artifact would have looked like genuine 4+ nat divergence.
 
 **Rule:** CLAUDE.md "Common mistakes to avoid" bullet: "Do NOT compute BD without self-entropy baseline subtraction."
+
+---
+
+## L-004: BD inflation by degenerate outputs in smaller/distilled models
+
+**Date:** 2026-04-16  
+**Phase:** 1  
+**Severity:** Interpretation trap — not a bug. Affects what aggregate BD means.
+
+**Symptom:** On v01 (completion-style, post-L-001), BD(gpt2, distilgpt2):
+- All-probe:      1.17 overall, math=1.20 knowledge=0.89 code=1.42
+- Healthy-only:   0.79 overall, math=0.59 knowledge=0.95 code=0.73
+- ~1/3 of aggregate BD signal was driven by distilgpt2 degenerate outputs (43% of probes: repetition loops on code 8/10, math 4/10, knowledge 1/10).
+
+**Not the same as L-001:** L-001 was bad probe design forcing BOTH models into degenerate modes. L-004 is an intrinsic model property — distilgpt2 on harder prompts collapses even with well-formed probes. Cannot be fixed at probe layer.
+
+**Sanity check for filter correctness:** knowledge domain had healthy-only BD (0.95) slightly *higher* than all-probe (0.89), not lower. This proves the healthy-probe filter is not cherry-picking similar outputs — it's removing genuinely degenerate ones.
+
+**Diagnostic signature:**
+- Multiple probes with ce_ba or ce_ab identical to 2+ decimals
+- ≥80% of tokens in an output are a single repeated id
+- Pure whitespace/newline outputs
+- Per-domain BD drops >0.3 nats when restricted to healthy probes
+
+**GPT-2 family note:** `\xa0` (token id 1849) prefix is a known GPT-2 quirk, NOT degeneracy. Do not filter these.
+
+**Implication:** Report BD in two forms — raw + healthy-only — whenever degeneracy rate exceeds 10% for either model. Single-number BD is honest only on well-matched model pairs with low degeneracy.
+
+**Prevented going forward:** Degeneracy detection added to `BehavioralDistance.compute` as `bd_healthy` field + `degeneracy_rate_a/b` in details.

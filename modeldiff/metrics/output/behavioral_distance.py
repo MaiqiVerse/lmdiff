@@ -4,6 +4,7 @@ import math
 from typing import TYPE_CHECKING, Any
 
 from modeldiff.metrics.base import BaseMetric, MetricLevel, MetricResult
+from modeldiff.metrics.output._degeneracy import is_degenerate_tokens
 from modeldiff.tokenizer_utils import bpb_from_ce, tokenizers_equivalent
 
 if TYPE_CHECKING:
@@ -48,8 +49,6 @@ class BehavioralDistance(BaseMetric):
         ids_a = [tids[0] for tids in gen_a.token_ids]
         ids_b = [tids[0] for tids in gen_b.token_ids]
 
-        # Self-scores use token ids to avoid decode→retokenize round-trip errors.
-        # Cross-scores use strings because the other engine's tokenizer differs.
         score_aa = engine_a.score(probes, continuation_ids=ids_a)
         score_bb = engine_b.score(probes, continuation_ids=ids_b)
         score_ab = engine_b.score(probes, continuations=outputs_a)
@@ -60,12 +59,23 @@ class BehavioralDistance(BaseMetric):
         asym_sum = 0.0
         n_used = 0
         n_skipped = 0
+        n_degen_a = 0
+        n_degen_b = 0
+        healthy_bd_sum = 0.0
+        n_healthy = 0
 
         for i, probe in enumerate(probes):
             ce_aa = score_aa.cross_entropies[i]
             ce_ab = score_ab.cross_entropies[i]
             ce_ba = score_ba.cross_entropies[i]
             ce_bb = score_bb.cross_entropies[i]
+
+            degen_a = is_degenerate_tokens(ids_a[i])
+            degen_b = is_degenerate_tokens(ids_b[i])
+            if degen_a:
+                n_degen_a += 1
+            if degen_b:
+                n_degen_b += 1
 
             if any(math.isnan(c) for c in (ce_aa, ce_ab, ce_ba, ce_bb)):
                 n_skipped += 1
@@ -75,6 +85,7 @@ class BehavioralDistance(BaseMetric):
                     "ce_ba": ce_ba, "ce_bb": ce_bb,
                     "bd": float("nan"), "asymmetry": float("nan"),
                     "skipped": True,
+                    "degenerate_a": degen_a, "degenerate_b": degen_b,
                 })
                 continue
 
@@ -98,11 +109,16 @@ class BehavioralDistance(BaseMetric):
             asym_sum += asym_i
             n_used += 1
 
+            if not degen_a and not degen_b:
+                healthy_bd_sum += bd_i
+                n_healthy += 1
+
             per_prompt.append({
                 "probe": probe,
                 "ce_aa": ce_aa, "ce_ab": ce_ab,
                 "ce_ba": ce_ba, "ce_bb": ce_bb,
                 "bd": bd_i, "asymmetry": asym_i,
+                "degenerate_a": degen_a, "degenerate_b": degen_b,
             })
 
         if n_used == 0:
@@ -112,12 +128,15 @@ class BehavioralDistance(BaseMetric):
 
         bd = bd_sum / n_used
         asymmetry = asym_sum / n_used
+        n_total = len(probes)
 
         valid = [p for p in per_prompt if not p.get("skipped")]
         mean_ce_aa = sum(p["ce_aa"] for p in valid) / n_used
         mean_ce_ab = sum(p["ce_ab"] for p in valid) / n_used
         mean_ce_ba = sum(p["ce_ba"] for p in valid) / n_used
         mean_ce_bb = sum(p["ce_bb"] for p in valid) / n_used
+
+        bd_healthy = (healthy_bd_sum / n_healthy) if n_healthy >= 3 else None
 
         return MetricResult(
             name=self.name,
@@ -132,6 +151,10 @@ class BehavioralDistance(BaseMetric):
                 "bpb_normalized": use_bpb,
                 "n_probes_used": n_used,
                 "n_probes_skipped": n_skipped,
+                "degeneracy_rate_a": n_degen_a / n_total,
+                "degeneracy_rate_b": n_degen_b / n_total,
+                "bd_healthy": bd_healthy,
+                "n_healthy": n_healthy,
                 "per_prompt": per_prompt,
             },
         )
