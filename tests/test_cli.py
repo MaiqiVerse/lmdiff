@@ -26,6 +26,7 @@ class TestHelp:
         result = runner.invoke(app, ["compare", "--help"])
         assert result.exit_code == 0
         assert "MODEL_A" in result.output
+        assert "--verbose" in result.output
 
     def test_radar_help(self):
         result = runner.invoke(app, ["radar", "--help"])
