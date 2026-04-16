@@ -2,7 +2,7 @@
 
 ## Development Environment
 
-- Python: use mamba for environment management. **Always invoke commands via `mamba run -n modeldiff <cmd>`**, not `mamba activate modeldiff`. Activation is unreliable on Windows (the shell hook interacts badly with PowerShell and non-interactive sessions used by Claude Code). Create the env once with `mamba create -n modeldiff python=3.12`, then prefix every command — `mamba run -n modeldiff pytest`, `mamba run -n modeldiff python scripts/inspect_v01_bd.py`, etc.
+- Python: use mamba for environment management. **Always invoke commands via `mamba run -n lmdiff <cmd>`**, not `mamba activate lmdiff`. Activation is unreliable on Windows (the shell hook interacts badly with PowerShell and non-interactive sessions used by Claude Code). Create the env once with `mamba create -n lmdiff python=3.12`, then prefix every command — `mamba run -n lmdiff pytest`, `mamba run -n lmdiff python scripts/inspect_v01_bd.py`, etc.
 - GPU: RTX 5090 (Blackwell, sm_120)
 - PyTorch: `pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130`
 
@@ -99,7 +99,7 @@ One scalar per prompt → high-dim vector. Then: `cos(δ_B, δ_C)` = direction s
 ## Directory layout
 
 ```
-modeldiff/
+lmdiff/
 ├── __init__.py          # public API: Config, ModelDiff, ChangeGeometry
 ├── config.py
 ├── engine.py            # ONLY file that imports transformers
@@ -152,7 +152,7 @@ Build and test in this exact sequence. Each step must pass tests before moving o
 - Type hints on all public functions.
 - Docstrings: one-line summary + Args/Returns for public methods. No docstrings on obvious internal helpers.
 - Tests use `pytest`. Fixtures in `conftest.py`: `tiny_model` (gpt2), `mock_logits`, `sample_probes`.
-- No wildcard imports. Explicit `from modeldiff.config import Config`.
+- No wildcard imports. Explicit `from lmdiff.config import Config`.
 - f-strings, not `.format()`.
 - `rich` for terminal colors, never raw ANSI codes.
 - When in doubt, keep it simple. No metaprogramming, no decorators-on-decorators.

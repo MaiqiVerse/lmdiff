@@ -6,12 +6,12 @@ import math
 from collections import Counter
 from pathlib import Path
 
-from modeldiff.config import Config
-from modeldiff.engine import InferenceEngine
-from modeldiff.metrics.output._degeneracy import is_degenerate_tokens as is_degenerate
-from modeldiff.probes.loader import ProbeSet
+from lmdiff.config import Config
+from lmdiff.engine import InferenceEngine
+from lmdiff.metrics.output._degeneracy import is_degenerate_tokens as is_degenerate
+from lmdiff.probes.loader import ProbeSet
 
-V01_PATH = Path(__file__).parent.parent / "modeldiff" / "probes" / "v01.json"
+V01_PATH = Path(__file__).parent.parent / "lmdiff" / "probes" / "v01.json"
 MAX_NEW_TOKENS = 16
 
 

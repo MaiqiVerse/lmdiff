@@ -1,4 +1,4 @@
-"""JSON serialization for all modeldiff result dataclasses.
+"""JSON serialization for all lmdiff result dataclasses.
 
 Design rules:
 - Deterministic output (sorted keys, no nondeterministic floats).
@@ -18,11 +18,11 @@ from typing import Any
 
 import numpy as np
 
-from modeldiff.config import Config
-from modeldiff.metrics.base import MetricLevel, MetricResult
-from modeldiff.tasks.base import EvalResult, TaskResult
-from modeldiff.tasks.capability_radar import DomainRadarResult, RadarResult
-from modeldiff.diff import DiffReport, FullReport, PairTaskResult
+from lmdiff.config import Config
+from lmdiff.metrics.base import MetricLevel, MetricResult
+from lmdiff.tasks.base import EvalResult, TaskResult
+from lmdiff.tasks.capability_radar import DomainRadarResult, RadarResult
+from lmdiff.diff import DiffReport, FullReport, PairTaskResult
 
 SCHEMA_VERSION = "1"
 
@@ -71,7 +71,7 @@ def _config_to_dict(cfg: Config) -> dict[str, Any]:
 
 @singledispatch
 def to_json_dict(obj: Any) -> dict[str, Any]:
-    """Convert a modeldiff result to a JSON-serializable dict."""
+    """Convert a lmdiff result to a JSON-serializable dict."""
     raise TypeError(f"to_json_dict does not support {type(obj).__name__}")
 
 
@@ -180,7 +180,7 @@ def _full_report(r: FullReport) -> dict[str, Any]:
 
 
 def to_json(obj: Any, indent: int = 2) -> str:
-    """Serialize any modeldiff result to a JSON string."""
+    """Serialize any lmdiff result to a JSON string."""
     d = to_json_dict(obj)
     return json.dumps(d, indent=indent, sort_keys=True, ensure_ascii=False)
 

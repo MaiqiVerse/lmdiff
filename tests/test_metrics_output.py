@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 import torch
 
-from modeldiff.metrics.base import MetricLevel, MetricResult
-from modeldiff.metrics.output.token_entropy import TokenEntropy, _entropy_from_logits
-from modeldiff.metrics.output.token_kl import TokenKL, _kl_divergence
+from lmdiff.metrics.base import MetricLevel, MetricResult
+from lmdiff.metrics.output.token_entropy import TokenEntropy, _entropy_from_logits
+from lmdiff.metrics.output.token_kl import TokenKL, _kl_divergence
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -159,7 +159,7 @@ class TestTokenEntropyMetric:
         assert TokenEntropy.requirements()["logits"] is True
 
     def test_is_applicable_same_tokenizer(self):
-        from modeldiff.config import Config
+        from lmdiff.config import Config
         c = Config(model="gpt2")
         assert TokenEntropy.is_applicable(c, c)
 

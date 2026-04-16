@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from modeldiff.probes.loader import Probe, ProbeSet
+from lmdiff.probes.loader import Probe, ProbeSet
 
-V01_PATH = Path(__file__).parent.parent / "modeldiff" / "probes" / "v01.json"
+V01_PATH = Path(__file__).parent.parent / "lmdiff" / "probes" / "v01.json"
 
 
 class TestProbeImmutable:

@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import torch
 
-from modeldiff.metrics.base import BaseMetric, MetricLevel, MetricResult
-from modeldiff.tokenizer_utils import tokenizers_equivalent
+from lmdiff.metrics.base import BaseMetric, MetricLevel, MetricResult
+from lmdiff.tokenizer_utils import tokenizers_equivalent
 
 if TYPE_CHECKING:
-    from modeldiff.engine import InferenceEngine
+    from lmdiff.engine import InferenceEngine
 
 
 class TokenKL(BaseMetric):

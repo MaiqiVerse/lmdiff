@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import transformers
 
-from modeldiff.config import Config
+from lmdiff.config import Config
 
 
 @dataclass

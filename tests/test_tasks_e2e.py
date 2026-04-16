@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from modeldiff.probes.loader import ProbeSet
-from modeldiff.tasks.base import Task
-from modeldiff.tasks.evaluators import ContainsAnswer
+from lmdiff.probes.loader import ProbeSet
+from lmdiff.tasks.base import Task
+from lmdiff.tasks.evaluators import ContainsAnswer
 
-V01_PATH = Path(__file__).parent.parent / "modeldiff" / "probes" / "v01.json"
+V01_PATH = Path(__file__).parent.parent / "lmdiff" / "probes" / "v01.json"
 
 
 @pytest.mark.slow

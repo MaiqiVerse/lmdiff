@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from modeldiff.tokenizer_utils import bpb_from_ce, tokenizers_equivalent, utf8_byte_count
+from lmdiff.tokenizer_utils import bpb_from_ce, tokenizers_equivalent, utf8_byte_count
 
 
 class TestUtf8ByteCount:

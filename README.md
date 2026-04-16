@@ -9,7 +9,7 @@ Phase 1 complete. Working: BehavioralDistance, TokenEntropy, TokenKL, Capability
 ## Install
 
 ```bash
-mamba create -n modeldiff python=3.12 && mamba activate modeldiff
+mamba create -n lmdiff python=3.12 && mamba activate lmdiff
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 pip install -e .
 ```
@@ -20,28 +20,28 @@ pip install -e .
 
 ```bash
 # Metric-level comparison (BD, token entropy, token KL)
-modeldiff compare gpt2 distilgpt2 --probes v01
+lmdiff compare gpt2 distilgpt2 --probes v01
 
 # Same, but JSON output to file
-modeldiff compare gpt2 distilgpt2 --probes v01 --json --output result.json
+lmdiff compare gpt2 distilgpt2 --probes v01 --json --output result.json
 
 # Per-domain capability radar (accuracy + BD per domain)
-modeldiff radar gpt2 distilgpt2 --probes v01
+lmdiff radar gpt2 distilgpt2 --probes v01
 
 # Single-model task evaluation
-modeldiff run-task gpt2 --probes v01 --evaluator contains_answer
+lmdiff run-task gpt2 --probes v01 --evaluator contains_answer
 
 # List available metrics
-modeldiff list-metrics
+lmdiff list-metrics
 ```
 
 ## Python API
 
 ```python
-from modeldiff import Config, ModelDiff, ProbeSet
-from modeldiff.report.terminal import print_report, print_radar
+from lmdiff import Config, ModelDiff, ProbeSet
+from lmdiff.report.terminal import print_report, print_radar
 
-probes = ProbeSet.from_json("modeldiff/probes/v01.json")
+probes = ProbeSet.from_json("lmdiff/probes/v01.json")
 md = ModelDiff(
     Config(model="gpt2"),
     Config(model="distilgpt2"),
@@ -90,7 +90,7 @@ Same weights + different context/decoding = different config = measurable behavi
 All results serialize to deterministic JSON with `schema_version` for forward compatibility:
 
 ```python
-from modeldiff.report.json_report import to_json, write_json
+from lmdiff.report.json_report import to_json, write_json
 write_json(report, "output.json")
 ```
 

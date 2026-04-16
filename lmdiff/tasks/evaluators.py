@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from modeldiff.tasks.base import BaseEvaluator
+from lmdiff.tasks.base import BaseEvaluator
 
 
 class ExactMatch(BaseEvaluator):

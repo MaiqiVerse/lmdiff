@@ -4,8 +4,8 @@ import numpy as np
 import torch
 import pytest
 
-from modeldiff.config import Config
-from modeldiff.engine import (
+from lmdiff.config import Config
+from lmdiff.engine import (
     InferenceEngine,
     GenerationResult,
     ForwardResult,
@@ -181,7 +181,7 @@ class TestCrossModel:
     """Tests that compare behavior across gpt2 and llama2."""
 
     def test_different_tokenizers(self, tiny_model, llama_engine):
-        from modeldiff.tokenizer_utils import tokenizers_equivalent
+        from lmdiff.tokenizer_utils import tokenizers_equivalent
         assert tiny_model.config.shares_tokenizer_with(llama_engine.config) is None
         assert not tokenizers_equivalent(tiny_model.tokenizer, llama_engine.tokenizer)
 

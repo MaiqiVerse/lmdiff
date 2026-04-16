@@ -1,7 +1,7 @@
 import pytest
 
-from modeldiff.config import Config
-from modeldiff.engine import InferenceEngine
+from lmdiff.config import Config
+from lmdiff.engine import InferenceEngine
 
 TEST_MODELS = [
     pytest.param("gpt2", id="gpt2"),

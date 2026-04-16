@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from modeldiff.engine import InferenceEngine
-    from modeldiff.probes.loader import ProbeSet
+    from lmdiff.engine import InferenceEngine
+    from lmdiff.probes.loader import ProbeSet
 
 
 @dataclass(frozen=True)

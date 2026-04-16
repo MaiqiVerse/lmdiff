@@ -1,4 +1,4 @@
-from modeldiff.metrics.output._degeneracy import is_degenerate_tokens
+from lmdiff.metrics.output._degeneracy import is_degenerate_tokens
 
 
 class TestIsDegenerateTokens:

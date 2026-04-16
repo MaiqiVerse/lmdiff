@@ -6,12 +6,12 @@ import math
 import numpy as np
 import pytest
 
-from modeldiff.config import Config
-from modeldiff.diff import DiffReport, FullReport, PairTaskResult
-from modeldiff.metrics.base import MetricLevel, MetricResult
-from modeldiff.report.json_report import SCHEMA_VERSION, to_json, to_json_dict
-from modeldiff.tasks.base import EvalResult, TaskResult
-from modeldiff.tasks.capability_radar import DomainRadarResult, RadarResult
+from lmdiff.config import Config
+from lmdiff.diff import DiffReport, FullReport, PairTaskResult
+from lmdiff.metrics.base import MetricLevel, MetricResult
+from lmdiff.report.json_report import SCHEMA_VERSION, to_json, to_json_dict
+from lmdiff.tasks.base import EvalResult, TaskResult
+from lmdiff.tasks.capability_radar import DomainRadarResult, RadarResult
 
 
 def _make_metric_result(**overrides) -> MetricResult:

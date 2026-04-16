@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from modeldiff.cli import app
+from lmdiff.cli import app
 
 runner = CliRunner()
 

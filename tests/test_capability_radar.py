@@ -6,17 +6,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from modeldiff.probes.loader import Probe, ProbeSet
-from modeldiff.tasks.base import EvalResult, TaskResult
-from modeldiff.tasks.capability_radar import (
+from lmdiff.probes.loader import Probe, ProbeSet
+from lmdiff.tasks.base import EvalResult, TaskResult
+from lmdiff.tasks.capability_radar import (
     CapabilityRadar,
     DomainRadarResult,
     RadarResult,
 )
-from modeldiff.tasks.evaluators import ContainsAnswer, ExactMatch
-from modeldiff.report.terminal import print_radar
+from lmdiff.tasks.evaluators import ContainsAnswer, ExactMatch
+from lmdiff.report.terminal import print_radar
 
-V01_PATH = Path(__file__).parent.parent / "modeldiff" / "probes" / "v01.json"
+V01_PATH = Path(__file__).parent.parent / "lmdiff" / "probes" / "v01.json"
 
 
 def _make_probes(domains: dict[str, int]) -> ProbeSet:
@@ -303,15 +303,15 @@ class TestPrintRadarMock:
 
 class TestCapabilityRadarArchitecture:
     def test_no_transformers_import(self):
-        import modeldiff.tasks.capability_radar as mod
+        import lmdiff.tasks.capability_radar as mod
         src = inspect.getsource(mod)
         assert "import transformers" not in src
 
     def test_no_metric_base_import(self):
         """Capability radar uses BD via compute(), not via base class."""
-        import modeldiff.tasks.capability_radar as mod
+        import lmdiff.tasks.capability_radar as mod
         src = inspect.getsource(mod)
-        assert "from modeldiff.metrics.base" not in src
+        assert "from lmdiff.metrics.base" not in src
 
 
 # ── E2E tests (slow) ───────────────────────────────────────────────────

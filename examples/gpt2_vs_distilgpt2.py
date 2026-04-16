@@ -6,17 +6,17 @@ Demonstrates:
 3. Per-domain capability radar (accuracy + BD)
 4. Terminal report output
 
-Run: mamba run -n modeldiff python examples/gpt2_vs_distilgpt2.py
+Run: mamba run -n lmdiff python examples/gpt2_vs_distilgpt2.py
 """
 import warnings
 
 warnings.filterwarnings("ignore")
 
-from modeldiff import Config, ModelDiff, ProbeSet
-from modeldiff.report.terminal import print_report, print_radar
+from lmdiff import Config, ModelDiff, ProbeSet
+from lmdiff.report.terminal import print_report, print_radar
 
 # Load probes
-probes = ProbeSet.from_json("modeldiff/probes/v01.json")
+probes = ProbeSet.from_json("lmdiff/probes/v01.json")
 print(f"Loaded {len(probes)} probes across domains: {probes.domains}")
 
 # Set up comparison
@@ -37,7 +37,7 @@ radar_result = md.run_radar(probes=probes, max_new_tokens=16)
 print_radar(radar_result)
 
 # 3. JSON export
-from modeldiff.report.json_report import write_json
+from lmdiff.report.json_report import write_json
 
 write_json(report, "examples/output_report.json")
 write_json(radar_result, "examples/radar_report.json")

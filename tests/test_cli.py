@@ -1,4 +1,4 @@
-"""Unit tests for modeldiff CLI (no model loading)."""
+"""Unit tests for lmdiff CLI (no model loading)."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from modeldiff.cli import app
+from lmdiff.cli import app
 
 runner = CliRunner()
 
@@ -56,7 +56,7 @@ class TestListMetrics:
 
     def test_no_model_load(self):
         """list-metrics must not import transformers at top level."""
-        import modeldiff.cli as cli_mod
+        import lmdiff.cli as cli_mod
         import inspect
         src = inspect.getsource(cli_mod)
         # Top-level (outside functions) should not have transformers
@@ -73,9 +73,9 @@ class TestListMetrics:
 
 class TestCompareJsonMock:
     def test_json_output(self):
-        from modeldiff.config import Config
-        from modeldiff.diff import DiffReport
-        from modeldiff.metrics.base import MetricLevel, MetricResult
+        from lmdiff.config import Config
+        from lmdiff.diff import DiffReport
+        from lmdiff.metrics.base import MetricLevel, MetricResult
 
         fake_report = DiffReport(
             config_a=Config(model="gpt2"),
@@ -84,8 +84,8 @@ class TestCompareJsonMock:
             metadata={"level": "output", "n_probes": 1, "name_a": "gpt2", "name_b": "distilgpt2"},
         )
 
-        with patch("modeldiff.diff.ModelDiff") as MockMD, \
-             patch("modeldiff.probes.loader.ProbeSet.from_json") as mock_from_json:
+        with patch("lmdiff.diff.ModelDiff") as MockMD, \
+             patch("lmdiff.probes.loader.ProbeSet.from_json") as mock_from_json:
             mock_from_json.return_value = MagicMock()
             instance = MockMD.return_value
             instance.run.return_value = fake_report

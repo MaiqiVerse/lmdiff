@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from modeldiff.tasks.base import BaseEvaluator, Task, TaskResult
-from modeldiff.tasks.evaluators import ContainsAnswer
+from lmdiff.tasks.base import BaseEvaluator, Task, TaskResult
+from lmdiff.tasks.evaluators import ContainsAnswer
 
 if TYPE_CHECKING:
-    from modeldiff.engine import InferenceEngine
-    from modeldiff.probes.loader import ProbeSet
+    from lmdiff.engine import InferenceEngine
+    from lmdiff.probes.loader import ProbeSet
 
 
 @dataclass(frozen=True)
@@ -120,7 +120,7 @@ class CapabilityRadar:
         self, engine_a: InferenceEngine, engine_b: InferenceEngine,
     ) -> RadarResult:
         """Full radar: accuracy per engine + BD per domain."""
-        from modeldiff.metrics.output.behavioral_distance import BehavioralDistance
+        from lmdiff.metrics.output.behavioral_distance import BehavioralDistance
 
         by_domain = self.probes.by_domain()
         domains = sorted(by_domain.keys())

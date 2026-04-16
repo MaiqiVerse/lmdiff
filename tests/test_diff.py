@@ -3,16 +3,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from modeldiff.config import Config
-from modeldiff.diff import DiffReport, FullReport, ModelDiff, PairTaskResult, _OUTPUT_METRICS
-from modeldiff.metrics.base import MetricLevel, MetricResult
-from modeldiff.metrics.output.behavioral_distance import BehavioralDistance
-from modeldiff.metrics.output.token_entropy import TokenEntropy
-from modeldiff.metrics.output.token_kl import TokenKL
-from modeldiff.probes.loader import ProbeSet
-from modeldiff.report.terminal import print_report
+from lmdiff.config import Config
+from lmdiff.diff import DiffReport, FullReport, ModelDiff, PairTaskResult, _OUTPUT_METRICS
+from lmdiff.metrics.base import MetricLevel, MetricResult
+from lmdiff.metrics.output.behavioral_distance import BehavioralDistance
+from lmdiff.metrics.output.token_entropy import TokenEntropy
+from lmdiff.metrics.output.token_kl import TokenKL
+from lmdiff.probes.loader import ProbeSet
+from lmdiff.report.terminal import print_report
 
-V01_PATH = Path(__file__).parent.parent / "modeldiff" / "probes" / "v01.json"
+V01_PATH = Path(__file__).parent.parent / "lmdiff" / "probes" / "v01.json"
 
 
 class TestDiffReport:
@@ -282,9 +282,9 @@ class TestModelDiffV01E2E:
 
 class TestRunTaskMock:
     def test_pair_task_result(self):
-        from modeldiff.probes.loader import Probe
-        from modeldiff.tasks.base import Task
-        from modeldiff.tasks.evaluators import ExactMatch
+        from lmdiff.probes.loader import Probe
+        from lmdiff.tasks.base import Task
+        from lmdiff.tasks.evaluators import ExactMatch
 
         probes = ProbeSet([
             Probe(id="m1", text="1+1=", domain="math", expected="2"),
@@ -321,9 +321,9 @@ class TestRunTaskMock:
         assert ptr.metadata["n_probes"] == 2
 
     def test_run_tasks_multiple(self):
-        from modeldiff.probes.loader import Probe
-        from modeldiff.tasks.base import Task
-        from modeldiff.tasks.evaluators import ExactMatch
+        from lmdiff.probes.loader import Probe
+        from lmdiff.tasks.base import Task
+        from lmdiff.tasks.evaluators import ExactMatch
 
         probes1 = ProbeSet([
             Probe(id="a", text="x", domain="d1", expected="y"),
@@ -358,8 +358,8 @@ class TestRunTaskMock:
         assert fr.diff_report is None
 
     def test_run_radar_mock(self):
-        from modeldiff.probes.loader import Probe
-        from modeldiff.tasks.capability_radar import RadarResult
+        from lmdiff.probes.loader import Probe
+        from lmdiff.tasks.capability_radar import RadarResult
 
         multi_probes = ProbeSet([
             Probe(id="m1", text="1+1=", domain="math", expected="2"),
@@ -369,7 +369,7 @@ class TestRunTaskMock:
 
         fake_radar_result = MagicMock(spec=RadarResult)
 
-        with patch("modeldiff.tasks.capability_radar.CapabilityRadar") as MockRadar:
+        with patch("lmdiff.tasks.capability_radar.CapabilityRadar") as MockRadar:
             instance = MockRadar.return_value
             instance.run_pair.return_value = fake_radar_result
 

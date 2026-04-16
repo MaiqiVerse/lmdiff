@@ -1,7 +1,7 @@
 """ModelDiff CLI — compare language model configurations from the terminal.
 
 All heavy imports (transformers, torch, engine) happen inside command
-functions so that ``modeldiff --help`` and ``modeldiff list-metrics``
+functions so that ``lmdiff --help`` and ``lmdiff list-metrics``
 remain fast.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 app = typer.Typer(
-    name="modeldiff",
+    name="lmdiff",
     help="Compare language model configurations via behavioral distance and multi-level diagnostics.",
     add_completion=False,
 )
@@ -52,7 +52,7 @@ def _resolve_probes_path(probes: str) -> Path:
 
 def _get_evaluator(name: str):
     """Lazily import and return an evaluator instance."""
-    from modeldiff.tasks.evaluators import ContainsAnswer, ExactMatch, MultipleChoice
+    from lmdiff.tasks.evaluators import ContainsAnswer, ExactMatch, MultipleChoice
 
     mapping = {
         "exact_match": ExactMatch,
@@ -85,16 +85,16 @@ def compare(
 
     probes_path = _resolve_probes_path(probes)
 
-    from modeldiff.config import Config
-    from modeldiff.diff import ModelDiff
-    from modeldiff.probes.loader import ProbeSet
+    from lmdiff.config import Config
+    from lmdiff.diff import ModelDiff
+    from lmdiff.probes.loader import ProbeSet
 
     ps = ProbeSet.from_json(probes_path)
     md = ModelDiff(Config(model=model_a), Config(model=model_b), ps, n_samples=n_samples)
     report = md.run(level=level, max_new_tokens=max_new_tokens)
 
     if output_json:
-        from modeldiff.report.json_report import to_json, write_json
+        from lmdiff.report.json_report import to_json, write_json
 
         if output:
             write_json(report, output)
@@ -102,7 +102,7 @@ def compare(
         else:
             typer.echo(to_json(report))
     else:
-        from modeldiff.report.terminal import print_report
+        from lmdiff.report.terminal import print_report
 
         print_report(report, verbose=verbose)
 
@@ -121,16 +121,16 @@ def radar(
     probes_path = _resolve_probes_path(probes)
     eval_instance = _get_evaluator(evaluator)
 
-    from modeldiff.config import Config
-    from modeldiff.diff import ModelDiff
-    from modeldiff.probes.loader import ProbeSet
+    from lmdiff.config import Config
+    from lmdiff.diff import ModelDiff
+    from lmdiff.probes.loader import ProbeSet
 
     ps = ProbeSet.from_json(probes_path)
     md = ModelDiff(Config(model=model_a), Config(model=model_b), ps)
     result = md.run_radar(probes=ps, evaluator=eval_instance, max_new_tokens=max_new_tokens)
 
     if output_json:
-        from modeldiff.report.json_report import to_json, write_json
+        from lmdiff.report.json_report import to_json, write_json
 
         if output:
             write_json(result, output)
@@ -138,7 +138,7 @@ def radar(
         else:
             typer.echo(to_json(result))
     else:
-        from modeldiff.report.terminal import print_radar
+        from lmdiff.report.terminal import print_radar
 
         print_radar(result)
 
@@ -155,10 +155,10 @@ def run_task(
     probes_path = _resolve_probes_path(probes)
     eval_instance = _get_evaluator(evaluator)
 
-    from modeldiff.config import Config
-    from modeldiff.engine import InferenceEngine
-    from modeldiff.probes.loader import ProbeSet
-    from modeldiff.tasks.base import Task
+    from lmdiff.config import Config
+    from lmdiff.engine import InferenceEngine
+    from lmdiff.probes.loader import ProbeSet
+    from lmdiff.tasks.base import Task
 
     ps = ProbeSet.from_json(probes_path)
     engine = InferenceEngine(Config(model=model))
@@ -166,7 +166,7 @@ def run_task(
     result = task.run(engine)
 
     if output_json:
-        from modeldiff.report.json_report import to_json
+        from lmdiff.report.json_report import to_json
 
         typer.echo(to_json(result))
     else:
@@ -190,10 +190,10 @@ def list_metrics(
     level: Optional[str] = typer.Option(None, help="Filter by metric level"),
 ) -> None:
     """List available metrics and their properties."""
-    from modeldiff.metrics.base import MetricLevel
-    from modeldiff.metrics.output.behavioral_distance import BehavioralDistance
-    from modeldiff.metrics.output.token_entropy import TokenEntropy
-    from modeldiff.metrics.output.token_kl import TokenKL
+    from lmdiff.metrics.base import MetricLevel
+    from lmdiff.metrics.output.behavioral_distance import BehavioralDistance
+    from lmdiff.metrics.output.token_entropy import TokenEntropy
+    from lmdiff.metrics.output.token_kl import TokenKL
 
     all_metrics = [BehavioralDistance, TokenEntropy, TokenKL]
 

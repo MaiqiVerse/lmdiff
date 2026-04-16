@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from modeldiff.probes.loader import ProbeSet
+    from lmdiff.probes.loader import ProbeSet
 
 
 def from_hf_dataset(

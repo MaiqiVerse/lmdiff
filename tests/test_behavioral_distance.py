@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from modeldiff.config import Config
-from modeldiff.metrics.base import MetricLevel, MetricResult
-from modeldiff.metrics.output.behavioral_distance import BehavioralDistance
+from lmdiff.config import Config
+from lmdiff.metrics.base import MetricLevel, MetricResult
+from lmdiff.metrics.output.behavioral_distance import BehavioralDistance
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -195,7 +195,7 @@ class TestBDBpbNormalization:
         )
 
         with patch(
-            "modeldiff.metrics.output.behavioral_distance.tokenizers_equivalent",
+            "lmdiff.metrics.output.behavioral_distance.tokenizers_equivalent",
             return_value=False,
         ):
             result = BehavioralDistance().compute(engine_a, engine_b, probes)
@@ -289,17 +289,17 @@ class TestBDRequirements:
 
 class TestBDArchitecture:
     def test_no_transformers_import(self):
-        import modeldiff.metrics.output.behavioral_distance as mod
+        import lmdiff.metrics.output.behavioral_distance as mod
         import inspect
         source = inspect.getsource(mod)
         assert "import transformers" not in source
 
     def test_no_other_metric_import(self):
-        import modeldiff.metrics.output.behavioral_distance as mod
+        import lmdiff.metrics.output.behavioral_distance as mod
         import inspect
         source = inspect.getsource(mod)
-        assert "from modeldiff.metrics.output.token_entropy" not in source
-        assert "from modeldiff.metrics.output.token_kl" not in source
+        assert "from lmdiff.metrics.output.token_entropy" not in source
+        assert "from lmdiff.metrics.output.token_kl" not in source
 
 
 class TestBDDegeneracyReporting:

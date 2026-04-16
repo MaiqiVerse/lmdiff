@@ -3,17 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from modeldiff.config import Config
-from modeldiff.engine import InferenceEngine
-from modeldiff.metrics.base import BaseMetric, MetricLevel, MetricResult
-from modeldiff.metrics.output.behavioral_distance import BehavioralDistance
-from modeldiff.metrics.output.token_entropy import TokenEntropy
-from modeldiff.metrics.output.token_kl import TokenKL
-from modeldiff.probes.loader import ProbeSet
+from lmdiff.config import Config
+from lmdiff.engine import InferenceEngine
+from lmdiff.metrics.base import BaseMetric, MetricLevel, MetricResult
+from lmdiff.metrics.output.behavioral_distance import BehavioralDistance
+from lmdiff.metrics.output.token_entropy import TokenEntropy
+from lmdiff.metrics.output.token_kl import TokenKL
+from lmdiff.probes.loader import ProbeSet
 
 if TYPE_CHECKING:
-    from modeldiff.tasks.base import Task, TaskResult
-    from modeldiff.tasks.capability_radar import RadarResult
+    from lmdiff.tasks.base import Task, TaskResult
+    from lmdiff.tasks.capability_radar import RadarResult
 
 _OUTPUT_METRICS: list[type[BaseMetric]] = [BehavioralDistance, TokenEntropy, TokenKL]
 
@@ -179,7 +179,7 @@ class ModelDiff:
         max_new_tokens: int = 16,
     ) -> RadarResult:
         """Convenience: run CapabilityRadar on both engines."""
-        from modeldiff.tasks.capability_radar import CapabilityRadar
+        from lmdiff.tasks.capability_radar import CapabilityRadar
 
         target_probes = probes or self.probe_set
         if len(target_probes.domains) < 2:

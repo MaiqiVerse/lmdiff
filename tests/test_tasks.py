@@ -3,9 +3,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from modeldiff.probes.loader import Probe, ProbeSet
-from modeldiff.tasks.base import EvalResult, Task, TaskResult
-from modeldiff.tasks.evaluators import ContainsAnswer, ExactMatch, MultipleChoice
+from lmdiff.probes.loader import Probe, ProbeSet
+from lmdiff.tasks.base import EvalResult, Task, TaskResult
+from lmdiff.tasks.evaluators import ContainsAnswer, ExactMatch, MultipleChoice
 
 
 # ── ExactMatch ───────────────────────────────────────────────────────────
@@ -209,21 +209,21 @@ class TestTaskRun:
 
 class TestTaskArchitecture:
     def test_base_no_transformers(self):
-        import modeldiff.tasks.base as mod
+        import lmdiff.tasks.base as mod
         src = inspect.getsource(mod)
         assert "import transformers" not in src
 
     def test_base_no_metrics(self):
-        import modeldiff.tasks.base as mod
+        import lmdiff.tasks.base as mod
         src = inspect.getsource(mod)
-        assert "from modeldiff.metrics" not in src
+        assert "from lmdiff.metrics" not in src
 
     def test_evaluators_no_transformers(self):
-        import modeldiff.tasks.evaluators as mod
+        import lmdiff.tasks.evaluators as mod
         src = inspect.getsource(mod)
         assert "import transformers" not in src
 
     def test_evaluators_no_metrics(self):
-        import modeldiff.tasks.evaluators as mod
+        import lmdiff.tasks.evaluators as mod
         src = inspect.getsource(mod)
-        assert "from modeldiff.metrics" not in src
+        assert "from lmdiff.metrics" not in src

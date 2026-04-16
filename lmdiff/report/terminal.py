@@ -6,8 +6,8 @@ from rich.console import Console
 from rich.table import Table
 
 if TYPE_CHECKING:
-    from modeldiff.diff import DiffReport
-    from modeldiff.tasks.capability_radar import RadarResult
+    from lmdiff.diff import DiffReport
+    from lmdiff.tasks.capability_radar import RadarResult
 
 
 def print_report(

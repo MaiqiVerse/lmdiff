@@ -3,12 +3,12 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any
 
-from modeldiff.metrics.base import BaseMetric, MetricLevel, MetricResult
-from modeldiff.metrics.output._degeneracy import is_degenerate_tokens
-from modeldiff.tokenizer_utils import bpb_from_ce, tokenizers_equivalent
+from lmdiff.metrics.base import BaseMetric, MetricLevel, MetricResult
+from lmdiff.metrics.output._degeneracy import is_degenerate_tokens
+from lmdiff.tokenizer_utils import bpb_from_ce, tokenizers_equivalent
 
 if TYPE_CHECKING:
-    from modeldiff.engine import InferenceEngine
+    from lmdiff.engine import InferenceEngine
 
 
 class BehavioralDistance(BaseMetric):
