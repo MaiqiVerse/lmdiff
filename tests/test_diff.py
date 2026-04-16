@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,7 +9,10 @@ from modeldiff.metrics.base import MetricLevel, MetricResult
 from modeldiff.metrics.output.behavioral_distance import BehavioralDistance
 from modeldiff.metrics.output.token_entropy import TokenEntropy
 from modeldiff.metrics.output.token_kl import TokenKL
+from modeldiff.probes.loader import ProbeSet
 from modeldiff.report.terminal import print_report
+
+V01_PATH = Path(__file__).parent.parent / "modeldiff" / "probes" / "v01.json"
 
 
 class TestDiffReport:
@@ -161,3 +165,71 @@ class TestModelDiffE2E:
 
         console = Console(force_terminal=True, width=120)
         print_report(report, console=console)
+
+
+class TestModelDiffWithProbeSet:
+    def test_accepts_probeset(self):
+        ps = ProbeSet.from_list(["hello", "world"], domain="test")
+        md = ModelDiff(Config(model="gpt2"), Config(model="gpt2"), ps)
+        assert md.prompts == ["hello", "world"]
+        assert md.probe_set.name is None
+        assert len(md.probe_set) == 2
+
+    def test_probeset_metadata_in_report(self):
+        ps = ProbeSet.from_json(V01_PATH)
+        md = ModelDiff(Config(model="gpt2"), Config(model="gpt2"), ps)
+
+        fake_result = MetricResult(name="f", level=MetricLevel.OUTPUT, value=0.0)
+
+        class Fake:
+            name = "f"
+            level = MetricLevel.OUTPUT
+
+            @classmethod
+            def is_applicable(cls, a, b):
+                return True
+
+            def compute(self, ea, eb, probes, **kw):
+                return fake_result
+
+        with patch.object(md, "_engine_a", MagicMock()), \
+             patch.object(md, "_engine_b", MagicMock()):
+            report = md.run(metrics=[Fake])
+
+        assert report.metadata["probe_set_name"] == "v01"
+        assert report.metadata["probe_set_version"] == "0.1.0"
+        assert report.metadata["n_probes"] == 30
+
+
+@pytest.mark.slow
+class TestModelDiffV01E2E:
+    def test_v01_gpt2_vs_distilgpt2(self, tiny_model, distil_engine):
+        ps = ProbeSet.from_json(V01_PATH)
+        md = ModelDiff(
+            Config(model="gpt2"),
+            Config(model="distilgpt2"),
+            ps,
+        )
+        md._engine_a = tiny_model
+        md._engine_b = distil_engine
+
+        report = md.run(level="output", max_new_tokens=16)
+        bd = report.get("behavioral_distance")
+        assert bd is not None
+        assert bd.value > 0
+
+        by_domain: dict[str, list[dict]] = {}
+        for pp in bd.details["per_prompt"]:
+            probe_obj = next((p for p in ps if p.text == pp["probe"]), None)
+            domain = probe_obj.domain if probe_obj else "unknown"
+            by_domain.setdefault(domain, []).append(pp)
+
+        print(f"\n=== v01 BD(gpt2, distilgpt2) = {bd.value:.4f} ===")
+        for domain, entries in sorted(by_domain.items()):
+            valid = [e for e in entries if not e.get("skipped")]
+            if not valid:
+                continue
+            mean_bd = sum(e["bd"] for e in valid) / len(valid)
+            print(f"  {domain:12s}: BD={mean_bd:.4f} ({len(valid)} probes)")
+
+        assert report.metadata["probe_set_name"] == "v01"

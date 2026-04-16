@@ -9,6 +9,7 @@ from modeldiff.metrics.base import BaseMetric, MetricLevel, MetricResult
 from modeldiff.metrics.output.behavioral_distance import BehavioralDistance
 from modeldiff.metrics.output.token_entropy import TokenEntropy
 from modeldiff.metrics.output.token_kl import TokenKL
+from modeldiff.probes.loader import ProbeSet
 
 _OUTPUT_METRICS: list[type[BaseMetric]] = [BehavioralDistance, TokenEntropy, TokenKL]
 
@@ -38,12 +39,18 @@ class ModelDiff:
         self,
         config_a: Config,
         config_b: Config,
-        prompts: list[str],
+        prompts: list[str] | ProbeSet,
         n_samples: int = 5,
     ) -> None:
         self.config_a = config_a
         self.config_b = config_b
-        self.prompts = prompts
+
+        if isinstance(prompts, ProbeSet):
+            self.probe_set = prompts
+        else:
+            self.probe_set = ProbeSet.from_list(prompts)
+
+        self.prompts = self.probe_set.texts
         self.n_samples = n_samples
         self._engine_a: InferenceEngine | None = None
         self._engine_b: InferenceEngine | None = None
@@ -82,14 +89,20 @@ class ModelDiff:
             )
             results.append(result)
 
+        meta: dict[str, Any] = {
+            "level": level,
+            "n_probes": len(self.prompts),
+            "name_a": self.config_a.display_name,
+            "name_b": self.config_b.display_name,
+        }
+        if self.probe_set.name:
+            meta["probe_set_name"] = self.probe_set.name
+        if self.probe_set.version:
+            meta["probe_set_version"] = self.probe_set.version
+
         return DiffReport(
             config_a=self.config_a,
             config_b=self.config_b,
             results=results,
-            metadata={
-                "level": level,
-                "n_probes": len(self.prompts),
-                "name_a": self.config_a.display_name,
-                "name_b": self.config_b.display_name,
-            },
+            metadata=meta,
         )

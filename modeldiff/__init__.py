@@ -8,6 +8,7 @@ from modeldiff.engine import (
     HiddenStatesResult,
     InferenceEngine,
 )
+from modeldiff.probes.loader import Probe, ProbeSet
 
 __all__ = [
     "Config",
@@ -17,4 +18,6 @@ __all__ = [
     "GenerationResult",
     "ForwardResult",
     "HiddenStatesResult",
+    "Probe",
+    "ProbeSet",
 ]
