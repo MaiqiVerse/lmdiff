@@ -9,6 +9,8 @@ from modeldiff.engine import (
     InferenceEngine,
 )
 from modeldiff.probes.loader import Probe, ProbeSet
+from modeldiff.tasks.base import BaseEvaluator, EvalResult, Task, TaskResult
+from modeldiff.tasks.evaluators import ContainsAnswer, ExactMatch, MultipleChoice
 
 __all__ = [
     "Config",
@@ -20,4 +22,11 @@ __all__ = [
     "HiddenStatesResult",
     "Probe",
     "ProbeSet",
+    "Task",
+    "TaskResult",
+    "EvalResult",
+    "BaseEvaluator",
+    "ExactMatch",
+    "ContainsAnswer",
+    "MultipleChoice",
 ]
