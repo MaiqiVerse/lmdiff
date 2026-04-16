@@ -39,6 +39,21 @@ class TokenKL(BaseMetric):
 
         # KL must use full vocab: top-k subsets from A and B have different
         # token indices, so positional alignment would be meaningless.
+
+        # Full-vocab KL: memory cost ≈ seq_len × vocab × 4B per probe.
+        # For vocab > 100k (llama3, qwen2, gemma) this can become GB-scale
+        # when multiplied by n_probes. Sparse KL over top-k union is a
+        # future optimization (see Amini et al. 2025).
+        vocab = engine_a.tokenizer.vocab_size
+        if vocab > 100_000:
+            import warnings
+            warnings.warn(
+                f"TokenKL on vocab={vocab}: full-vocab logits are "
+                f"~{vocab * 4 / 1e6:.1f} MB per token position. "
+                "Consider reducing n_probes or switching to sparse KL.",
+                stacklevel=2,
+            )
+
         result_a = engine_a.get_logits(probes, topk=0)
         result_b = engine_b.get_logits(probes, topk=0)
 

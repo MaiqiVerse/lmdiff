@@ -243,6 +243,9 @@ class InferenceEngine:
                 all_logits.append(top_vals.cpu())
                 all_token_ids.append(top_ids.cpu().tolist())
             else:
+                # topk=0 → full vocab. Caller owns the memory budget.
+                # KL-based metrics require this; ranking-only metrics should
+                # use topk > 0 to avoid seq_len × vocab × 4B allocations.
                 all_logits.append(logits.cpu())
                 all_token_ids.append(logits.argmax(dim=-1).cpu().tolist())
 

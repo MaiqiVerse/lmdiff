@@ -248,3 +248,16 @@ class TestTokenKLMetric:
         engine_b = _make_engine_stub([torch.randn(3, 200)], tokenizer=tok_b)
         with pytest.raises(ValueError, match="TokenKL requires matching tokenizers"):
             TokenKL().compute(engine_a, engine_b, ["probe"])
+
+    def test_large_vocab_warns(self):
+        import warnings
+        tok = MagicMock()
+        tok.vocab_size = 150_000
+        tok.__class__.__name__ = "MockTokenizer"
+        tok.encode = lambda text: list(range(len(text)))
+        engine_a = _make_engine_stub([torch.randn(2, 10)], tokenizer=tok)
+        engine_b = _make_engine_stub([torch.randn(2, 10)], tokenizer=tok)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            TokenKL().compute(engine_a, engine_b, ["probe"])
+        assert any("vocab=150000" in str(wi.message) for wi in w)
