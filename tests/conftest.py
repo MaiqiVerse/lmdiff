@@ -31,6 +31,11 @@ def llama_engine():
     return _get_engine("meta-llama/Llama-2-7b-hf")
 
 
+@pytest.fixture(scope="session")
+def distil_engine():
+    return _get_engine("distilgpt2")
+
+
 @pytest.fixture
 def gpt2_config():
     return Config(model="gpt2")

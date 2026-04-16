@@ -53,9 +53,9 @@ class TestBDFormulaMock:
     """Hand-computed BD and Asymmetry from known CE values."""
 
     def test_known_values_single_probe(self):
-        # ce_aa=2.0, ce_ab=3.0, ce_ba=2.8, ce_bb=1.9
-        # BD = 0.5*(3.0-1.9) + 0.5*(2.8-2.0) = 0.55 + 0.40 = 0.95
-        # Asym = (2.8-2.0) - (3.0-1.9) = 0.8 - 1.1 = -0.3
+        # ce_aa=2.0, ce_ab=3.0 (=CE(B,A)), ce_ba=2.8 (=CE(A,B)), ce_bb=1.9
+        # BD = 0.5*(ce_ab-ce_bb) + 0.5*(ce_ba-ce_aa) = 0.5*(3.0-1.9) + 0.5*(2.8-2.0) = 0.95
+        # Asym = (ce_ab-ce_aa) - (ce_ba-ce_bb) = (3.0-2.0) - (2.8-1.9) = 1.0 - 0.9 = 0.1
         probes = ["test probe"]
 
         engine_a = _make_mock_engine(
@@ -81,7 +81,7 @@ class TestBDFormulaMock:
         assert result.name == "behavioral_distance"
         assert result.level == MetricLevel.OUTPUT
         assert abs(result.value - 0.95) < 1e-6
-        assert abs(result.details["asymmetry"] - (-0.3)) < 1e-6
+        assert abs(result.details["asymmetry"] - 0.1) < 1e-6
         assert abs(result.details["ce_aa"] - 2.0) < 1e-6
         assert abs(result.details["ce_ab"] - 3.0) < 1e-6
         assert abs(result.details["ce_ba"] - 2.8) < 1e-6
@@ -201,17 +201,16 @@ class TestBDBpbNormalization:
 
         assert result.details["bpb_normalized"] is True
         pp = result.details["per_prompt"][0]
-        # Verify BPB conversion was applied
-        # text_a = "hi world" (8 bytes), text_b = "hi earth" (8 bytes)
-        # ce_aa: bpb = (1.0 * 2 / log2) / 8
-        # ce_ab: bpb = (2.0 * 3 / log2) / 8
-        # ce_ba: bpb = (1.5 * 3 / log2) / 8
-        # ce_bb: bpb = (0.8 * 2 / log2) / 8
+        # BPB uses continuation text only: " world" (6 bytes), " earth" (6 bytes)
+        # ce_aa: bpb = (1.0 * 2 / log2) / 6
+        # ce_ab: bpb = (2.0 * 3 / log2) / 6
+        # ce_ba: bpb = (1.5 * 3 / log2) / 6
+        # ce_bb: bpb = (0.8 * 2 / log2) / 6
         log2 = math.log(2)
-        exp_aa = (1.0 * 2 / log2) / 8
-        exp_ab = (2.0 * 3 / log2) / 8
-        exp_ba = (1.5 * 3 / log2) / 8
-        exp_bb = (0.8 * 2 / log2) / 8
+        exp_aa = (1.0 * 2 / log2) / 6
+        exp_ab = (2.0 * 3 / log2) / 6
+        exp_ba = (1.5 * 3 / log2) / 6
+        exp_bb = (0.8 * 2 / log2) / 6
         assert abs(pp["ce_aa"] - exp_aa) < 1e-6
         assert abs(pp["ce_ab"] - exp_ab) < 1e-6
         assert abs(pp["ce_ba"] - exp_ba) < 1e-6
@@ -274,14 +273,16 @@ class TestBDSmokeReal:
         )
         assert abs(result.value) < 0.01
 
-    def test_gpt2_vs_distilgpt2_positive(self, tiny_model):
-        from modeldiff.config import Config
-        from modeldiff.engine import InferenceEngine
-
-        distil = InferenceEngine(Config(model="distilgpt2"))
+    def test_gpt2_vs_distilgpt2_positive(self, tiny_model, distil_engine):
         probes = ["The capital of France is", "2 + 2 =", "Once upon a time"]
         result = BehavioralDistance().compute(
-            tiny_model, distil, probes, max_new_tokens=16,
+            tiny_model, distil_engine, probes, max_new_tokens=16,
         )
+        print(f"\n=== BD(gpt2, distilgpt2) = {result.value:.6f} ===")
+        print(f"    ce_aa={result.details['ce_aa']:.4f}  ce_ab={result.details['ce_ab']:.4f}")
+        print(f"    ce_ba={result.details['ce_ba']:.4f}  ce_bb={result.details['ce_bb']:.4f}")
+        print(f"    asymmetry={result.details['asymmetry']:.6f}")
+        for pp in result.details["per_prompt"]:
+            print(f"    [{pp['probe'][:30]}] bd={pp['bd']:.4f} asym={pp['asymmetry']:.4f}")
         assert result.value > 0
         assert result.details["bpb_normalized"] is False
