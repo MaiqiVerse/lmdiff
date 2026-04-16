@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "modeldiff"
+version = "0.1.0"
+description = "Framework for comparing language model configurations"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "transformers",
+    "numpy",
+    "typer",
+    "rich",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+viz = ["matplotlib", "plotly"]
+dev = ["pytest", "pytest-cov"]
+
+[project.scripts]
+modeldiff = "modeldiff.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["modeldiff*"]
