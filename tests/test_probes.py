@@ -67,7 +67,7 @@ class TestFromJson:
         ps = ProbeSet.from_json(V01_PATH)
         assert len(ps) == 30
         assert ps.name == "v01"
-        assert ps.version == "0.1.0"
+        assert ps.version == "0.1.1"
         assert set(ps.domains) == {"math", "knowledge", "code"}
 
     def test_v01_domain_counts(self):
