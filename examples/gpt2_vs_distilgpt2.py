@@ -1,4 +1,4 @@
-"""GPT-2 vs DistilGPT-2: full ModelDiff workflow.
+"""GPT-2 vs DistilGPT-2: full lmdiff workflow.
 
 Demonstrates:
 1. Loading v01 probe set (90 probes, 3 domains)

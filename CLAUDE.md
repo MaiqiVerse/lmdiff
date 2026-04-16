@@ -8,7 +8,7 @@
 
 ## What is this project
 
-ModelDiff: a Python framework for comparing language model **configurations** (not just models). A "config" = model weights + context/ICL + decoding strategy + adapter + agent scaffold. The framework measures behavioral differences using conditional KL-based distance and multi-level internal metrics.
+lmdiff: a Python framework for comparing language model **configurations** (not just models). A "config" = model weights + context/ICL + decoding strategy + adapter + agent scaffold. The framework measures behavioral differences using conditional KL-based distance and multi-level internal metrics.
 
 **Core novelty is NOT the distance metric** (that's well-established: Takase et al. 2026, Amini et al. 2025). The novelty is:
 1. Change Geometry — treating behavioral changes as vectors with direction/magnitude/cosine similarity

@@ -22,7 +22,7 @@ def print_report(
     name_b = report.metadata.get("name_b", "B")
 
     console.print()
-    console.rule(f"[bold]ModelDiff: {name_a} vs {name_b}[/bold]")
+    console.rule(f"[bold]lmdiff: {name_a} vs {name_b}[/bold]")
     console.print()
 
     summary = Table(title="Metric Summary", show_lines=True)

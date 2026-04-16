@@ -1,4 +1,4 @@
-"""ModelDiff CLI — compare language model configurations from the terminal.
+"""lmdiff CLI — compare language model configurations from the terminal.
 
 All heavy imports (transformers, torch, engine) happen inside command
 functions so that ``lmdiff --help`` and ``lmdiff list-metrics``
