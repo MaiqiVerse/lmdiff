@@ -2,7 +2,7 @@
 
 ## Development Environment
 
-- Python: use mamba to manage environments: `mamba create -n modeldiff python=3.12 && mamba activate modeldiff`
+- Python: use mamba for environment management. **Always invoke commands via `mamba run -n modeldiff <cmd>`**, not `mamba activate modeldiff`. Activation is unreliable on Windows (the shell hook interacts badly with PowerShell and non-interactive sessions used by Claude Code). Create the env once with `mamba create -n modeldiff python=3.12`, then prefix every command — `mamba run -n modeldiff pytest`, `mamba run -n modeldiff python scripts/inspect_v01_bd.py`, etc.
 - GPU: RTX 5090 (Blackwell, sm_120)
 - PyTorch: `pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130`
 
@@ -176,3 +176,11 @@ Build and test in this exact sequence. Each step must pass tests before moving o
 - Do NOT forget BPB normalization when tokenizers differ.
 - Do NOT make ProbeSet mutable.
 - Do NOT put matplotlib in core dependencies. It's in `[viz]` extra.
+
+## When to update LESSONS.md
+
+After any debug session that took >15 minutes, any finding where 
+the data looked one way but was actually another, or any design 
+decision that future-you might question — propose a LESSONS.md 
+entry. Don't write it without asking; the user decides what's 
+worth preserving.
