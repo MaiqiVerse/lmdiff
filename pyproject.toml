@@ -37,7 +37,7 @@ viz = ["matplotlib", "plotly"]
 dev = ["pytest", "pytest-cov"]
 
 [project.urls]
-Repository = "https://github.com/MaiqiVerse/ModelDiff"
+Repository = "https://github.com/MaiqiVerse/lmdiff"
 
 [project.scripts]
 lmdiff = "lmdiff.cli:app"

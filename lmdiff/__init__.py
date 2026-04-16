@@ -1,4 +1,4 @@
-"""ModelDiff: compare language model configurations."""
+"""lmdiff: compare language model configurations."""
 
 from lmdiff.config import Config
 from lmdiff.diff import DiffReport, FullReport, ModelDiff, PairTaskResult

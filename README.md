@@ -1,4 +1,4 @@
-# ModelDiff
+# lmdiff
 
 Compare language model **configurations** — not just weights, but weights + context + decoding + adapter + agent — via behavioral distance and multi-level diagnostics.
 
@@ -9,7 +9,7 @@ Phase 1 complete. Working: BehavioralDistance, TokenEntropy, TokenKL, Capability
 ## Install
 
 ```bash
-mamba create -n lmdiff python=3.12 && mamba activate lmdiff
+mamba create -n lmdiff python=3.12
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 pip install -e .
 ```

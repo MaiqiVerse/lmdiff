@@ -1,7 +1,7 @@
 {
   "name": "v01",
   "version": "0.2.1",
-  "description": "Phase 1 baseline probe set for ModelDiff — completion-style, base-model friendly",
+  "description": "Phase 1 baseline probe set for lmdiff — completion-style, base-model friendly",
   "probes": [
     {"id": "math_001", "text": "17 + 25 = ", "domain": "math", "expected": "42"},
     {"id": "math_002", "text": "144 / 12 = ", "domain": "math", "expected": "12"},
