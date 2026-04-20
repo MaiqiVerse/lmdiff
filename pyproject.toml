@@ -30,6 +30,9 @@ dependencies = [
     "typer",
     "rich",
     "pyyaml",
+    "sentencepiece",
+    "tiktoken",
+    "protobuf",
 ]
 
 [project.optional-dependencies]
