@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -7,6 +8,7 @@ from rich.table import Table
 
 if TYPE_CHECKING:
     from lmdiff.diff import DiffReport
+    from lmdiff.geometry import GeoResult
     from lmdiff.tasks.capability_radar import RadarResult
 
 
@@ -219,3 +221,59 @@ def print_radar(result: RadarResult, console: Console | None = None) -> None:
             parts.append(f"mean BD={mean_bd:.4f}")
     console.print("  ".join(parts))
     console.print()
+
+
+def print_geometry(result: "GeoResult", console: Console | None = None) -> None:
+    """Print ChangeGeometry analysis as two tables: magnitude ranking + cosine matrix."""
+    console = console or Console()
+
+    console.print()
+    console.rule(f"[bold]Change Geometry: {result.base_name} vs {len(result.variant_names)} variants[/bold]")
+    console.print()
+
+    # Magnitude ranking
+    mag_table = Table(title="Magnitude ranking", show_lines=False)
+    mag_table.add_column("Rank", justify="right", style="dim", min_width=4)
+    mag_table.add_column("Variant", style="cyan", min_width=10)
+    mag_table.add_column("‖δ‖", justify="right", min_width=10)
+
+    ranked = sorted(result.variant_names, key=lambda v: -result.magnitudes[v])
+    for i, name in enumerate(ranked, start=1):
+        mag_table.add_row(str(i), name, f"{result.magnitudes[name]:.4f}")
+    console.print(mag_table)
+
+    console.print()
+
+    # Cosine similarity matrix
+    cos_table = Table(title="Cosine similarity matrix", show_lines=False)
+    cos_table.add_column("", style="cyan")
+    for name in result.variant_names:
+        cos_table.add_column(name, justify="right", min_width=8)
+
+    for a in result.variant_names:
+        row: list[str] = [a]
+        for b in result.variant_names:
+            cos = result.cosine_matrix[a][b]
+            row.append(_format_cosine(cos, diagonal=(a == b)))
+        cos_table.add_row(*row)
+    console.print(cos_table)
+
+    # Footer
+    footer_parts: list[str] = [f"n_probes={result.n_probes}"]
+    n_skipped = result.metadata.get("n_skipped", 0)
+    if n_skipped:
+        footer_parts.append(f"(skipped {n_skipped} with NaN CE)")
+    bpb_map = result.metadata.get("bpb_normalized", {}) or {}
+    bpb_variants = sorted(name for name, flag in bpb_map.items() if flag)
+    if bpb_variants:
+        footer_parts.append(f"BPB-normalized: {', '.join(bpb_variants)}")
+    console.print("  ".join(footer_parts))
+    console.print()
+
+
+def _format_cosine(value: float, diagonal: bool) -> str:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "n/a"
+    if diagonal:
+        return f"[dim]{value:.2f}[/dim]"
+    return f"{value:+.3f}"

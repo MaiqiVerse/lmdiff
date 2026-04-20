@@ -8,6 +8,7 @@ from lmdiff.engine import (
     HiddenStatesResult,
     InferenceEngine,
 )
+from lmdiff.geometry import ChangeGeometry, GeoResult
 from lmdiff.probes.loader import Probe, ProbeSet
 from lmdiff.tasks.base import BaseEvaluator, EvalResult, Task, TaskResult
 from lmdiff.tasks.evaluators import ContainsAnswer, ExactMatch, MultipleChoice
@@ -18,6 +19,8 @@ __all__ = [
     "DiffReport",
     "PairTaskResult",
     "FullReport",
+    "ChangeGeometry",
+    "GeoResult",
     "InferenceEngine",
     "GenerationResult",
     "ForwardResult",
