@@ -39,6 +39,12 @@ class GeoResult:
     - change_vectors[v] has the same length for every variant (equal to
       n_probes, which is the post-NaN-filter count).
     - cosine_matrix[v][v] == 1.0 when ‖δ_v‖ > 0, else NaN.
+    - per_probe[v] is keyed by probe text, useful for point lookup. After a
+      JSON round-trip, its keys come back alphabetically sorted because
+      json_report.to_json emits with sort_keys=True — do NOT use
+      list(per_probe[v].keys()) as a proxy for probe order; use
+      change_vectors[v] (list, order preserved) or the original ProbeSet
+      instead. See LESSONS L-018.
     """
     base_name: str
     variant_names: list[str]

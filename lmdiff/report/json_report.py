@@ -6,6 +6,21 @@ Design rules:
 - NaN / inf → None (JSON has no standard representation).
 - Config.model → string or "<object>" placeholder.
 - All top-level outputs include schema_version and generated_at.
+
+Key ordering note (see LESSONS L-018):
+- ``to_json`` calls ``json.dumps(d, sort_keys=True, ...)`` so the emitted
+  JSON is byte-exact across runs. The side effect is that every JSON
+  object's keys come out **alphabetically sorted, not in insertion order**.
+- List fields preserve order. In particular, ``GeoResult.change_vectors``
+  is a ``{variant: list[float]}`` dict whose inner lists retain the
+  prompt/probe order from ChangeGeometry.analyze().
+- Dict fields do NOT preserve order after a JSON round-trip. In
+  particular, ``GeoResult.per_probe`` is ``{variant: {probe_text: float}}``
+  and its inner keys (probe texts) are alphabetical in the emitted JSON.
+  Do NOT use ``list(per_probe[v].keys())`` as a proxy for probe order.
+- Downstream analysis that needs probe order + probe text simultaneously
+  should source both from the original ProbeSet / probe-set JSON and use
+  ``change_vectors[v]`` for values.
 """
 from __future__ import annotations
 

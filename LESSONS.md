@@ -19,6 +19,7 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-011: tokenizers_equivalent wrongly split slow/fast tokenizer variants
 - L-012: Mock engine tests silently take BPB path when Config.model strings differ
 - L-013: Geometry uses global NaN filter, not BD's per-pair skip
+- L-018: JSON dict keys come back alphabetical, not in insertion order
 
 ---
 
@@ -349,3 +350,38 @@ Metrics that are per-variant only (e.g. "mean δ magnitude per variant") can use
 
 **Related code:** `lmdiff/geometry.py::ChangeGeometry.analyze` — the `valid_indices` construction
 **Related test:** `tests/test_geometry.py::TestNaNHandling`
+
+---
+
+## L-018: JSON dict keys come back alphabetical, not in insertion order
+
+**Date:** 2026-04-20
+**Phase:** 2 (post-geometry extended analysis)
+**Severity:** Silent analysis bug. The script ran, produced 90-d vectors on both sides, and spat out Pearson r — the number was just noise. No exception, no shape mismatch, no log anomaly.
+
+**Symptom:** A prompt-length hypothesis script tried to compute the Pearson correlation between selective δ and probe token count for each variant. It sourced probe text via `list(per_probe[name].keys())` (tokenizing each to get token counts), and sourced δ via `change_vectors[name]`. The two 90-element sequences were misaligned: `per_probe` keys came out `['# Compute the factorial...', '# Reverse a string...', '10 squared is ', '100 - 37 = ', '11 * 11 = ', ...]` (alphabetical), while `change_vectors[name]` was still in v01.json order (`'17 + 25 = '`, `'144 / 12 = '`, ...). Every index i paired a δ from probe A with a token count from probe B.
+
+**Root cause:** `lmdiff/report/json_report.py::to_json` calls `json.dumps(d, sort_keys=True, ...)`. The `sort_keys=True` is intentional — it gives byte-exact determinism so round-trip tests, CI fixtures, and version diffs are stable. But it applies to every dict in the output tree, including `per_probe[name]`, which is keyed by probe text. After round-tripping through JSON, those keys come out alphabetically sorted. Lists don't have this problem, so `change_vectors[name]` (a list of floats) keeps prompts order.
+
+In-memory GeoResult and JSON-roundtripped GeoResult are NOT interchangeable on `per_probe` key order. This is the specific trap: during construction, `per_probe` was built in prompts order and `list(per_probe[name].keys())` would have worked — but the moment it survives one serialize/deserialize cycle, the keys are re-sorted.
+
+**Rule:**
+
+- To iterate δ by probe order → use `change_vectors[v]` (list, order preserved).
+- To look up δ for a specific probe text → use `per_probe[v][probe_text]` (dict lookup by value, order-independent).
+- **Do NOT** use `list(per_probe[v].keys())` as a proxy for probe order, especially in scripts that consume the serialized JSON.
+
+**How to align probe text + δ in a downstream script:**
+
+1. Read probe text + order from the original ProbeSet / probe-set JSON.
+2. Read δ values from `change_vectors[v]` (prompts order).
+3. Assert `metadata["n_skipped"] == 0`; otherwise `change_vectors[v]` has been NaN-filtered and is shorter than the probe list, so index-by-index alignment breaks. If `n_skipped > 0`, recover `valid_indices` from the alphabetized `per_probe[v]` keys and re-sort both sources to match.
+
+**Not fixing `sort_keys=True`.** The determinism guarantee is load-bearing for two-layer JSON output stability (see L-008) and for round-trip tests.
+
+**Docs updated:** module docstring of `json_report.py`, and the `per_probe` field docstring on `GeoResult` in `geometry.py`, both now flag this behavior inline.
+
+**Diagnostic signature:** analysis pipeline emits plausible-looking but suspiciously uniform Pearson r values across variants whose δ vectors visibly differ in magnitude — check whether the text-side and value-side sequences were sourced from two different ordering domains.
+
+**Related code:** `lmdiff/report/json_report.py::to_json` (sort_keys=True); `lmdiff/geometry.py::GeoResult.per_probe`.
+**Related script:** `scripts/analyze_prompt_length_hypothesis.py` (uncommitted; already follows the documented rule after the fix).
