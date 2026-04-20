@@ -18,12 +18,18 @@ class Config:
     name: str | None = None
     use_chat_template: bool = False
     """When True, engine uses tokenizer.apply_chat_template to build prompts (Phase 2)."""
+    dtype: str | None = None
+    """Model precision: 'bfloat16', 'float16', 'float32', or None (auto: bfloat16 on CUDA, float32 on CPU)."""
 
     def __post_init__(self) -> None:
         if self.model is None:
             raise ValueError("model must not be None")
         if self.decode is not None and not isinstance(self.decode, dict):
             raise TypeError("decode must be a dict")
+        if self.dtype is not None and self.dtype not in ("bfloat16", "float16", "float32"):
+            raise ValueError(
+                f"dtype must be 'bfloat16', 'float16', 'float32', or None; got '{self.dtype}'"
+            )
 
     @property
     def display_name(self) -> str:
@@ -57,6 +63,7 @@ class Config:
             "agent": self.agent,
             "name": self.name,
             "use_chat_template": self.use_chat_template,
+            "dtype": self.dtype,
         }
         current.update(kwargs)
         return Config(**current)

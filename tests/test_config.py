@@ -107,6 +107,27 @@ class TestUseChatTemplate:
         assert c.use_chat_template is True
 
 
+class TestDtype:
+    def test_dtype_default_none(self):
+        assert Config(model="gpt2").dtype is None
+
+    @pytest.mark.parametrize("dt", ["bfloat16", "float16", "float32"])
+    def test_dtype_valid(self, dt):
+        assert Config(model="gpt2", dtype=dt).dtype == dt
+
+    def test_dtype_invalid_raises(self):
+        with pytest.raises(ValueError, match="dtype must be"):
+            Config(model="gpt2", dtype="int8")
+
+    def test_with_override_dtype(self):
+        c = Config(model="gpt2").with_override(dtype="float16")
+        assert c.dtype == "float16"
+
+    def test_with_override_clear_dtype(self):
+        c = Config(model="gpt2", dtype="float16").with_override(dtype=None)
+        assert c.dtype is None
+
+
 class TestFixtures:
     def test_gpt2_config(self, gpt2_config):
         assert gpt2_config.model == "gpt2"

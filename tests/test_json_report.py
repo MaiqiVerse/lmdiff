@@ -119,6 +119,17 @@ class TestDiffReportJson:
         assert reloaded["config_b"]["model"] == "distilgpt2"
         assert len(reloaded["results"]) == 1
 
+    def test_config_includes_dtype_field(self):
+        report = DiffReport(
+            config_a=Config(model="gpt2", dtype="float16"),
+            config_b=Config(model="distilgpt2"),
+            results=[],
+            metadata={},
+        )
+        d = to_json_dict(report)
+        assert d["config_a"]["dtype"] == "float16"
+        assert d["config_b"]["dtype"] is None
+
 
 class TestRadarResultJson:
     def test_round_trip(self):

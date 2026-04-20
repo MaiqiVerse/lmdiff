@@ -77,6 +77,7 @@ def compare(
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file"),
     n_samples: int = typer.Option(5, help="Number of generation samples"),
     max_new_tokens: int = typer.Option(64, help="Max new tokens for generation"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model precision: bfloat16, float16, float32 (default: auto)"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show all per-probe details"),
 ) -> None:
     """Run metric-level comparison between two model configurations."""
@@ -90,7 +91,12 @@ def compare(
     from lmdiff.probes.loader import ProbeSet
 
     ps = ProbeSet.from_json(probes_path)
-    md = ModelDiff(Config(model=model_a), Config(model=model_b), ps, n_samples=n_samples)
+    md = ModelDiff(
+        Config(model=model_a, dtype=dtype),
+        Config(model=model_b, dtype=dtype),
+        ps,
+        n_samples=n_samples,
+    )
     report = md.run(level=level, max_new_tokens=max_new_tokens)
 
     if output_json:
@@ -114,6 +120,7 @@ def radar(
     probes: str = typer.Option("v01", help="Probe set name or path (default: v01)"),
     evaluator: str = typer.Option("contains_answer", help="Evaluator: exact_match, contains_answer, multiple_choice"),
     max_new_tokens: int = typer.Option(16, help="Max new tokens for generation"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model precision: bfloat16, float16, float32 (default: auto)"),
     output_json: bool = typer.Option(False, "--json", help="Output JSON instead of rich table"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file"),
 ) -> None:
@@ -126,7 +133,11 @@ def radar(
     from lmdiff.probes.loader import ProbeSet
 
     ps = ProbeSet.from_json(probes_path)
-    md = ModelDiff(Config(model=model_a), Config(model=model_b), ps)
+    md = ModelDiff(
+        Config(model=model_a, dtype=dtype),
+        Config(model=model_b, dtype=dtype),
+        ps,
+    )
     result = md.run_radar(probes=ps, evaluator=eval_instance, max_new_tokens=max_new_tokens)
 
     if output_json:
