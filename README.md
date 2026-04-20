@@ -71,16 +71,27 @@ radar_result = md.run_radar(probes=probes, max_new_tokens=16)
 print_radar(radar_result)
 ```
 
-## Example: what lmdiff finds
+## Example: Llama-2-7B family comparison
 
-Llama-2-7B vs YaRN-Llama-2-7b-128k on short prompts:
+One base model, seven variants, 90 completion-style probes across math/knowledge/code:
 
-- **BD = 1.03 nats** — significant distributional shift even on prompts well within the original 4k context.
-- **TokenEntropy delta ≈ 0** — the distributions shifted *direction*, not spread; YaRN didn't make the model more or less uncertain on average.
-- **TokenKL = 0.35** — single-step distributions are similar, but multi-step generation diverges much further.
-- **Stopping behavior changed** — YaRN learned to emit EOS after short answers; base Llama-2 keeps generating. Invisible to perplexity benchmarks; obvious in BD on generated continuations.
+| Variant | Modification | BD | KL | ΔEntropy |
+|---|---|---|---|---|
+| 7B + temp=1.5 | Decoding only | 0.59 | 0.00 | +0.00 |
+| CodeLlama-7B | Domain fine-tune | 0.79 | — | — |
+| Llama-2-13B | Scale up | 0.85 | 0.17 | −0.06 |
+| YaRN-128k | RoPE scaling | 0.99 | 0.35 | +0.05 |
+| Llama-2-7B-32K | Continued pretrain | 1.07 | 0.71 | +0.41 |
+| 7B + system prompt | Prefix context | 1.09 | 1.62 | −0.11 |
+| Llama-2-7B-chat | RLHF | 1.15 | 1.14 | −0.41 |
 
-The point: same parameter count, similar single-step KL, but the generation behavior is meaningfully different — and the *kind* of difference is what lmdiff surfaces.
+BD = Behavioral Distance (nats). KL = symmetric TokenKL. ΔEntropy = entropy(variant) − entropy(base). CodeLlama has a different vocabulary; KL/Entropy require matching tokenizers.
+
+**What this table shows:**
+
+A single system prompt causes more distributional shift (BD=1.09) than scaling to 13B parameters (BD=0.85). Temperature=1.5 changes generation behavior (BD=0.59) but leaves the underlying distribution identical (KL=0, Entropy=0) — it only affects sampling, not the model's beliefs. YaRN and 32K both extend context length, but do it differently: YaRN shifts the distribution without increasing uncertainty (Entropy≈0), while 32K's continued pretraining substantially increases uncertainty (Entropy=+0.41).
+
+These are the kinds of insights that accuracy benchmarks cannot surface.
 
 ## What gets measured
 
