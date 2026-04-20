@@ -41,10 +41,13 @@ class TestHelp:
         assert "MODEL_A" in plain
         assert "MODEL_B" in plain
         assert "verbose" in plain
+        assert "--dtype" in plain
 
     def test_radar_help(self):
         result = runner.invoke(app, ["radar", "--help"])
         assert result.exit_code == 0
+        plain = _plain(result.output)
+        assert "--dtype" in plain
 
     def test_run_task_help(self):
         result = runner.invoke(app, ["run-task", "--help"])

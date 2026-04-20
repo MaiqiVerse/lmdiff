@@ -63,6 +63,7 @@ def _config_to_dict(cfg: Config) -> dict[str, Any]:
         "context": cfg.context,
         "decode": cfg.decode,
         "display_name": cfg.display_name,
+        "dtype": cfg.dtype,
         "model": model_val,
         "name": cfg.name,
         "system_prompt": cfg.system_prompt,

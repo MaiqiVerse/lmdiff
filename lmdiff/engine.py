@@ -60,11 +60,14 @@ class InferenceEngine:
         if isinstance(config.model, str):
             tokenizer = transformers.AutoTokenizer.from_pretrained(config.model)
             load_kwargs: dict[str, Any] = {}
-            if self.device == "cuda":
+            if config.dtype:
+                load_kwargs["torch_dtype"] = getattr(torch, config.dtype)
+            elif self.device == "cuda":
                 load_kwargs["torch_dtype"] = torch.bfloat16
-                load_kwargs["device_map"] = "auto"
             else:
                 load_kwargs["torch_dtype"] = torch.float32
+            if self.device == "cuda":
+                load_kwargs["device_map"] = "auto"
             model = transformers.AutoModelForCausalLM.from_pretrained(
                 config.model, **load_kwargs,
             )
