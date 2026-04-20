@@ -52,3 +52,4 @@ addopts = "-m 'not slow'"
 
 [tool.setuptools.packages.find]
 include = ["lmdiff*"]
+exclude = ["scripts*", "examples*", "tests*"]
