@@ -17,6 +17,8 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-009: TokenKL/TokenEntropy crash on sequence length mismatch
 - L-010: CapabilityRadar double-generate breaks accuracy↔BD coupling under sampling
 - L-011: tokenizers_equivalent wrongly split slow/fast tokenizer variants
+- L-012: Mock engine tests silently take BPB path when Config.model strings differ
+- L-013: Geometry uses global NaN filter, not BD's per-pair skip
 
 ---
 
@@ -283,3 +285,67 @@ Both layers are belt-and-suspenders, and **both are load-bearing**.
 **Signature:** If a metric that declares `requires matching tokenizers` refuses to run on what should be identical tokenizers, or if BD reports `bpb_normalized: True` between two configs that use the same base model, re-run `tokenizers_equivalent` and check whether the canary-string comparison is being thrown off by `add_special_tokens` defaults.
 
 **Test:** `tests/test_tokenizer_utils.py::TestTokenizersEquivalent::test_llama2_slow_vs_fast` (slow — requires the llama2 weights/tokenizer files).
+
+---
+
+## L-012: Mock engine tests silently take BPB path when Config.model strings differ
+
+**Date:** 2026-04-20
+**Phase:** 2 (geometry)
+**Severity:** Silent test artifact — real code was correct, test was wrong, both produced numerically plausible results. Would have been committed and re-hit on the next multi-engine metric test.
+
+**Symptom:** `TestChangeVectorComputation.test_delta_matches_manual` hand-computed δ = 2.0 on a specific probe. The test got δ ≈ 2.885. Ratio 2.885 / 2.0 ≈ 1.4427 = 1/log(2), i.e. the nat→bit conversion inside `bpb_from_ce`. BPB was running when nothing in the test scenario asked for it.
+
+**Root cause:** The mock engines were built with `Config(model="mock-a")` for base and `Config(model="mock-b")` for the variant to look "realistic." Consequence:
+1. `config_a.shares_tokenizer_with(config_b)` returns `None` (different strings, can't decide)
+2. geometry falls back to `tokenizers_equivalent(tok_a, tok_b)`
+3. MagicMock tokenizers compare unequal (different Mock instances)
+4. geometry silently enters `use_bpb=True`
+5. CE gets scaled by `(n_tokens / log(2)) / byte_count`
+
+The geometry code was doing exactly what the spec said. The test's "realistic" setup was accidentally triggering a valid but unintended code path.
+
+**Fix:** Share `model=` string across mocks and differentiate via `name=`:
+```python
+Config(model="mock-model", name="base")
+Config(model="mock-model", name="A")
+Config(model="mock-model", name="B")
+```
+Now `shares_tokenizer_with` returns `True` on the string-equality fast path, BPB is skipped, raw nat CEs are compared directly.
+
+**Diagnostic signature:**
+- Test asserts expected value X, got ≈ 1.4427 × X (or 1/log(2) × X = 0.6931 × X if the direction was reversed)
+- Inspect `result.metadata["bpb_normalized"]` — if `True` for mock variants with no intentional tokenizer difference, this is it
+
+**Prevented going forward:** Any new multi-engine metric test must either
+(a) use the same `model=` string across configs and differentiate via `name=`, OR
+(b) explicitly `patch.object(Config, "shares_tokenizer_with", return_value=True)` around the compute call.
+
+Pattern (a) is preferred because it mirrors production usage (same tokenizer family = same model string prefix most of the time).
+
+**Related test:** `tests/test_geometry.py::TestChangeVectorComputation`
+
+---
+
+## L-013: Geometry uses global NaN filter, not BD's per-pair skip
+
+**Date:** 2026-04-20
+**Phase:** 2 (geometry)
+**Severity:** Design-decision record — the code is correct, but the reason it deliberately diverges from BD's NaN handling needs to be discoverable before anyone "fixes" it.
+
+**Why this is not a bug:** BD is a scalar over pair (A, B). When probe i has NaN CE, BD drops that probe from the per-pair aggregate and no one else sees it. Per-pair skip is sufficient because the output (one BD number) doesn't depend on any other pair.
+
+ChangeGeometry is different. Its output is a cosine matrix over N variants: `cos(δ_A, δ_B)` requires δ_A and δ_B to have both the same **dimension** AND the same **probe basis**. If variant A skips probe 1 but variant B skips probe 3, their change vectors drift out of alignment — either the dimensions mismatch outright, or index i refers to different probes in the two vectors, making the inner product meaningless.
+
+**Design:** `ChangeGeometry.analyze()` pre-computes raw δ per variant (NaN-preserving, length = n_total_probes), then takes the intersection of "probes where ALL variants produced valid CE" as the universal basis. Every variant's `change_vectors[v]` is restricted to this basis. Reported in `metadata["n_skipped"]`.
+
+**Cost:** one broken variant (e.g. emitting empty continuations on half the probes) drags down `n_probes` for every other variant too. This is the right tradeoff — the alternative (per-pair alignment) requires materializing a different basis per `(i, j)` pair in the cosine matrix, which defeats having a single matrix at all.
+
+**Implication for future N-way metrics:** any metric that operates on multiple variants and requires cross-variant aggregation (cos, PCA on δ vectors, average distance to centroid, steering-vector composition) MUST use global filtering. Per-pair skip is correct only for strictly pairwise metrics like BD.
+
+Metrics that are per-variant only (e.g. "mean δ magnitude per variant") can use per-variant NaN skip — no cross-variant alignment needed.
+
+**Not a forward-proofed rule for rectangular N-way structures:** this lesson is specifically about geometries where the output is a symmetric cos-like matrix over variants. If someone designs a metric with asymmetric N-way structure (e.g. "which variant's δ best predicts variant X's δ"), the filter design may need to be reconsidered per-row.
+
+**Related code:** `lmdiff/geometry.py::ChangeGeometry.analyze` — the `valid_indices` construction
+**Related test:** `tests/test_geometry.py::TestNaNHandling`
