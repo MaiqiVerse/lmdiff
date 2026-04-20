@@ -176,6 +176,54 @@ class TestContextPrepend:
         assert "Tell me more" in built
 
 
+class TestSegmentTokenize:
+    """Verify segment-tokenize isolates the probe span regardless of prefix."""
+
+    def test_no_prefix_empty_prefix_ids(self, tiny_model, gpt2_config):
+        eng = InferenceEngine(gpt2_config)
+        full_ids, probe_slice = eng._encode_for_model("The capital of France is")
+        # gpt2 has no BOS auto-added, empty prefix_text → empty prefix_ids
+        assert probe_slice.start == 0
+        assert probe_slice.stop == len(full_ids)
+
+    def test_with_prefix_probe_slice_offset(self, gpt2_config_with_context):
+        eng = InferenceEngine(gpt2_config_with_context)
+        full_ids, probe_slice = eng._encode_for_model("The capital of France is")
+        assert probe_slice.start > 0
+        assert probe_slice.stop == len(full_ids)
+        # Probe span within full_ids equals standalone probe tokenization
+        probe_ids = eng.tokenizer("The capital of France is", add_special_tokens=False)["input_ids"]
+        assert full_ids[probe_slice] == list(probe_ids)
+
+    def test_probe_slice_length_invariant_across_prefix(self, gpt2_config, gpt2_config_with_context):
+        probe = "The quick brown fox"
+        eng_no_prefix = InferenceEngine(gpt2_config)
+        eng_with_prefix = InferenceEngine(gpt2_config_with_context)
+
+        _, slice_a = eng_no_prefix._encode_for_model(probe)
+        _, slice_b = eng_with_prefix._encode_for_model(probe)
+
+        len_a = slice_a.stop - slice_a.start
+        len_b = slice_b.stop - slice_b.start
+        assert len_a == len_b, "probe should occupy same number of tokens regardless of prefix"
+
+    def test_get_logits_returns_probe_slices(self, tiny_model):
+        result = tiny_model.get_logits(["Hello world"], topk=0)
+        assert result.probe_slices is not None
+        assert len(result.probe_slices) == 1
+        assert isinstance(result.probe_slices[0], slice)
+        # gpt2 no-prefix: probe_slice covers full input
+        assert result.probe_slices[0].stop == result.logits[0].shape[0]
+
+    def test_get_logits_full_length_equals_prefix_plus_probe(self, gpt2_config_with_context):
+        eng = InferenceEngine(gpt2_config_with_context)
+        result = eng.get_logits(["The capital is"], topk=0)
+        prefix_ids = eng.tokenizer(eng._prefix_text(), add_special_tokens=True)["input_ids"]
+        probe_ids = eng.tokenizer("The capital is", add_special_tokens=False)["input_ids"]
+        assert result.logits[0].shape[0] == len(prefix_ids) + len(probe_ids)
+        assert result.probe_slices[0] == slice(len(prefix_ids), len(prefix_ids) + len(probe_ids))
+
+
 @pytest.mark.slow
 class TestCrossModel:
     """Tests that compare behavior across gpt2 and llama2."""

@@ -64,6 +64,12 @@ class TestContainsAnswer:
         assert ok is False
         assert meta["reason"] == "no_expected"
 
+    def test_empty_expected(self):
+        ok, score, meta = ContainsAnswer().evaluate("anything", "")
+        assert ok is False
+        assert score == 0.0
+        assert meta["reason"] == "empty_expected"
+
 
 # ── MultipleChoice ───────────────────────────────────────────────────────
 
@@ -107,6 +113,20 @@ class TestMultipleChoice:
         )
         assert ok is False
         assert meta["predicted_index"] == 0
+
+    def test_lowercase_letter(self):
+        ok, _, meta = MultipleChoice().evaluate(
+            "a", None, {"correct_index": 0},
+        )
+        assert ok is True
+        assert meta["predicted_index"] == 0
+
+    def test_lowercase_letter_in_sentence(self):
+        ok, _, meta = MultipleChoice().evaluate(
+            "the answer is b.", None, {"correct_index": 1},
+        )
+        assert ok is True
+        assert meta["predicted_index"] == 1
 
 
 # ── Task.run ─────────────────────────────────────────────────────────────

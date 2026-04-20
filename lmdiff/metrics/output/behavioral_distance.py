@@ -35,14 +35,23 @@ class BehavioralDistance(BaseMetric):
         **kwargs: Any,
     ) -> MetricResult:
         max_new_tokens = kwargs.get("max_new_tokens", 64)
+        pre_gen_a = kwargs.get("pre_gen_a")
+        pre_gen_b = kwargs.get("pre_gen_b")
 
         same_tok = engine_a.config.shares_tokenizer_with(engine_b.config)
         if same_tok is None:
             same_tok = tokenizers_equivalent(engine_a.tokenizer, engine_b.tokenizer)
         use_bpb = not same_tok
 
-        gen_a = engine_a.generate(probes, n_samples=1, max_new_tokens=max_new_tokens)
-        gen_b = engine_b.generate(probes, n_samples=1, max_new_tokens=max_new_tokens)
+        # Allow callers (e.g. CapabilityRadar under sampling) to pass the same
+        # generations used for task evaluation, so accuracy and BD reference
+        # identical outputs.
+        gen_a = pre_gen_a if pre_gen_a is not None else engine_a.generate(
+            probes, n_samples=1, max_new_tokens=max_new_tokens,
+        )
+        gen_b = pre_gen_b if pre_gen_b is not None else engine_b.generate(
+            probes, n_samples=1, max_new_tokens=max_new_tokens,
+        )
 
         outputs_a = [comps[0] for comps in gen_a.completions]
         outputs_b = [comps[0] for comps in gen_b.completions]

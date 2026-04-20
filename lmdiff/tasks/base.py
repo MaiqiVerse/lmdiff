@@ -73,11 +73,23 @@ class Task:
         self.evaluator = evaluator
         self.max_new_tokens = max_new_tokens
 
-    def run(self, engine: InferenceEngine) -> TaskResult:
-        """Generate on each probe, evaluate, aggregate."""
-        gen = engine.generate(
-            self.probes.texts, n_samples=1, max_new_tokens=self.max_new_tokens,
-        )
+    def run(
+        self,
+        engine: InferenceEngine,
+        pre_generated: Any = None,
+    ) -> TaskResult:
+        """Generate on each probe, evaluate, aggregate.
+
+        Pass pre_generated (a GenerationResult) to reuse outputs from a
+        prior engine.generate() call — required when pairing task accuracy
+        with BD under sampling decode, so both views share the same samples.
+        """
+        if pre_generated is not None:
+            gen = pre_generated
+        else:
+            gen = engine.generate(
+                self.probes.texts, n_samples=1, max_new_tokens=self.max_new_tokens,
+            )
 
         per_probe: list[EvalResult] = []
         for i, probe in enumerate(self.probes):

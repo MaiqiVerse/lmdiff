@@ -21,12 +21,20 @@ class GenerationResult:
 
 @dataclass
 class ForwardResult:
-    """Output of InferenceEngine.score() and get_logits()."""
+    """Output of InferenceEngine.score() and get_logits().
+
+    probe_slices (get_logits only) locate the probe tokens within input_ids:
+    input_ids[probe_slice] == probe token ids. To get the logits that predict
+    probe tokens, index logits with slice(probe_slice.start - 1, probe_slice.stop - 1).
+    When probe_slice.start == 0 (no prefix, no BOS), the first probe token has
+    no preceding position, so only len(probe) - 1 predictions are available.
+    """
     prompts: list[str]
     log_probs: list[np.ndarray] | None = None
     logits: list[torch.Tensor] | None = None
     token_ids: list[list[int]] | list[list[list[int]]] | None = None
     cross_entropies: list[float] | None = None
+    probe_slices: list[slice] | None = None
     metadata: dict = field(default_factory=dict)
 
 
@@ -90,6 +98,36 @@ class InferenceEngine:
         parts.append(text)
         return "\n".join(parts)
 
+    def _prefix_text(self) -> str:
+        """Text before the probe, or '' if no system_prompt/context."""
+        parts: list[str] = []
+        if self.config.system_prompt:
+            parts.append(self.config.system_prompt)
+        if self.config.context:
+            for msg in self.config.context:
+                parts.append(msg.get("content", ""))
+        if not parts:
+            return ""
+        return "\n".join(parts) + "\n"
+
+    def _encode_for_model(self, probe_text: str) -> tuple[list[int], slice]:
+        """Segment-tokenize prefix and probe separately, concat ids.
+
+        Ensures the probe occupies exactly len(probe_ids) positions regardless
+        of prefix content, so position-aligned metrics (TokenKL, TokenEntropy)
+        can compare the probe span across configs with different prefixes
+        without BPE-boundary drift.
+
+        Returns (full_ids, probe_slice) where full_ids = prefix_ids + probe_ids
+        and input_ids[probe_slice] == probe_ids.
+        """
+        prefix_text = self._prefix_text()
+        prefix_ids = self._tokenizer(prefix_text, add_special_tokens=True)["input_ids"]
+        probe_ids = self._tokenizer(probe_text, add_special_tokens=False)["input_ids"]
+        full_ids = list(prefix_ids) + list(probe_ids)
+        probe_slice = slice(len(prefix_ids), len(full_ids))
+        return full_ids, probe_slice
+
     def _decode_params(self) -> dict[str, Any]:
         d = self.config.decode
         strategy = d.get("strategy", "greedy")
@@ -106,24 +144,26 @@ class InferenceEngine:
     @torch.no_grad()
     def generate(self, prompts: list[str], n_samples: int = 1, max_new_tokens: int = 64) -> GenerationResult:
         """Generate completions for a list of prompts."""
-        built = [self._build_prompt(p) for p in prompts]
         decode_params = self._decode_params()
+
+        if n_samples > 1 and not decode_params.get("do_sample", False):
+            raise ValueError(
+                "n_samples > 1 requires a sampling decode strategy, "
+                "but current strategy is greedy"
+            )
 
         all_completions: list[list[str]] = []
         all_token_ids: list[list[list[int]]] = []
 
-        for text in built:
-            inputs = self._tokenizer(text, return_tensors="pt", padding=True).to(self.device)
-            prompt_len = inputs["input_ids"].shape[1]
-
-            if n_samples > 1 and not decode_params.get("do_sample", False):
-                raise ValueError(
-                    "n_samples > 1 requires a sampling decode strategy, "
-                    "but current strategy is greedy"
-                )
+        for probe in prompts:
+            full_ids, _ = self._encode_for_model(probe)
+            input_ids = torch.tensor([full_ids], device=self.device)
+            attention_mask = torch.ones_like(input_ids)
+            prompt_len = input_ids.shape[1]
 
             outputs = self._model.generate(
-                **inputs,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
                 num_return_sequences=n_samples,
                 **decode_params,
@@ -169,8 +209,7 @@ class InferenceEngine:
         all_token_ids: list[list[int]] = []
 
         for idx in range(n):
-            prompt_text = self._build_prompt(prompts[idx])
-            prompt_ids = self._tokenizer(prompt_text)["input_ids"]
+            prompt_ids, _ = self._encode_for_model(prompts[idx])
 
             if continuation_ids is not None:
                 cont_ids = continuation_ids[idx]
@@ -229,14 +268,15 @@ class InferenceEngine:
 
     @torch.no_grad()
     def get_logits(self, prompts: list[str], topk: int = 256) -> ForwardResult:
-        """Get top-k logits for each prompt."""
-        built = [self._build_prompt(p) for p in prompts]
+        """Get top-k logits for each prompt, plus the probe_slice locating probe tokens in input_ids."""
         all_logits: list[torch.Tensor] = []
         all_token_ids: list[list[int]] = []
+        all_probe_slices: list[slice] = []
 
-        for text in built:
-            inputs = self._tokenizer(text, return_tensors="pt").to(self.device)
-            logits = self._model(**inputs).logits[0]
+        for probe in prompts:
+            full_ids, probe_slice = self._encode_for_model(probe)
+            input_ids = torch.tensor([full_ids], device=self.device)
+            logits = self._model(input_ids=input_ids).logits[0]
 
             if topk > 0 and topk < logits.shape[-1]:
                 top_vals, top_ids = logits.topk(topk, dim=-1)
@@ -249,8 +289,11 @@ class InferenceEngine:
                 all_logits.append(logits.cpu())
                 all_token_ids.append(logits.argmax(dim=-1).cpu().tolist())
 
+            all_probe_slices.append(probe_slice)
+
         return ForwardResult(
             prompts=prompts,
             logits=all_logits,
             token_ids=all_token_ids,
+            probe_slices=all_probe_slices,
         )
