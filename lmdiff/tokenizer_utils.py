@@ -30,15 +30,19 @@ def bpb_from_ce(cross_entropy: float, n_tokens: int, text: str) -> float:
 def tokenizers_equivalent(tok_a: Any, tok_b: Any) -> bool:
     """Check if two tokenizers are substantively equivalent.
 
-    Compares vocab_size, class name, and encoding of canary strings.
+    Compares vocab_size and the id sequences produced on a set of canary
+    strings with special tokens disabled — so slow/fast variants of the
+    same tokenizer (e.g. LlamaTokenizer vs LlamaTokenizerFast) are treated
+    as equivalent, and tokenizers whose `encode()` default differs on
+    `add_special_tokens` are not falsely flagged as different (L-011).
     """
     if tok_a is tok_b:
         return True
     if tok_a.vocab_size != tok_b.vocab_size:
         return False
-    if type(tok_a).__name__ != type(tok_b).__name__:
-        return False
     for text in _CANARY_STRINGS:
-        if tok_a.encode(text) != tok_b.encode(text):
+        ids_a = tok_a(text, add_special_tokens=False)["input_ids"]
+        ids_b = tok_b(text, add_special_tokens=False)["input_ids"]
+        if ids_a != ids_b:
             return False
     return True

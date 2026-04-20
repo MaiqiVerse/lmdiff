@@ -82,3 +82,13 @@ class TestTokenizersEquivalent:
         tok_a = AutoTokenizer.from_pretrained("gpt2")
         tok_b = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
         assert not tokenizers_equivalent(tok_a, tok_b)
+
+    @pytest.mark.slow
+    def test_llama2_slow_vs_fast(self):
+        """Slow and fast variants of the same tokenizer are equivalent (L-011)."""
+        from transformers import AutoTokenizer
+        tok_slow = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", use_fast=False)
+        tok_fast = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", use_fast=True)
+        # Sanity: the two loads genuinely produce different Python classes.
+        assert type(tok_slow).__name__ != type(tok_fast).__name__
+        assert tokenizers_equivalent(tok_slow, tok_fast)

@@ -16,6 +16,7 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-008: JSON determinism requires two layers, don't optimize one away
 - L-009: TokenKL/TokenEntropy crash on sequence length mismatch
 - L-010: CapabilityRadar double-generate breaks accuracy↔BD coupling under sampling
+- L-011: tokenizers_equivalent wrongly split slow/fast tokenizer variants
 
 ---
 
@@ -259,3 +260,26 @@ Both layers are belt-and-suspenders, and **both are load-bearing**.
 **Side effect of the fix:** generate call count dropped from 2×N_domains to 1×N_domains per engine. `TestRunPairMock.test_pair_calls` was updated from `call_count == 6` to `call_count == 3` for the 3-domain fixture.
 
 **Signature:** If accuracy and BD disagree in non-obvious ways under sampling decode (e.g. accuracy says the model answered correctly but BD shows large distance to its own generation), suspect that two independent `generate()` calls were made and only one was evaluated.
+
+---
+
+## L-011: tokenizers_equivalent wrongly split slow/fast tokenizer variants
+
+**Date:** 2026-04-20
+**Phase:** 1
+**Severity:** Silent false-negative — metrics that require matching tokenizers (TokenKL, TokenEntropy) would refuse to run on valid same-tokenizer pairs, and BD would fall back to BPB normalization unnecessarily.
+
+**Symptom:** Loading `meta-llama/Llama-2-7b-hf` with `use_fast=True` (→ `LlamaTokenizerFast`) and again with `use_fast=False` (→ `LlamaTokenizer`) should produce the same token ids. But `tokenizers_equivalent(tok_slow, tok_fast)` returned False. TokenKL/TokenEntropy then raised "requires matching tokenizers" and BD silently switched to BPB mode when neither was warranted.
+
+**Root cause (two bugs stacked):**
+1. **Class-name gate.** The old implementation rejected pairs where `type(a).__name__ != type(b).__name__`. Slow/fast variants are different Python classes by design; rejecting on class name treated a purely implementation-level distinction as a semantic difference.
+2. **`encode()` default drift.** The canary-string comparison used `tok.encode(text)`. HuggingFace's `encode()` takes `add_special_tokens=True` by default, but the *effect* of that default varies across tokenizer subclasses — some add BOS, some don't, and the slow/fast variants of the same tokenizer can disagree on which tokens count as "special" in `encode()`. So even without the class-name gate, encoded ids could legitimately differ for the same input string despite identical underlying vocabularies.
+
+**Fix:**
+- Dropped the `type().__name__` check entirely.
+- Replaced `tok.encode(text)` with `tok(text, add_special_tokens=False)["input_ids"]`. Explicit `add_special_tokens=False` removes the subclass-dependent default and guarantees we compare only the textual tokenization.
+- Rationale is attached to the docstring so a future refactor doesn't reintroduce either trap.
+
+**Signature:** If a metric that declares `requires matching tokenizers` refuses to run on what should be identical tokenizers, or if BD reports `bpb_normalized: True` between two configs that use the same base model, re-run `tokenizers_equivalent` and check whether the canary-string comparison is being thrown off by `add_special_tokens` defaults.
+
+**Test:** `tests/test_tokenizer_utils.py::TestTokenizersEquivalent::test_llama2_slow_vs_fast` (slow — requires the llama2 weights/tokenizer files).
