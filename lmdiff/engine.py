@@ -300,3 +300,15 @@ class InferenceEngine:
             token_ids=all_token_ids,
             probe_slices=all_probe_slices,
         )
+
+
+def release_cuda_cache() -> None:
+    """Free cached CUDA memory. Safe no-op on CPU-only systems.
+
+    Exposed so non-engine modules (e.g. geometry) can trigger CUDA
+    memory release without importing torch directly, preserving the
+    "engine.py is the only module that imports torch/transformers"
+    invariant.
+    """
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()

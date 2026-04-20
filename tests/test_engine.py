@@ -242,3 +242,10 @@ class TestCrossModel:
         for eng in [tiny_model, llama_engine]:
             result = eng.score(["The sky is"], [" blue"])
             assert result.cross_entropies[0] > 0
+
+
+class TestReleaseCudaCache:
+    def test_no_crash(self):
+        from lmdiff.engine import release_cuda_cache
+        release_cuda_cache()
+        release_cuda_cache()

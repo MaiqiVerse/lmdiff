@@ -23,6 +23,7 @@ from lmdiff.metrics.base import MetricLevel, MetricResult
 from lmdiff.tasks.base import EvalResult, TaskResult
 from lmdiff.tasks.capability_radar import DomainRadarResult, RadarResult
 from lmdiff.diff import DiffReport, FullReport, PairTaskResult
+from lmdiff.geometry import GeoResult
 
 SCHEMA_VERSION = "1"
 
@@ -163,6 +164,22 @@ def _diff_report(r: DiffReport) -> dict[str, Any]:
         "metadata": _clean_value(r.metadata),
         "results": [to_json_dict(m) for m in r.results],
         "schema_version": SCHEMA_VERSION,
+    }
+
+
+@to_json_dict.register(GeoResult)
+def _geo_result(r: GeoResult) -> dict[str, Any]:
+    return {
+        "base_name": r.base_name,
+        "change_vectors": _clean_value(r.change_vectors),
+        "cosine_matrix": _clean_value(r.cosine_matrix),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "magnitudes": _clean_value(r.magnitudes),
+        "metadata": _clean_value(r.metadata),
+        "n_probes": r.n_probes,
+        "per_probe": _clean_value(r.per_probe),
+        "schema_version": SCHEMA_VERSION,
+        "variant_names": list(r.variant_names),
     }
 
 

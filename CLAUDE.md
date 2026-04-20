@@ -21,6 +21,7 @@ lmdiff: a Python framework for comparing language model **configurations** (not 
 - **`engine.py` is the ONLY module that imports `transformers` or touches models.** All metrics, tasks, reports, viz receive engine outputs, never model objects.
 - **Metrics are zero-coupled.** No metric imports another metric. Each takes engine outputs → returns `MetricResult`.
 - **Tasks are zero-coupled with metrics.** Tasks use engines directly for generate+evaluate. Metrics measure distributional stats. They are independent systems.
+- **`geometry.py` is zero-coupled with metrics.** It calls `engine.generate` + `engine.score` directly and computes its own CEs. It does NOT import `BehavioralDistance` or any other metric. It MAY import `tokenizer_utils` and `engine.release_cuda_cache` (shared helpers, not metrics).
 - **`viz` and `html` are optional deps.** Core functionality (metrics, BD, CLI JSON output) must work with only `torch`, `transformers`, `numpy`, `typer`, `rich`, `pyyaml`.
 - **ProbeSet is immutable after loading.** Never mutate probes in place.
 - **All metric results use `MetricResult` dataclass.** Report layer doesn't know metric internals.
@@ -74,8 +75,8 @@ class ModelDiff:
 
 # geometry.py
 class ChangeGeometry:
-    def __init__(self, base: Config, variants: dict[str, Config], prompts, n_samples=5)
-    def analyze(self) -> GeoResult
+    def __init__(self, base: Config, variants: dict[str, Config], prompts, n_samples=1)
+    def analyze(self, max_new_tokens: int = 16) -> GeoResult
 ```
 
 ## Behavioral Distance formula
@@ -130,22 +131,22 @@ lmdiff/
 └── cli.py               # typer app: compare, geometry, run-task, list-metrics
 ```
 
-## Implementation order
+## Implementation status
 
-Build and test in this exact sequence. Each step must pass tests before moving on.
+Phase 1 (complete, published as lmdiff-kit v0.1.1):
+Steps 1-12 all done. v0.1.1 added probe-slice alignment + bugfixes.
 
-1. `config.py` + `tests/test_config.py`
-2. `engine.py` (use gpt2 for all tests) + `tests/test_engine.py`
-3. `tokenizer_utils.py` + tests
-4. `metrics/base.py`
-5. `metrics/output/token_entropy.py` + `token_kl.py` + tests (use mock logits)
-6. `metrics/output/behavioral_distance.py` + tests (use gpt2, tiny prompts)
-7. `probes/loader.py` + `probes/v01.json` (30 probes minimum) + tests
-8. `tasks/base.py` + `tasks/evaluators.py` (ExactMatch, ContainsAnswer, MultipleChoice) + tests
-9. `tasks/capability_radar.py` (3 dimensions: math/code/knowledge, 30 probes each) + tests
-10. `diff.py` (wire engine + metrics + probes) + integration test
-11. `report/terminal.py` + `report/json_report.py`
-12. `cli.py` (compare + run-task commands) + end-to-end test
+Phase 2 (current):
+1. `geometry.py` — ChangeGeometry implementation + tests
+2. Quantization support (Config.quantize) — needed for 7B+ models
+3. Chat template support (Config.use_chat_template) — needed for instruct models
+4. `probes/adapters.py` — from_lm_eval() implementation
+5. LoglikelihoodChoice evaluator
+6. Representation metrics (cosine_similarity, cka, effective_rank)
+
+Already done (pre-Phase-2):
+- Config.dtype for model precision control
+- sentencepiece/tiktoken/protobuf in core dependencies
 
 ## Coding conventions
 
@@ -177,6 +178,8 @@ Build and test in this exact sequence. Each step must pass tests before moving o
 - Do NOT forget BPB normalization when tokenizers differ.
 - Do NOT make ProbeSet mutable.
 - Do NOT put matplotlib in core dependencies. It's in `[viz]` extra.
+- Do NOT make `geometry.py` import `BehavioralDistance` or any metric — it computes CE directly via `engine.score`.
+- Do NOT make `geometry.py` import `torch` — use `engine.release_cuda_cache()` for CUDA memory release.
 
 ## When to update LESSONS.md
 

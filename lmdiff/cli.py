@@ -154,6 +154,81 @@ def radar(
         print_radar(result)
 
 
+def _parse_variant_spec(spec: str) -> tuple[str, str]:
+    """Split a 'name=model_id' variant spec into (name, model_id).
+
+    Rejects specs missing '=', or with blank left/right, via typer.BadParameter.
+    """
+    if "=" not in spec:
+        raise typer.BadParameter(
+            f"Variant '{spec}' must be in 'name=model_id' format"
+        )
+    name, model_id = spec.split("=", 1)
+    name = name.strip()
+    model_id = model_id.strip()
+    if not name:
+        raise typer.BadParameter(f"Variant spec '{spec}' has an empty name")
+    if not model_id:
+        raise typer.BadParameter(f"Variant spec '{spec}' has an empty model id")
+    return name, model_id
+
+
+@app.command()
+def geometry(
+    base: str = typer.Argument(..., help="Base model HF id or path"),
+    variants: list[str] = typer.Argument(
+        ...,
+        help=(
+            "Variant specs in 'name=model_id' format, "
+            "e.g. '13b=meta-llama/Llama-2-13b-hf'"
+        ),
+    ),
+    probes: str = typer.Option("v01", help="Probe set name or path (default: v01)"),
+    max_new_tokens: int = typer.Option(16, help="Max new tokens for generation"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model precision: bfloat16, float16, float32 (default: auto)"),
+    output_json: bool = typer.Option(False, "--json", help="Output JSON instead of rich table"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write output to file"),
+) -> None:
+    """Analyze change geometry: one base vs multiple named variants."""
+    parsed: dict[str, str] = {}
+    for spec in variants:
+        name, model_id = _parse_variant_spec(spec)
+        if name in parsed:
+            raise typer.BadParameter(f"Duplicate variant name: '{name}'")
+        parsed[name] = model_id
+
+    probes_path = _resolve_probes_path(probes)
+
+    from lmdiff.config import Config
+    from lmdiff.geometry import ChangeGeometry
+    from lmdiff.probes.loader import ProbeSet
+
+    ps = ProbeSet.from_json(probes_path)
+    variant_configs = {
+        name: Config(model=model_id, dtype=dtype, name=name)
+        for name, model_id in parsed.items()
+    }
+    cg = ChangeGeometry(
+        base=Config(model=base, dtype=dtype),
+        variants=variant_configs,
+        prompts=ps,
+    )
+    result = cg.analyze(max_new_tokens=max_new_tokens)
+
+    if output_json:
+        from lmdiff.report.json_report import to_json, write_json
+
+        if output:
+            write_json(result, output)
+            Console().print(f"Written to {output}")
+        else:
+            typer.echo(to_json(result))
+    else:
+        from lmdiff.report.terminal import print_geometry
+
+        print_geometry(result)
+
+
 @app.command(name="run-task")
 def run_task(
     model: str = typer.Argument(..., help="HuggingFace model ID or path"),
