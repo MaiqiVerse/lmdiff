@@ -233,11 +233,10 @@ class TestRunPairMock:
         assert result.engine_a_name == "model_a"
         assert result.engine_b_name == "model_b"
 
-        # Each domain: 1 Task.run(engine_a) + 1 Task.run(engine_b) + BD generate calls
-        # engine_a.generate called: 3 (task) + 3 (BD) = 6 times
-        # engine_b.generate called: 3 (task) + 3 (BD) = 6 times
-        assert engine_a.generate.call_count == 6
-        assert engine_b.generate.call_count == 6
+        # Post L-010: radar generates once per engine per domain, sharing
+        # outputs between the task evaluator and BD. 3 domains × 1 = 3 calls.
+        assert engine_a.generate.call_count == 3
+        assert engine_b.generate.call_count == 3
 
         for d in result.domains:
             assert d in result.bd_by_domain
@@ -247,6 +246,44 @@ class TestRunPairMock:
             assert result.a_by_domain[d].bd_vs_baseline is None
             assert result.b_by_domain[d].bd_vs_baseline is None
             assert result.bd_by_domain[d] is not None
+
+
+class TestSingleGenerationReused:
+    """Radar must generate once per engine per domain (L-010)."""
+
+    def test_generate_count_matches_domain_count(self):
+        probes = _make_probes({"math": 2, "code": 2})
+
+        def gen_side_effect(texts, n_samples=1, max_new_tokens=16):
+            gen = MagicMock()
+            gen.completions = [["ans"] for _ in texts]
+            gen.token_ids = [[[7]] for _ in texts]
+            return gen
+
+        def score_side_effect(prompts, continuations=None, continuation_ids=None):
+            sr = MagicMock()
+            sr.cross_entropies = [1.0] * len(prompts)
+            sr.token_ids = [[[7]]] * len(prompts)
+            return sr
+
+        def _mk_engine(name: str) -> MagicMock:
+            e = MagicMock()
+            e.model_name = name
+            e.generate.side_effect = gen_side_effect
+            e.score.side_effect = score_side_effect
+            e.config = MagicMock()
+            e.config.shares_tokenizer_with.return_value = True
+            e.tokenizer = MagicMock()
+            return e
+
+        engine_a = _mk_engine("a")
+        engine_b = _mk_engine("b")
+        radar = CapabilityRadar(probes, evaluator=ContainsAnswer())
+        radar.run_pair(engine_a, engine_b)
+
+        # 2 domains × 1 generate per engine = 2 calls each (not 4).
+        assert engine_a.generate.call_count == 2
+        assert engine_b.generate.call_count == 2
 
 
 class TestPrintRadarMock:

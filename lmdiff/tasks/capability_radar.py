@@ -81,7 +81,11 @@ class CapabilityRadar:
             )
 
     def _run_task_for_domain(
-        self, domain: str, domain_probes: ProbeSet, engine: InferenceEngine,
+        self,
+        domain: str,
+        domain_probes: ProbeSet,
+        engine: InferenceEngine,
+        pre_generated: Any = None,
     ) -> TaskResult:
         task = Task(
             name=f"radar_{domain}",
@@ -89,7 +93,7 @@ class CapabilityRadar:
             evaluator=self.evaluator,
             max_new_tokens=self.max_new_tokens,
         )
-        return task.run(engine)
+        return task.run(engine, pre_generated=pre_generated)
 
     def run_single(self, engine: InferenceEngine) -> RadarResult:
         """Accuracy-only radar for one engine."""
@@ -135,12 +139,24 @@ class CapabilityRadar:
         for d in domains:
             domain_probes = by_domain[d]
 
-            tr_a = self._run_task_for_domain(d, domain_probes, engine_a)
-            tr_b = self._run_task_for_domain(d, domain_probes, engine_b)
+            # Generate once per engine, share the outputs between the task
+            # evaluator and BD. Under sampling decode, two independent
+            # generate() calls diverge; accuracy and BD would end up
+            # describing different samples. See L-010.
+            gen_a = engine_a.generate(
+                domain_probes.texts, n_samples=1, max_new_tokens=self.max_new_tokens,
+            )
+            gen_b = engine_b.generate(
+                domain_probes.texts, n_samples=1, max_new_tokens=self.max_new_tokens,
+            )
+
+            tr_a = self._run_task_for_domain(d, domain_probes, engine_a, pre_generated=gen_a)
+            tr_b = self._run_task_for_domain(d, domain_probes, engine_b, pre_generated=gen_b)
 
             bd_result = bd_metric.compute(
                 engine_a, engine_b, domain_probes.texts,
                 max_new_tokens=self.max_new_tokens,
+                pre_gen_a=gen_a, pre_gen_b=gen_b,
             )
 
             a_results[d] = DomainRadarResult(

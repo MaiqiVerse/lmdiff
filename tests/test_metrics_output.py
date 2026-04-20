@@ -261,3 +261,109 @@ class TestTokenKLMetric:
             warnings.simplefilter("always")
             TokenKL().compute(engine_a, engine_b, ["probe"])
         assert any("vocab=150000" in str(wi.message) for wi in w)
+
+
+# ── probe_slice alignment: unequal-length sequences (the Part 1 bug) ────
+
+def _make_engine_stub_with_slices(
+    logits_list: list[torch.Tensor],
+    probe_slices: list[slice],
+    tokenizer=None,
+) -> MagicMock:
+    engine = MagicMock()
+    result = MagicMock()
+    result.logits = logits_list
+    result.probe_slices = probe_slices
+    engine.get_logits.return_value = result
+    engine.tokenizer = tokenizer or _SHARED_TOK
+    engine.config = MagicMock()
+    engine.config.shares_tokenizer_with = MagicMock(return_value=True)
+    return engine
+
+
+class TestProbeSliceAlignment:
+    """Unequal-length logits no longer crash; probe_slices align the comparison."""
+
+    def test_token_kl_unequal_seq_len(self):
+        # engine_a: seq_len=10 (no prefix), probe_slice covers all of it
+        # engine_b: seq_len=16 (6-token prefix), probe_slice covers last 10
+        vocab = 50
+        logits_a = torch.randn(10, vocab)
+        logits_b = torch.randn(16, vocab)
+        slice_a = slice(0, 10)
+        slice_b = slice(6, 16)
+
+        engine_a = _make_engine_stub_with_slices([logits_a], [slice_a])
+        engine_b = _make_engine_stub_with_slices([logits_b], [slice_b])
+        result = TokenKL().compute(engine_a, engine_b, ["probe"])
+        assert not math.isnan(result.value)
+        assert not math.isinf(result.value)
+
+    def test_token_entropy_unequal_seq_len(self):
+        vocab = 50
+        logits_a = torch.randn(10, vocab)
+        logits_b = torch.randn(16, vocab)
+        engine_a = _make_engine_stub_with_slices([logits_a], [slice(0, 10)])
+        engine_b = _make_engine_stub_with_slices([logits_b], [slice(6, 16)])
+        result = TokenEntropy().compute(engine_a, engine_b, ["probe"])
+        assert not math.isnan(result.value)
+
+    def test_token_kl_same_config_zero_kl(self):
+        # Both engines have the same prefix+probe layout and same logits
+        # in the probe region → KL ≈ 0.
+        vocab = 30
+        logits = torch.randn(8, vocab)
+        engine_a = _make_engine_stub_with_slices([logits], [slice(2, 8)])
+        engine_b = _make_engine_stub_with_slices([logits], [slice(2, 8)])
+        result = TokenKL().compute(engine_a, engine_b, ["probe"])
+        assert abs(result.value) < 1e-5
+
+    def test_token_kl_matches_manual_computation_on_probe_span(self):
+        # Same vocab across A and B. A has no prefix (logits 5 positions,
+        # probe_slice=slice(0,5) → 4 probe-predicting positions).
+        # B has 2-token prefix (logits 7 positions, probe_slice=slice(2,7)
+        # → 5 probe-predicting positions). Tail-align drops B's first probe
+        # prediction → both compare the final 4 positions.
+        vocab = 10
+        logits_a = torch.randn(5, vocab)
+        logits_b = torch.randn(7, vocab)
+        engine_a = _make_engine_stub_with_slices([logits_a], [slice(0, 5)])
+        engine_b = _make_engine_stub_with_slices([logits_b], [slice(2, 7)])
+        result = TokenKL().compute(engine_a, engine_b, ["probe"])
+
+        # Manual: A predicts probe[1..4] at logits_a[0:4]; B predicts same
+        # range at logits_b[2:6] (skipping the "predict probe[0]" slot).
+        la = logits_a[0:4].float()
+        lb = logits_b[2:6].float()
+        la_logp = torch.log_softmax(la, dim=-1)
+        lb_logp = torch.log_softmax(lb, dim=-1)
+        pa = torch.exp(la_logp)
+        pb = torch.exp(lb_logp)
+        kl_ab = (pa * (la_logp - lb_logp)).sum(dim=-1).mean().item()
+        kl_ba = (pb * (lb_logp - la_logp)).sum(dim=-1).mean().item()
+        expected_sym = (kl_ab + kl_ba) / 2
+
+        assert abs(result.value - expected_sym) < 1e-5
+
+
+@pytest.mark.slow
+class TestTokenKLIntegration:
+    """TokenKL with real engines where prefixes differ (the bug from the report)."""
+
+    def test_no_prefix_vs_with_prefix_does_not_crash(self):
+        from lmdiff.config import Config
+        from lmdiff.engine import InferenceEngine
+        base = InferenceEngine(Config(model="gpt2"))
+        variant = InferenceEngine(Config(model="gpt2", system_prompt="Be concise."))
+        result = TokenKL().compute(base, variant, ["The capital of France is"])
+        assert not math.isnan(result.value)
+        assert not math.isinf(result.value)
+        assert result.value >= 0
+
+    def test_same_config_kl_near_zero(self):
+        from lmdiff.config import Config
+        from lmdiff.engine import InferenceEngine
+        eng_a = InferenceEngine(Config(model="gpt2"))
+        eng_b = InferenceEngine(Config(model="gpt2"))
+        result = TokenKL().compute(eng_a, eng_b, ["The capital of France is"])
+        assert abs(result.value) < 1e-4

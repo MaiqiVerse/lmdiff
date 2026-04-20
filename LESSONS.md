@@ -14,6 +14,8 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-006: ContainsAnswer substring match on short expected is biased
 - L-007: Typer CliRunner mixes stderr warnings into stdout
 - L-008: JSON determinism requires two layers, don't optimize one away
+- L-009: TokenKL/TokenEntropy crash on sequence length mismatch
+- L-010: CapabilityRadar double-generate breaks accuracy↔BD coupling under sampling
 
 ---
 
@@ -212,3 +214,48 @@ Both layers are belt-and-suspenders, and **both are load-bearing**.
 **Prevented going forward:** This comment/lesson. If refactoring json_report.py, verify `to_json(r) == to_json(r)` byte-for-byte in tests and keep both mechanisms.
 
 **Related test:** `TestDeterministic.test_same_output_twice` in tests/test_json_report.py.
+
+---
+
+## L-009: TokenKL/TokenEntropy crash on sequence length mismatch
+
+**Date:** 2026-04-19
+**Phase:** 1 (v0.1.1)
+**Severity:** Hard crash in TokenKL, silent wrong answer in TokenEntropy.
+
+**Symptom:** `ModelDiff(base_config, variant_with_system_prompt_config).run()` crashes in TokenKL with `RuntimeError: The size of tensor a (10) must match the size of tensor b (16) at non-singleton dimension 0`. TokenEntropy does not crash but the delta averages across prefix positions too, inflating the signal.
+
+**Root cause:** `InferenceEngine.get_logits()` tokenized `_build_prompt(probe)` — i.e. prefix text joined with probe text — as a single string. When configs had different `system_prompt`/`context`, the two engines produced logits tensors with different `seq_len` (one had prefix tokens, one did not). TokenKL's per-position subtraction then broadcast-failed. TokenEntropy silently summed entropy over prefix positions that don't belong to the probe, so the "delta" was not purely a probe-distribution comparison.
+
+**Fix:**
+- Engine: `_encode_for_model(probe)` tokenizes prefix with `add_special_tokens=True` and probe with `add_special_tokens=False`, concatenates token IDs, returns `(full_ids, probe_slice)`. The probe now occupies exactly `len(probe_ids)` positions regardless of prefix content (no BPE-boundary drift either).
+- `ForwardResult.probe_slices: list[slice] | None` exposes where probes live in `input_ids`.
+- Metrics: shared `metrics/output/_slicing.py` helpers (`probe_predicting_logits`, `safe_probe_slice`) convert the probe_slice into the logit-range that predicts probe tokens (accounting for the causal-LM off-by-one). TokenKL and TokenEntropy tail-align when one side has no prefix (P=0, L-1 positions) and the other does (P≥1, L positions).
+- `generate` and `score` also use `_encode_for_model` so BD self-baseline stays consistent with the new tokenization.
+
+**Architecture note:** `_slicing.py` is a shared private helper, not a metric, so it does not violate the zero-coupling rule (same pattern as `_degeneracy.py`).
+
+**Signature:** If a future metric crashes with a size mismatch on dim 0 after calling `get_logits` on two engines, the caller is almost certainly using `result.logits[i]` directly instead of slicing with `probe_slices[i]`.
+
+**Diagnostic tool:** the `TestProbeSliceAlignment` mock tests in `tests/test_metrics_output.py` reproduce the exact 10 vs 16 mismatch without loading models.
+
+---
+
+## L-010: CapabilityRadar double-generate breaks accuracy↔BD coupling under sampling
+
+**Date:** 2026-04-19
+**Phase:** 1 (v0.1.1)
+**Severity:** Silent correctness bug under sampling decode; wasted compute under greedy.
+
+**Symptom:** `CapabilityRadar.run_pair` internally called `engine.generate(...)` once inside `Task.run` (for the accuracy evaluator) and then `BehavioralDistance.compute` called `engine.generate(...)` again. Under greedy decoding these two calls produce identical outputs, so only compute was wasted. Under sampling decode (`decode={"strategy": "sample"}`) the two generations diverge — accuracy and BD then describe different samples of the same prompt.
+
+**Root cause:** `Task.run` and `BehavioralDistance.compute` both owned their own `.generate()` call. There was no mechanism to share generations across the two views.
+
+**Fix:**
+- `Task.run(engine, pre_generated=None)` accepts a pre-existing `GenerationResult` and reuses it instead of calling `engine.generate`.
+- `BehavioralDistance.compute(..., pre_gen_a=None, pre_gen_b=None, **kwargs)` reads generations from kwargs when provided.
+- `CapabilityRadar.run_pair` generates once per engine per domain, passes the same `GenerationResult` to both the task evaluator and to BD.
+
+**Side effect of the fix:** generate call count dropped from 2×N_domains to 1×N_domains per engine. `TestRunPairMock.test_pair_calls` was updated from `call_count == 6` to `call_count == 3` for the 3-domain fixture.
+
+**Signature:** If accuracy and BD disagree in non-obvious ways under sampling decode (e.g. accuracy says the model answered correctly but BD shows large distance to its own generation), suspect that two independent `generate()` calls were made and only one was evaluated.

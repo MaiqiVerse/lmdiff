@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from lmdiff.metrics.base import BaseMetric, MetricLevel, MetricResult
+from lmdiff.metrics.output._slicing import probe_predicting_logits, safe_probe_slice
 from lmdiff.tokenizer_utils import tokenizers_equivalent
 
 if TYPE_CHECKING:
@@ -62,8 +63,27 @@ class TokenKL(BaseMetric):
 
         per_prompt: list[dict] = []
         for i, probe in enumerate(probes):
-            logits_a = result_a.logits[i].float()
-            logits_b = result_b.logits[i].float()
+            slice_a = safe_probe_slice(result_a, i)
+            slice_b = safe_probe_slice(result_b, i)
+            logits_a = probe_predicting_logits(result_a.logits[i], slice_a).float()
+            logits_b = probe_predicting_logits(result_b.logits[i], slice_b).float()
+
+            # P=0 (no prefix, no BOS) yields len(probe)-1 positions; P>=1 yields
+            # len(probe). When one engine is P=0 and the other P>=1, tail-align:
+            # drop the extra "predict probe[0] given prefix" position from the
+            # longer side so both compare the same probe token predictions.
+            min_len = min(logits_a.shape[0], logits_b.shape[0])
+            if min_len == 0:
+                per_prompt.append({
+                    "probe": probe,
+                    "kl_ab": float("nan"),
+                    "kl_ba": float("nan"),
+                    "symmetric": float("nan"),
+                    "skipped": True,
+                })
+                continue
+            logits_a = logits_a[-min_len:]
+            logits_b = logits_b[-min_len:]
 
             kl_ab = _kl_divergence(logits_a, logits_b)
             kl_ba = _kl_divergence(logits_b, logits_a)
@@ -76,6 +96,9 @@ class TokenKL(BaseMetric):
                 "kl_ba": float(kl_ba.mean()),
                 "symmetric": float((kl_ab.mean() + kl_ba.mean()) / 2),
             })
+
+        if not kl_ab_list:
+            raise ValueError("all probes yielded zero-length probe spans; cannot compute KL")
 
         mean_kl_ab = float(np.mean([kl.mean() for kl in kl_ab_list]))
         mean_kl_ba = float(np.mean([kl.mean() for kl in kl_ba_list]))

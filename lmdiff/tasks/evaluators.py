@@ -34,6 +34,8 @@ class ContainsAnswer(BaseEvaluator):
     def evaluate(self, output, expected, probe_metadata=None):
         if expected is None:
             return False, 0.0, {"reason": "no_expected"}
+        if expected == "":
+            return False, 0.0, {"reason": "empty_expected"}
         o = output if self.case_sensitive else output.lower()
         e = expected if self.case_sensitive else expected.lower()
         pos = o.find(e)
@@ -53,7 +55,7 @@ class MultipleChoice(BaseEvaluator):
         if probe_metadata is None or "correct_index" not in probe_metadata:
             return False, 0.0, {"reason": "missing_mc_metadata"}
 
-        text = output.strip()
+        text = output.strip().upper()
         letter_match = re.search(r"\b([A-Z])\b", text)
         if letter_match:
             predicted = ord(letter_match.group(1)) - ord("A")
