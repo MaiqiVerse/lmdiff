@@ -26,6 +26,7 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-018: JSON dict keys come back alphabetical, not in insertion order
 - L-019: default code axis uses capability MCQ, not codegen task
 - L-020: lm-eval tasks can sys.exit() instead of raising
+- L-021: tests of optional-dep features need skipif, or CI breaks silently
 
 ---
 
@@ -571,3 +572,25 @@ In-memory GeoResult and JSON-roundtripped GeoResult are NOT interchangeable on `
 **Broader implication:** Any code path that invokes lm-eval internals across a large task set (future batch loaders, validation suites, benchmarks against the full registry) needs `except BaseException:`. Confining `except Exception:` to narrow, per-call contexts where a `sys.exit` would be a clear bug on lm-eval's side is still fine; but sweep code that must keep going must catch broader.
 
 **Related code:** `scripts/discover_lm_eval_tasks.py::read_task_config_shallow`.
+
+---
+
+## L-021: tests of optional-dep features need skipif, or CI breaks silently
+
+**Date:** 2026-04-21
+**Phase:** 2 (Commit A follow-up)
+**Severity:** CI regression surfaces silently — local suite passes, CI red. Wasted about half an hour the first time.
+
+**Symptom:** Commit A added `GeoResult.cluster(...)` which lazy-imports `scipy.cluster.hierarchy`. Local `pytest tests/` was 388 passed; CI run `24709354990` failed on three `TestCluster` tests with `ImportError: scipy required for hierarchical clustering. Install with: pip install lmdiff-kit[viz]`. Rerunning locally still passed.
+
+**Root cause:** scipy lived only in the `[viz]` optional extra. The local env had installed lm-eval earlier, which transitively pulls scipy, so scipy was present for my test runs without me realizing it. GitHub Actions installed only `[dev]` (via `pip install -e ".[dev]"`), which does not include scipy. Hence the cluster tests hit the real `ImportError` path — which was the code under test for one of them, but fatal for the three that expected scipy to be available.
+
+**Fix (two parts):**
+1. In `tests/test_geometry.py` introduced a `scipy_required` `pytest.mark.skipif` decorator mirroring the `matplotlib_required` pattern already used in `tests/test_viz_radar.py`. Applied to the three tests that need a working scipy call. The four tests that exercise ValueError / bad-method / bad-metric / ImportError-when-scipy-missing do NOT get the skip — they exercise paths that short-circuit before scipy is imported, so they must run in every env.
+2. Updated `.github/workflows/test.yml` to install `[dev,viz]` so CI actually runs the skipped-ifs instead of skipping. Contributor envs that install only `[dev]` still work (tests skip gracefully).
+
+**Rule:** any test that touches an optional-dep path must either (a) install the dep in CI *and* be decorated with `pytest.skipif(not _dep_available(), reason=...)` so contributor envs degrade cleanly, or (b) test only the ImportError-with-install-hint branch (which works without the dep installed). Never rely on "the dep happens to be in my env because some other extra pulled it in."
+
+**Diagnostic signature:** local `pytest` green, GitHub CI red on the same commit, failing test invokes an optional import. The delta is usually which extras got pip-installed.
+
+**Related code / workflow:** `tests/test_geometry.py::TestCluster`, `tests/test_viz_radar.py::TestRender`, `.github/workflows/test.yml`.
