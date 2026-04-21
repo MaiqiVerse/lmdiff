@@ -18,6 +18,7 @@ from lmdiff.tasks.evaluators import (
     Gsm8kNumberMatch,
     MultipleChoice,
 )
+from lmdiff.tasks.loglikelihood import loglikelihood_accuracy
 
 __all__ = [
     "Config",
@@ -42,4 +43,5 @@ __all__ = [
     "MultipleChoice",
     "F1",
     "Gsm8kNumberMatch",
+    "loglikelihood_accuracy",
 ]
