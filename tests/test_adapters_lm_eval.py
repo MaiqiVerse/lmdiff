@@ -165,6 +165,31 @@ class TestMultipleChoicePath:
         observed = {p.expected for p in result}
         assert observed == allowed
 
+    def test_multi_choice_stores_choices_in_metadata(self, monkeypatch):
+        _install_mock_lm_eval(monkeypatch, {"hellaswag": self._make_task()})
+        result = from_lm_eval("hellaswag", limit=3)
+        for probe in result:
+            assert "choices" in probe.metadata
+            assert isinstance(probe.metadata["choices"], list)
+            assert len(probe.metadata["choices"]) >= 2
+            assert "correct_index" in probe.metadata
+            assert isinstance(probe.metadata["correct_index"], int)
+            choices = probe.metadata["choices"]
+            idx = probe.metadata["correct_index"]
+            assert 0 <= idx < len(choices)
+            # Primary expected must match choices[correct_index]
+            assert probe.expected == choices[idx].strip()
+
+    def test_generate_until_has_no_choices_metadata(self, monkeypatch):
+        task = _make_fake_task(
+            output_type="generate_until",
+            docs=[{"id": "g", "text": "Q?", "target": "A"}],
+        )
+        _install_mock_lm_eval(monkeypatch, {"gsm8k": task})
+        result = from_lm_eval("gsm8k", limit=1)
+        assert "choices" not in result[0].metadata
+        assert "correct_index" not in result[0].metadata
+
 
 # ── generate_until happy path (gsm8k) ──────────────────────────────────
 
@@ -279,6 +304,11 @@ class TestRegistryInvariants:
     def test_mbpp_requires_execution(self):
         info = KNOWN_TASK_DOMAINS["mbpp"]
         assert info.requires_execution is True
+
+    def test_nq_open_instead_of_naturalqs(self):
+        # L-020 era fix: lm-eval 0.4.x uses nq_open, not naturalqs.
+        assert "nq_open" in KNOWN_TASK_DOMAINS
+        assert "naturalqs" not in KNOWN_TASK_DOMAINS
 
     def test_taskinfo_is_frozen(self):
         info = KNOWN_TASK_DOMAINS["hellaswag"]

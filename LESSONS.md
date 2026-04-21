@@ -25,6 +25,7 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-017: δ = constant + selective decomposition recovers cosine resolution
 - L-018: JSON dict keys come back alphabetical, not in insertion order
 - L-019: default code axis uses capability MCQ, not codegen task
+- L-020: lm-eval tasks can sys.exit() instead of raising
 
 ---
 
@@ -550,3 +551,23 @@ In-memory GeoResult and JSON-roundtripped GeoResult are NOT interchangeable on `
 **Implication:** δ-magnitude radar and accuracy radar may have different axis sets when executional tasks are involved. This is by design — behavior and result probe different things.
 
 **Enforcement:** `KNOWN_TASK_DOMAINS["mmlu_college_computer_science"].notes` includes "Default code axis." and `KNOWN_TASK_DOMAINS["humaneval"].requires_execution == True` with a note about magnitude-only usage. Default-task-picker scripts should check `requires_execution` before adding a task to the accuracy radar axis.
+
+---
+
+## L-020: lm-eval tasks can `sys.exit()` instead of raising
+
+**Date:** 2026-04-20
+**Phase:** 2 (Step 4)
+**Severity:** Script-level gotcha — `except Exception` is insufficient, `except BaseException` is required.
+
+**Symptom:** While building `scripts/discover_lm_eval_tasks.py` to enumerate all lm-eval tasks, the unfiltered 14069-task run would exit abruptly with `exit code 1` and no Python traceback, after processing a portion of the registry. Changing the exception type in the `try: tm._get_config(name)` block from `Exception` to `BaseException` fixed it.
+
+**Root cause:** Some lm-eval task configs depend on system-level binaries (e.g. SWI-Prolog for prolog tasks, specific toolchains for certain code tasks). When the dep is missing, lm-eval's config loader calls `sys.exit(1)` during `_get_config` — this raises `SystemExit`, which inherits from `BaseException` **not** `Exception`. A `try: ... except Exception:` around the config read lets `SystemExit` propagate up and kills the script. `sys.exit()` skips traceback printing, so the failure looks mysterious.
+
+**Fix:** In discovery / enumeration code that sweeps across many lm-eval tasks, wrap per-task config reads in `except BaseException:` with an explanatory comment. Specifically in `scripts/discover_lm_eval_tasks.py::read_task_config_shallow`.
+
+**Signature:** Script exits with code 1 partway through enumerating many lm-eval tasks; no traceback; last line of stderr looks normal (e.g. `Error: SWI-Prolog (swipl) is not installed...`). Don't debug `_get_config`; widen the exception handler.
+
+**Broader implication:** Any code path that invokes lm-eval internals across a large task set (future batch loaders, validation suites, benchmarks against the full registry) needs `except BaseException:`. Confining `except Exception:` to narrow, per-call contexts where a `sys.exit` would be a clear bug on lm-eval's side is still fine; but sweep code that must keep going must catch broader.
+
+**Related code:** `scripts/discover_lm_eval_tasks.py::read_task_config_shallow`.

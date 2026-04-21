@@ -84,7 +84,7 @@ KNOWN_TASK_DOMAINS: dict[str, TaskInfo] = {
     "boolq": TaskInfo("reading", "acc", False, "multiple_choice"),
     "squadv2": TaskInfo("reading", "f1", False, "generate_until"),
     "triviaqa": TaskInfo("knowledge", "exact_match", False, "generate_until"),
-    "naturalqs": TaskInfo("knowledge", "exact_match", False, "generate_until"),
+    "nq_open": TaskInfo("knowledge", "exact_match", False, "generate_until"),
     # --- language ---
     "lambada_openai": TaskInfo("language", "acc", False, "loglikelihood"),
     "wikitext": TaskInfo("language", "word_perplexity", False, "loglikelihood_rolling"),
@@ -179,21 +179,37 @@ def _render_prompt(task: Any, doc: Any, num_fewshot: int | None) -> str:
     return str(task.doc_to_text(doc))
 
 
-def _render_target(task: Any, doc: Any) -> tuple[str | None, list[str]]:
-    """Return (primary_expected, aliases).
+@dataclass(frozen=True)
+class _RenderedTarget:
+    """Result shape for _render_target.
+
+    For generate-until / list-target tasks: primary is a str, aliases is
+    any alternatives, choices / correct_index are None.
+    For multi-choice tasks: primary is choices[correct_index], choices is
+    the full list, correct_index is the gold index. aliases is [].
+    """
+    primary: str | None
+    aliases: list[str]
+    choices: list[str] | None = None
+    correct_index: int | None = None
+
+
+def _render_target(task: Any, doc: Any) -> _RenderedTarget:
+    """Return primary + aliases + (choices, correct_index) for multi-choice.
 
     Multi-answer lm-eval tasks return list[str]; multi-choice tasks
-    return an int choice index. Fall back to str(target) when shape is
-    unexpected.
+    return an int choice index. For multi-choice we also capture the
+    full choices list and the correct_index so downstream loglikelihood
+    scoring can use them without re-reading the task config.
     """
     target = task.doc_to_target(doc)
 
     if isinstance(target, list):
         if not target:
-            return None, []
+            return _RenderedTarget(primary=None, aliases=[])
         primary = str(target[0]).strip()
         aliases = [str(t).strip() for t in target[1:]]
-        return primary, aliases
+        return _RenderedTarget(primary=primary, aliases=aliases)
 
     if isinstance(target, int):
         choices: list[str] | None = None
@@ -215,13 +231,18 @@ def _render_target(task: Any, doc: Any) -> tuple[str | None, list[str]]:
                     choices = [str(c) for c in raw["text"]]
                     break
         if choices is not None and 0 <= target < len(choices):
-            return choices[target].strip(), []
-        # Last-resort: hand back the raw index so callers can inspect.
-        return str(target), []
+            return _RenderedTarget(
+                primary=choices[target].strip(),
+                aliases=[],
+                choices=[c.strip() for c in choices],
+                correct_index=target,
+            )
+        # Bad / missing choices list — fall back to raw index as string.
+        return _RenderedTarget(primary=str(target), aliases=[])
 
     if target is None:
-        return None, []
-    return str(target).strip(), []
+        return _RenderedTarget(primary=None, aliases=[])
+    return _RenderedTarget(primary=str(target).strip(), aliases=[])
 
 
 def from_lm_eval(
@@ -304,7 +325,7 @@ def from_lm_eval(
     probes: list[Probe] = []
     for i, doc in enumerate(docs):
         text = _render_prompt(task, doc, num_fewshot=num_fewshot)
-        primary, aliases = _render_target(task, doc)
+        rt = _render_target(task, doc)
 
         meta: dict[str, Any] = {
             "task_name": task_name,
@@ -313,14 +334,18 @@ def from_lm_eval(
             "requires_execution": info.requires_execution if info is not None else False,
             "doc_idx": i,
         }
-        if aliases:
-            meta["aliases"] = aliases
+        if rt.aliases:
+            meta["aliases"] = rt.aliases
+        if rt.choices is not None:
+            meta["choices"] = rt.choices
+        if rt.correct_index is not None:
+            meta["correct_index"] = rt.correct_index
 
         probes.append(Probe(
             id=f"{task_name}:{i}",
             text=text,
             domain=resolved_domain,
-            expected=primary,
+            expected=rt.primary,
             metadata=meta,
         ))
 
