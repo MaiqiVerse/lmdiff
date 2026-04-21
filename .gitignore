@@ -8,3 +8,4 @@ build/
 .vscode/
 examples/*_report.json
 discovery*.json
+examples/*_figures/
