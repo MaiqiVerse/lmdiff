@@ -11,7 +11,13 @@ from lmdiff.engine import (
 from lmdiff.geometry import ChangeGeometry, GeoResult
 from lmdiff.probes.loader import Probe, ProbeSet
 from lmdiff.tasks.base import BaseEvaluator, EvalResult, Task, TaskResult
-from lmdiff.tasks.evaluators import ContainsAnswer, ExactMatch, MultipleChoice
+from lmdiff.tasks.evaluators import (
+    ContainsAnswer,
+    ExactMatch,
+    F1,
+    Gsm8kNumberMatch,
+    MultipleChoice,
+)
 
 __all__ = [
     "Config",
@@ -34,4 +40,6 @@ __all__ = [
     "ExactMatch",
     "ContainsAnswer",
     "MultipleChoice",
+    "F1",
+    "Gsm8kNumberMatch",
 ]
