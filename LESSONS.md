@@ -24,6 +24,7 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-016: InferenceEngine.__new__ reuse trick is load-bearing
 - L-017: δ = constant + selective decomposition recovers cosine resolution
 - L-018: JSON dict keys come back alphabetical, not in insertion order
+- L-019: default code axis uses capability MCQ, not codegen task
 
 ---
 
@@ -526,3 +527,26 @@ In-memory GeoResult and JSON-roundtripped GeoResult are NOT interchangeable on `
 
 **Related code:** `lmdiff/report/json_report.py::to_json` (sort_keys=True); `lmdiff/geometry.py::GeoResult.per_probe`.
 **Related script:** `scripts/analyze_prompt_length_hypothesis.py` (uncommitted; already follows the documented rule after the fix).
+
+---
+
+## L-019: default code axis uses capability MCQ, not codegen task
+
+**Date:** 2026-04-20
+**Phase:** 2 (Step 4 — lm-eval integration)
+**Severity:** Design-decision record — the default code task for the accuracy radar is not the one most readers would expect, and the reason needs to be discoverable.
+
+**Context:** Step 4 adds `from_lm_eval` adapter and a `KNOWN_TASK_DOMAINS` registry used by future experiment scripts to pick default tasks per axis. The natural choice for the code axis is HumanEval or MBPP — both are iconic LLM code benchmarks. Both have `pass@k` as native metric, which requires code execution.
+
+**Decision:** Default code axis uses `mmlu_college_computer_science` (multi-choice accuracy, no execution). HumanEval and MBPP are in `KNOWN_TASK_DOMAINS` with `requires_execution=True` and remain available for δ-magnitude-only experiments (no accuracy scoring), but are excluded from the default accuracy task set.
+
+**Reasoning:**
+- Accuracy radar is part of v0.2.0 user-facing output; its task set has to use honest native metrics.
+- Non-execution code metrics (BLEU, CodeBLEU, ChrF, CodeBERTScore) correlate poorly with functional correctness (Evtikhiev et al. 2023; CodeScore paper). Using them as a HumanEval-axis accuracy would mislead users more than omitting the axis.
+- Sandboxing for pass@k is ~300 lines of code plus a security review; out of Step 4 scope.
+- `mmlu_college_computer_science` probes code understanding as a multi-choice capability question. Not code generation, but a clean accuracy axis.
+- The framework still distinguishes code-related capability (mmlu_cs) from codegen behavior (humaneval δ-only); they just live on different axes of different radars.
+
+**Implication:** δ-magnitude radar and accuracy radar may have different axis sets when executional tasks are involved. This is by design — behavior and result probe different things.
+
+**Enforcement:** `KNOWN_TASK_DOMAINS["mmlu_college_computer_science"].notes` includes "Default code axis." and `KNOWN_TASK_DOMAINS["humaneval"].requires_execution == True` with a note about magnitude-only usage. Default-task-picker scripts should check `requires_execution` before adding a task to the accuracy radar axis.
