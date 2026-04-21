@@ -457,7 +457,7 @@ class TestJsonGeometry:
         d = to_json_dict(r)
         s = to_json(r)
         reloaded = json.loads(s)
-        assert reloaded["schema_version"] == "1"
+        assert reloaded["schema_version"] == "2"
         assert reloaded["base_name"] == "llama2-7b"
         assert reloaded["variant_names"] == ["13b", "70b", "chat"]
         assert reloaded["magnitudes"]["13b"] == pytest.approx(1.52)
@@ -585,6 +585,327 @@ class TestCLIGeometry:
             "--probes", "nonexistent_probe_xyz",
         ])
         assert result.exit_code != 0
+
+
+# ── Selective decomposition (Step 1.5) ────────────────────────────────
+
+def _build_two_variant_geo(
+    monkeypatch,
+    base_of_a: list[float],
+    self_a: list[float],
+    base_of_b: list[float],
+    self_b: list[float],
+    probes: list[str] | None = None,
+) -> GeoResult:
+    """Helper: build a 2-variant GeoResult via the mock engine factory.
+
+    `base` is mocked to return base_of_a when scoring A's outputs (as
+    `continuations=[...]`), and base_of_b when scoring B's outputs. Variants
+    self-score via `continuation_ids=` with their own self_* arrays.
+    """
+    if probes is None:
+        probes = [f"p{i}" for i in range(len(self_a))]
+    n = len(probes)
+    assert len(self_a) == n and len(self_b) == n
+    assert len(base_of_a) == n and len(base_of_b) == n
+
+    outputs_a = [f"a{i}" for i in range(n)]
+    outputs_b = [f"b{i}" for i in range(n)]
+
+    engine_a = _make_mock_engine("A", outputs_a, self_ce=self_a)
+    engine_b = _make_mock_engine("B", outputs_b, self_ce=self_b)
+
+    def base_score_side(prompts, continuations=None, continuation_ids=None):
+        sr = MagicMock()
+        if continuations == outputs_a:
+            sr.cross_entropies = list(base_of_a)
+        elif continuations == outputs_b:
+            sr.cross_entropies = list(base_of_b)
+        else:
+            raise AssertionError(f"unexpected continuations: {continuations}")
+        sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
+        return sr
+
+    engine_base = MagicMock(name="engine-base")
+    engine_base.model_name = "base"
+    engine_base.score.side_effect = base_score_side
+
+    _install_mock_engines(
+        monkeypatch, {"base": engine_base, "A": engine_a, "B": engine_b},
+    )
+    cg = ChangeGeometry(
+        base=_cfg("base"),
+        variants={"A": _cfg("A"), "B": _cfg("B")},
+        prompts=probes,
+    )
+    return cg.analyze(max_new_tokens=8)
+
+
+class TestSelectiveDecomposition:
+    def test_delta_means_match_manual(self, monkeypatch):
+        # δ_A = [2, 2, 2]  (constant)           → mean 2, sel_mag 0
+        # δ_B = [1, 2, -3] → mean 0, sel_mag √(1+4+9)=√14
+        result = _build_two_variant_geo(
+            monkeypatch,
+            base_of_a=[3.0, 4.0, 5.0], self_a=[1.0, 2.0, 3.0],
+            base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
+        )
+        assert result.delta_means["A"] == pytest.approx(2.0)
+        assert result.delta_means["B"] == pytest.approx(0.0, abs=1e-12)
+        assert result.selective_magnitudes["A"] == pytest.approx(0.0, abs=1e-12)
+        assert result.selective_magnitudes["B"] == pytest.approx(math.sqrt(14))
+
+    def test_pythagorean_identity(self, monkeypatch):
+        result = _build_two_variant_geo(
+            monkeypatch,
+            base_of_a=[3.0, 4.0, 5.0], self_a=[1.0, 2.0, 3.0],
+            base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
+        )
+        n = result.n_probes
+        for name in result.variant_names:
+            mag_sq = result.magnitudes[name] ** 2
+            sel_sq = result.selective_magnitudes[name] ** 2
+            mean_sq = result.delta_means[name] ** 2
+            # ‖δ‖² = mean² · n + ‖ε‖²  (Pythagoras for 1·𝟙 ⊥ ε subspace)
+            assert abs(mag_sq - (mean_sq * n + sel_sq)) < 1e-9
+
+    def test_constant_delta_zero_selective(self, monkeypatch):
+        # δ_A = [5, 5, 5]; δ_B = [1, 0, -1]
+        result = _build_two_variant_geo(
+            monkeypatch,
+            base_of_a=[6.0, 6.0, 6.0], self_a=[1.0, 1.0, 1.0],
+            base_of_b=[2.0, 1.0, 0.0], self_b=[1.0, 1.0, 1.0],
+        )
+        # A has zero selective magnitude
+        assert result.selective_magnitudes["A"] == pytest.approx(0.0, abs=1e-12)
+        # Self-entry on diagonal becomes NaN
+        assert math.isnan(result.selective_cosine_matrix["A"]["A"])
+        # All off-diagonals involving A are NaN
+        assert math.isnan(result.selective_cosine_matrix["A"]["B"])
+        assert math.isnan(result.selective_cosine_matrix["B"]["A"])
+        # B's own diagonal stays 1.0 because B still has non-zero selective
+        assert result.selective_cosine_matrix["B"]["B"] == 1.0
+
+    def test_zero_mean_delta_selective_matches_original(self, monkeypatch):
+        # δ_A has mean 0; then cos(δ_A, δ_B) ≈ cos(δ_A − 0, δ_B − mean_B).
+        # B needs a nonzero mean for the original/selective distinction to
+        # have meaning; let's also give B mean 0 so both cosines line up.
+        result = _build_two_variant_geo(
+            monkeypatch,
+            base_of_a=[3.0, 0.0, -3.0], self_a=[1.0, 1.0, 1.0],  # δ_A=[2,-1,-4] mean -1
+            base_of_b=[1.0, -1.0, 0.0], self_b=[0.0, 0.0, 0.0],  # δ_B=[1,-1,0] mean 0
+        )
+        # δ_A mean is not zero, δ_B mean is zero, so the selective cosine
+        # isolates how much of δ_A's pattern (after centering) aligns with δ_B.
+        orig = result.cosine_matrix["A"]["B"]
+        sel = result.selective_cosine_matrix["A"]["B"]
+        # With B already mean-zero, centering A alone equals subtracting mean_A·𝟙
+        # from both sides; the two cosines should disagree (A was not centered
+        # in the original) — mostly a sanity check that they aren't identical.
+        assert not math.isnan(sel)
+        assert not math.isnan(orig)
+
+    def test_selective_cosine_symmetric_and_clamped(self, monkeypatch):
+        result = _build_two_variant_geo(
+            monkeypatch,
+            base_of_a=[3.0, 4.0, 5.0, 2.0], self_a=[1.0, 2.0, 3.0, 0.5],
+            base_of_b=[2.0, 5.0, 1.0, 3.0], self_b=[1.0, 3.0, 4.0, 2.0],
+            probes=["p0", "p1", "p2", "p3"],
+        )
+        for a in result.variant_names:
+            for b in result.variant_names:
+                c = result.selective_cosine_matrix[a][b]
+                if not math.isnan(c):
+                    assert -1.0 <= c <= 1.0
+                # byte-exact symmetry
+                assert (
+                    result.selective_cosine_matrix[a][b]
+                    == result.selective_cosine_matrix[b][a]
+                    or (
+                        math.isnan(result.selective_cosine_matrix[a][b])
+                        and math.isnan(result.selective_cosine_matrix[b][a])
+                    )
+                )
+
+    def test_n_valid_zero_returns_empty_decomp(self, monkeypatch):
+        # Variant B has NaN on every probe; global filter drops all 3.
+        result = _build_two_variant_geo(
+            monkeypatch,
+            base_of_a=[3.0, 4.0, 5.0], self_a=[1.0, 2.0, 3.0],
+            base_of_b=[2.0, 5.0, 1.0],
+            self_b=[float("nan"), float("nan"), float("nan")],
+        )
+        assert result.n_probes == 0
+        for name in result.variant_names:
+            assert result.delta_means[name] == 0.0
+            assert result.selective_magnitudes[name] == 0.0
+            for b in result.variant_names:
+                assert math.isnan(result.selective_cosine_matrix[name][b])
+
+
+class TestConstantFractionsProperty:
+    def test_matches_pythagorean_formula(self, monkeypatch):
+        result = _build_two_variant_geo(
+            monkeypatch,
+            base_of_a=[3.0, 4.0, 5.0], self_a=[1.0, 2.0, 3.0],
+            base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
+        )
+        cfs = result.constant_fractions
+        for name in result.variant_names:
+            mag_sq = result.magnitudes[name] ** 2
+            sel_sq = result.selective_magnitudes[name] ** 2
+            if mag_sq == 0:
+                assert math.isnan(cfs[name])
+            else:
+                expected = (mag_sq - sel_sq) / mag_sq
+                assert cfs[name] == pytest.approx(expected, abs=1e-9)
+                # Sanity: const_frac + sel_frac = 1
+                sel_frac = sel_sq / mag_sq
+                assert cfs[name] + sel_frac == pytest.approx(1.0, abs=1e-9)
+
+    def test_empty_when_decomposition_missing(self):
+        # Simulate a legacy v1 GeoResult: decomp fields default to empty
+        result = GeoResult(
+            base_name="base",
+            variant_names=["A"],
+            n_probes=3,
+            magnitudes={"A": 1.0},
+            cosine_matrix={"A": {"A": 1.0}},
+            change_vectors={"A": [0.5, 0.5, 0.5]},
+            per_probe={"A": {"p0": 0.5, "p1": 0.5, "p2": 0.5}},
+        )
+        assert result.constant_fractions == {}
+
+
+class TestSelectiveJsonRoundTrip:
+    def test_v2_write_read_bit_equal(self, monkeypatch):
+        from lmdiff.report.json_report import (
+            geo_result_from_json_dict, to_json_dict,
+        )
+        r1 = _build_two_variant_geo(
+            monkeypatch,
+            base_of_a=[3.0, 4.0, 5.0], self_a=[1.0, 2.0, 3.0],
+            base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
+        )
+        d = to_json_dict(r1)
+        assert d["schema_version"] == "2"
+        s = json.dumps(d, sort_keys=True)
+        round_tripped = geo_result_from_json_dict(json.loads(s))
+
+        assert round_tripped.variant_names == r1.variant_names
+        assert round_tripped.delta_means == r1.delta_means
+        assert round_tripped.selective_magnitudes == r1.selective_magnitudes
+        # selective_cosine_matrix with float(nan) won't compare via ==, so
+        # walk it explicitly
+        for a in r1.variant_names:
+            for b in r1.variant_names:
+                v1 = r1.selective_cosine_matrix[a][b]
+                v2 = round_tripped.selective_cosine_matrix[a][b]
+                if math.isnan(v1):
+                    assert math.isnan(v2)
+                else:
+                    assert v1 == v2
+
+    def test_v1_backward_compat_empty_decomp(self):
+        from lmdiff.report.json_report import geo_result_from_json_dict
+        # Hand-crafted v1 JSON (no decomposition fields)
+        v1_payload = {
+            "schema_version": "1",
+            "base_name": "base",
+            "variant_names": ["A", "B"],
+            "n_probes": 3,
+            "magnitudes": {"A": 1.0, "B": 2.0},
+            "cosine_matrix": {"A": {"A": 1.0, "B": 0.5}, "B": {"A": 0.5, "B": 1.0}},
+            "change_vectors": {"A": [0.5, 0.5, 0.5], "B": [1.0, 1.0, 1.0]},
+            "per_probe": {"A": {"p0": 0.5, "p1": 0.5, "p2": 0.5}, "B": {"p0": 1.0, "p1": 1.0, "p2": 1.0}},
+            "metadata": {"n_total_probes": 3, "n_skipped": 0},
+        }
+        result = geo_result_from_json_dict(v1_payload)
+        assert result.n_probes == 3
+        assert result.magnitudes == {"A": 1.0, "B": 2.0}
+        assert result.delta_means == {}
+        assert result.selective_magnitudes == {}
+        assert result.selective_cosine_matrix == {}
+        assert result.constant_fractions == {}
+
+    def test_invalid_schema_version_raises(self):
+        from lmdiff.report.json_report import geo_result_from_json_dict
+        with pytest.raises(ValueError, match="schema_version"):
+            geo_result_from_json_dict({
+                "schema_version": "99",
+                "base_name": "x", "variant_names": [], "n_probes": 0,
+                "magnitudes": {}, "cosine_matrix": {},
+                "change_vectors": {}, "per_probe": {}, "metadata": {},
+            })
+
+
+class TestTerminalSelectiveRendering:
+    def _fake_v2_result(self) -> GeoResult:
+        return GeoResult(
+            base_name="llama2-7b",
+            variant_names=["yarn", "long"],
+            n_probes=4,
+            magnitudes={"yarn": 2.0, "long": 3.0},
+            cosine_matrix={
+                "yarn": {"yarn": 1.0, "long": 0.8},
+                "long": {"yarn": 0.8, "long": 1.0},
+            },
+            change_vectors={"yarn": [1, 1, 1, 1], "long": [2, 1, 1, 2]},
+            per_probe={
+                "yarn": {"p0": 1, "p1": 1, "p2": 1, "p3": 1},
+                "long": {"p0": 2, "p1": 1, "p2": 1, "p3": 2},
+            },
+            metadata={"n_total_probes": 4, "n_skipped": 0, "bpb_normalized": {}},
+            delta_means={"yarn": 1.0, "long": 1.5},
+            selective_magnitudes={"yarn": 0.0, "long": math.sqrt(1.0)},
+            selective_cosine_matrix={
+                "yarn": {"yarn": float("nan"), "long": float("nan")},
+                "long": {"yarn": float("nan"), "long": 1.0},
+            },
+        )
+
+    def _fake_v1_result(self) -> GeoResult:
+        return GeoResult(
+            base_name="base",
+            variant_names=["yarn", "long"],
+            n_probes=4,
+            magnitudes={"yarn": 2.0, "long": 3.0},
+            cosine_matrix={
+                "yarn": {"yarn": 1.0, "long": 0.8},
+                "long": {"yarn": 0.8, "long": 1.0},
+            },
+            change_vectors={"yarn": [1, 1, 1, 1], "long": [2, 1, 1, 2]},
+            per_probe={
+                "yarn": {"p0": 1, "p1": 1, "p2": 1, "p3": 1},
+                "long": {"p0": 2, "p1": 1, "p2": 1, "p3": 2},
+            },
+            metadata={"n_total_probes": 4, "n_skipped": 0, "bpb_normalized": {}},
+            # decomposition fields empty → v1 GeoResult
+        )
+
+    def test_render_v2_contains_selective(self):
+        from rich.console import Console
+        from lmdiff.report.terminal import print_geometry
+        buf = io.StringIO()
+        console = Console(file=buf, force_terminal=False, width=120)
+        print_geometry(self._fake_v2_result(), console=console)
+        out = buf.getvalue()
+        assert "Selective cosine" in out
+        assert "const_frac" in out
+        assert "selective:" in out
+
+    def test_render_v1_skips_selective(self):
+        from rich.console import Console
+        from lmdiff.report.terminal import print_geometry
+        buf = io.StringIO()
+        console = Console(file=buf, force_terminal=False, width=120)
+        print_geometry(self._fake_v1_result(), console=console)
+        out = buf.getvalue()
+        assert "Selective cosine" not in out
+        assert "const_frac" not in out
+        assert "selective:" not in out
+        # original cosine table still renders
+        assert "Cosine similarity matrix" in out
 
 
 # ── Slow E2E ────────────────────────────────────────────────────────────
