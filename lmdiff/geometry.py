@@ -31,6 +31,55 @@ from lmdiff.probes.loader import ProbeSet
 from lmdiff.tokenizer_utils import bpb_from_ce, tokenizers_equivalent
 
 
+@dataclass(frozen=True)
+class PCAResult:
+    """PCA projection of change vectors onto principal axes.
+
+    coords[variant] is a tuple of length n_components giving the variant's
+    coordinates in PC-space. Base is implicitly at the origin (it is the
+    zero vector in δ-space by construction).
+    """
+    coords: dict[str, tuple[float, ...]]
+    explained_variance_ratio: tuple[float, ...]
+    n_components: int
+    n_variants: int
+
+
+@dataclass(frozen=True)
+class ComplementarityResult:
+    """Per-variant-pair decomposition of where two modifications affect
+    the same vs different domains.
+
+    A domain counts as "affected" by a variant if that variant's magnitude
+    on the domain exceeds `threshold * overall_magnitude`. Default 0.3.
+    """
+    v1: str
+    v2: str
+    cosine: float
+    selective_cosine: float
+    magnitude_ratio: float
+    overlap_domains: tuple[str, ...]
+    unique_v1_domains: tuple[str, ...]
+    unique_v2_domains: tuple[str, ...]
+    threshold: float
+
+
+@dataclass(frozen=True)
+class ClusterResult:
+    """Hierarchical clustering of variants by change-vector similarity.
+
+    Distance metric: 1 - cosine(δ_i, δ_j) (using GeoResult.cosine_matrix)
+    or euclidean on raw change_vectors. Linkage methods: single, complete,
+    average (default), ward. `linkage_matrix` is scipy's (n-1, 4) format
+    as a nested list.
+    """
+    labels: tuple[str, ...]
+    linkage_matrix: list[list[float]]
+    method: str
+    distance_metric: str
+    n_variants: int
+
+
 @dataclass
 class GeoResult:
     """Result of ChangeGeometry.analyze().
@@ -56,6 +105,11 @@ class GeoResult:
     All three decomposition fields default to empty dicts. A GeoResult
     read back from a v1 JSON will have them empty; fresh ones from
     analyze() or v2 JSON will be populated. See LESSONS L-017.
+
+    probe_domains (schema v3) is a tuple aligned with change_vectors[v]
+    (length n_probes), one entry per probe. Enables domain_heatmap(),
+    complementarity(), and per-domain analysis. () when the caller passed
+    a bare list[str] to ChangeGeometry or when the JSON is v1/v2.
     """
     base_name: str
     variant_names: list[str]
@@ -68,6 +122,7 @@ class GeoResult:
     delta_means: dict[str, float] = field(default_factory=dict)
     selective_magnitudes: dict[str, float] = field(default_factory=dict)
     selective_cosine_matrix: dict[str, dict[str, float]] = field(default_factory=dict)
+    probe_domains: tuple[str | None, ...] = ()
 
     def summary_table(self) -> list[dict]:
         """One row per variant: {variant, magnitude, cosines}."""
@@ -101,6 +156,222 @@ class GeoResult:
             const_energy = mag ** 2 - sel_mag ** 2
             result[name] = float(const_energy / (mag ** 2))
         return result
+
+    # ── Phase 2 Commit A: analysis helpers ──────────────────────────
+
+    def pca_map(self, n_components: int = 2) -> PCAResult:
+        """Project variants into PC space via SVD on stacked change vectors.
+
+        Does not center across variants — magnitude information in δ is
+        meaningful (see L-017). Uses numpy SVD; sklearn is not a dependency.
+
+        Raises:
+            ValueError: when n_components exceeds n_variants or n_probes,
+                        or when n_variants < 2 (PCA undefined).
+        """
+        n_variants = len(self.variant_names)
+        n_probes = self.n_probes
+        if n_variants < 2:
+            raise ValueError(
+                f"pca_map requires n_variants >= 2; got {n_variants}"
+            )
+        if n_components > n_variants:
+            raise ValueError(
+                f"n_components={n_components} > n_variants={n_variants}"
+            )
+        if n_components > n_probes:
+            raise ValueError(
+                f"n_components={n_components} > n_probes={n_probes}"
+            )
+        if n_components < 1:
+            raise ValueError(f"n_components must be >= 1; got {n_components}")
+
+        # Stack vectors as rows: X shape (n_variants, n_probes)
+        X = np.asarray(
+            [self.change_vectors[name] for name in self.variant_names],
+            dtype=float,
+        )
+        # SVD: X = U diag(S) Vt. PC coords are U * S (same as X @ V).
+        U, S, _Vt = np.linalg.svd(X, full_matrices=False)
+        coords_full = U * S  # shape (n_variants, min(n_variants, n_probes))
+        coords_trunc = coords_full[:, :n_components]
+
+        total_var = float((S ** 2).sum())
+        if total_var <= 0:
+            ratios = tuple(0.0 for _ in range(n_components))
+        else:
+            ratios = tuple(
+                float((S[i] ** 2) / total_var) if i < len(S) else 0.0
+                for i in range(n_components)
+            )
+
+        coords: dict[str, tuple[float, ...]] = {}
+        for i, name in enumerate(self.variant_names):
+            coords[name] = tuple(float(x) for x in coords_trunc[i])
+
+        return PCAResult(
+            coords=coords,
+            explained_variance_ratio=ratios,
+            n_components=n_components,
+            n_variants=n_variants,
+        )
+
+    def domain_heatmap(self) -> dict[str, dict[str, float]]:
+        """Per-variant per-domain magnitude of the change vector.
+
+        Returns {variant: {domain: ‖δ_variant restricted to domain‖₂}}.
+        Raises ValueError when probe_domains is empty. None domains are
+        coalesced under the key "unknown".
+        """
+        if not self.probe_domains:
+            raise ValueError(
+                "domain_heatmap requires probe_domains; was this GeoResult "
+                "built from a bare list[str] prompt list or a v1/v2 JSON? "
+                "Use a ProbeSet with per-probe domain labels."
+            )
+        if len(self.probe_domains) != self.n_probes:
+            raise ValueError(
+                f"probe_domains length {len(self.probe_domains)} != n_probes {self.n_probes}"
+            )
+
+        # Group probe indices by resolved domain key.
+        by_domain: dict[str, list[int]] = {}
+        for idx, d in enumerate(self.probe_domains):
+            key = d if d is not None else "unknown"
+            by_domain.setdefault(key, []).append(idx)
+
+        out: dict[str, dict[str, float]] = {}
+        for name in self.variant_names:
+            vec = np.asarray(self.change_vectors[name], dtype=float)
+            per_domain: dict[str, float] = {}
+            for domain, indices in by_domain.items():
+                sub = vec[indices]
+                per_domain[domain] = float(np.linalg.norm(sub))
+            out[name] = per_domain
+        return out
+
+    def complementarity(
+        self, v1: str, v2: str, threshold: float = 0.3,
+    ) -> ComplementarityResult:
+        """Overlap / unique-domain decomposition for variant pair (v1, v2).
+
+        A domain is "affected" by a variant iff its per-domain magnitude is
+        more than `threshold * overall_magnitude`. Uses domain_heatmap()
+        (so probe_domains must be populated).
+        """
+        if v1 not in self.variant_names:
+            raise ValueError(f"unknown variant: {v1!r}")
+        if v2 not in self.variant_names:
+            raise ValueError(f"unknown variant: {v2!r}")
+
+        heatmap = self.domain_heatmap()
+        mag_v1 = self.magnitudes.get(v1, 0.0)
+        mag_v2 = self.magnitudes.get(v2, 0.0)
+
+        def _affected(name: str, overall_mag: float) -> set[str]:
+            if overall_mag <= 0:
+                return set()
+            per_domain = heatmap[name]
+            return {
+                d for d, m in per_domain.items()
+                if m / overall_mag > threshold
+            }
+
+        affected_v1 = _affected(v1, mag_v1)
+        affected_v2 = _affected(v2, mag_v2)
+        overlap = affected_v1 & affected_v2
+        unique_v1 = affected_v1 - affected_v2
+        unique_v2 = affected_v2 - affected_v1
+
+        if mag_v2 > 0:
+            ratio = float(mag_v1 / mag_v2)
+        else:
+            ratio = float("inf") if mag_v1 > 0 else float("nan")
+
+        cos = self.cosine_matrix.get(v1, {}).get(v2, float("nan"))
+        sel_cos = float("nan")
+        if self.selective_cosine_matrix:
+            sel_cos = self.selective_cosine_matrix.get(v1, {}).get(v2, float("nan"))
+
+        return ComplementarityResult(
+            v1=v1,
+            v2=v2,
+            cosine=float(cos),
+            selective_cosine=float(sel_cos),
+            magnitude_ratio=ratio,
+            overlap_domains=tuple(sorted(overlap)),
+            unique_v1_domains=tuple(sorted(unique_v1)),
+            unique_v2_domains=tuple(sorted(unique_v2)),
+            threshold=float(threshold),
+        )
+
+    def cluster(
+        self, method: str = "average", distance_metric: str = "cosine",
+    ) -> ClusterResult:
+        """Hierarchical clustering of variants via scipy.cluster.hierarchy.
+
+        Distance:
+          - "cosine": 1 - GeoResult.cosine_matrix[i][j] (NaN treated as 1.0)
+          - "euclidean": pdist on raw change_vectors
+        Method: one of single, complete, average, ward.
+
+        Raises:
+            ValueError: n_variants < 2, bad method, or bad distance_metric.
+            ImportError: scipy not installed (pip install lmdiff-kit[viz]).
+        """
+        if method not in ("single", "complete", "average", "ward"):
+            raise ValueError(
+                f"method must be one of single/complete/average/ward; got {method!r}"
+            )
+        if distance_metric not in ("cosine", "euclidean"):
+            raise ValueError(
+                f"distance_metric must be 'cosine' or 'euclidean'; got {distance_metric!r}"
+            )
+
+        labels = tuple(self.variant_names)
+        n = len(labels)
+        if n < 2:
+            raise ValueError(f"cluster requires n_variants >= 2; got {n}")
+
+        try:
+            from scipy.cluster.hierarchy import linkage as _linkage  # type: ignore[import-not-found]
+            from scipy.spatial.distance import pdist as _pdist  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                "scipy required for hierarchical clustering. "
+                "Install with: pip install lmdiff-kit[viz]"
+            ) from exc
+
+        if distance_metric == "cosine":
+            condensed: list[float] = []
+            for i in range(n):
+                for j in range(i + 1, n):
+                    c = self.cosine_matrix[labels[i]][labels[j]]
+                    if c != c:  # NaN
+                        d = 1.0
+                    else:
+                        d = 1.0 - float(c)
+                    # Clamp: numerical drift can push 1 - cos slightly
+                    # negative when cos was clamped to +1.
+                    condensed.append(max(0.0, d))
+            Z = _linkage(np.asarray(condensed, dtype=float), method=method)
+        else:  # euclidean
+            X = np.asarray(
+                [self.change_vectors[name] for name in labels],
+                dtype=float,
+            )
+            # linkage(observation matrix) goes via pdist internally; pass
+            # explicitly so metric is unambiguous.
+            D = _pdist(X, metric="euclidean")
+            Z = _linkage(D, method=method)
+
+        return ClusterResult(
+            labels=labels,
+            linkage_matrix=[[float(x) for x in row] for row in Z.tolist()],
+            method=method,
+            distance_metric=distance_metric,
+            n_variants=n,
+        )
 
 
 class ChangeGeometry:
@@ -200,6 +471,13 @@ class ChangeGeometry:
             _selective_decomposition(variant_names, change_vectors)
         )
 
+        # probe_domains: aligned with change_vectors after NaN filter (v3).
+        # Stays () when caller passed a bare list[str] instead of a ProbeSet.
+        probe_domains: tuple[str | None, ...] = ()
+        if self.probe_set is not None:
+            all_domains = [p.domain for p in self.probe_set]
+            probe_domains = tuple(all_domains[i] for i in valid_indices)
+
         metadata = {
             "n_total_probes": n_total,
             "n_skipped": n_total - n_valid,
@@ -224,6 +502,7 @@ class ChangeGeometry:
             delta_means=delta_means,
             selective_magnitudes=selective_magnitudes,
             selective_cosine_matrix=selective_cosine_matrix,
+            probe_domains=probe_domains,
         )
 
     def _delta_for_variant(
