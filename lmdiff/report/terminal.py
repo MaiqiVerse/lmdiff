@@ -224,22 +224,34 @@ def print_radar(result: RadarResult, console: Console | None = None) -> None:
 
 
 def print_geometry(result: "GeoResult", console: Console | None = None) -> None:
-    """Print ChangeGeometry analysis as two tables: magnitude ranking + cosine matrix."""
+    """Print ChangeGeometry analysis: magnitude table + original cosine matrix,
+    plus selective cosine matrix and const_frac column when the decomposition
+    fields are populated (schema v2 or a fresh analyze() result).
+    """
     console = console or Console()
+
+    has_decomp = bool(result.selective_cosine_matrix) and bool(result.selective_magnitudes)
+    const_fractions = result.constant_fractions if has_decomp else {}
 
     console.print()
     console.rule(f"[bold]Change Geometry: {result.base_name} vs {len(result.variant_names)} variants[/bold]")
     console.print()
 
-    # Magnitude ranking
+    # Magnitude ranking (optionally with const_frac column when decomp available)
     mag_table = Table(title="Magnitude ranking", show_lines=False)
     mag_table.add_column("Rank", justify="right", style="dim", min_width=4)
     mag_table.add_column("Variant", style="cyan", min_width=10)
     mag_table.add_column("‖δ‖", justify="right", min_width=10)
+    if has_decomp:
+        mag_table.add_column("const_frac", justify="right", min_width=10)
 
     ranked = sorted(result.variant_names, key=lambda v: -result.magnitudes[v])
     for i, name in enumerate(ranked, start=1):
-        mag_table.add_row(str(i), name, f"{result.magnitudes[name]:.4f}")
+        row = [str(i), name, f"{result.magnitudes[name]:.4f}"]
+        if has_decomp:
+            cf = const_fractions.get(name, float("nan"))
+            row.append("n/a" if math.isnan(cf) else f"{cf:.3f}")
+        mag_table.add_row(*row)
     console.print(mag_table)
 
     console.print()
@@ -258,6 +270,22 @@ def print_geometry(result: "GeoResult", console: Console | None = None) -> None:
         cos_table.add_row(*row)
     console.print(cos_table)
 
+    # Selective cosine matrix (only when decomposition fields present)
+    if has_decomp:
+        console.print()
+        sel_table = Table(title="Selective cosine matrix (Pearson r)", show_lines=False)
+        sel_table.add_column("", style="cyan")
+        for name in result.variant_names:
+            sel_table.add_column(name, justify="right", min_width=8)
+
+        for a in result.variant_names:
+            row = [a]
+            for b in result.variant_names:
+                cos = result.selective_cosine_matrix[a][b]
+                row.append(_format_cosine(cos, diagonal=(a == b)))
+            sel_table.add_row(*row)
+        console.print(sel_table)
+
     # Footer
     footer_parts: list[str] = [f"n_probes={result.n_probes}"]
     n_skipped = result.metadata.get("n_skipped", 0)
@@ -267,6 +295,11 @@ def print_geometry(result: "GeoResult", console: Console | None = None) -> None:
     bpb_variants = sorted(name for name, flag in bpb_map.items() if flag)
     if bpb_variants:
         footer_parts.append(f"BPB-normalized: {', '.join(bpb_variants)}")
+    if has_decomp:
+        sel_summary = " ".join(
+            f"{n}={result.selective_magnitudes[n]:.2f}" for n in result.variant_names
+        )
+        footer_parts.append(f"selective: {sel_summary}")
     console.print("  ".join(footer_parts))
     console.print()
 

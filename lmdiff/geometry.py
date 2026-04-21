@@ -45,6 +45,17 @@ class GeoResult:
       list(per_probe[v].keys()) as a proxy for probe order; use
       change_vectors[v] (list, order preserved) or the original ProbeSet
       instead. See LESSONS L-018.
+
+    Decomposition fields (δ = c·𝟙 + ε):
+    - delta_means[v] = c (= mean of δ), same unit as magnitudes[v].
+    - selective_magnitudes[v] = ‖δ − c·𝟙‖.
+    - selective_cosine_matrix[v][w] = cos of centered δ vectors
+      (= Pearson correlation). Self-entries 1.0, NaN when a variant
+      has zero selective magnitude.
+
+    All three decomposition fields default to empty dicts. A GeoResult
+    read back from a v1 JSON will have them empty; fresh ones from
+    analyze() or v2 JSON will be populated. See LESSONS L-017.
     """
     base_name: str
     variant_names: list[str]
@@ -54,6 +65,9 @@ class GeoResult:
     change_vectors: dict[str, list[float]]
     per_probe: dict[str, dict[str, float]]
     metadata: dict = field(default_factory=dict)
+    delta_means: dict[str, float] = field(default_factory=dict)
+    selective_magnitudes: dict[str, float] = field(default_factory=dict)
+    selective_cosine_matrix: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def summary_table(self) -> list[dict]:
         """One row per variant: {variant, magnitude, cosines}."""
@@ -65,6 +79,28 @@ class GeoResult:
                 "cosines": dict(self.cosine_matrix[v]),
             })
         return rows
+
+    @property
+    def constant_fractions(self) -> dict[str, float]:
+        """Per-variant ‖c·𝟙‖² / ‖δ‖², i.e. energy fraction of the uniform offset.
+
+        Computed on demand from magnitudes and selective_magnitudes via
+        Pythagoras: ‖δ‖² = ‖c·𝟙‖² + ‖ε‖², so ‖c·𝟙‖² = ‖δ‖² − ‖ε‖². Returns
+        NaN when ‖δ‖ == 0 (can't divide). Returns empty dict when the
+        decomposition fields are unpopulated (legacy v1 GeoResult).
+        """
+        if not self.delta_means or not self.selective_magnitudes:
+            return {}
+        result: dict[str, float] = {}
+        for name in self.variant_names:
+            mag = self.magnitudes.get(name, 0.0)
+            if mag <= 0:
+                result[name] = float("nan")
+                continue
+            sel_mag = self.selective_magnitudes.get(name, 0.0)
+            const_energy = mag ** 2 - sel_mag ** 2
+            result[name] = float(const_energy / (mag ** 2))
+        return result
 
 
 class ChangeGeometry:
@@ -158,6 +194,12 @@ class ChangeGeometry:
         }
         cosine_matrix = _cosine_matrix(variant_names, change_vectors, magnitudes)
 
+        # δ = c·𝟙 + ε decomposition (L-017). Operates on the already-filtered
+        # change_vectors so everything stays on the same probe basis.
+        delta_means, selective_magnitudes, selective_cosine_matrix = (
+            _selective_decomposition(variant_names, change_vectors)
+        )
+
         metadata = {
             "n_total_probes": n_total,
             "n_skipped": n_total - n_valid,
@@ -179,6 +221,9 @@ class ChangeGeometry:
             change_vectors=change_vectors,
             per_probe=per_probe,
             metadata=metadata,
+            delta_means=delta_means,
+            selective_magnitudes=selective_magnitudes,
+            selective_cosine_matrix=selective_cosine_matrix,
         )
 
     def _delta_for_variant(
@@ -270,3 +315,47 @@ def _cosine_matrix(
             matrix[a][b] = cos
             matrix[b][a] = cos
     return matrix
+
+
+def _selective_decomposition(
+    variant_names: list[str],
+    change_vectors: dict[str, list[float]],
+) -> tuple[dict[str, float], dict[str, float], dict[str, dict[str, float]]]:
+    """Compute δ = c·𝟙 + ε per variant and the centered-cosine (Pearson) matrix.
+
+    Returns (delta_means, selective_magnitudes, selective_cosine_matrix).
+    Handles the n_valid == 0 case by returning 0.0 for means / magnitudes and
+    NaN for every cell of the cosine matrix.
+    """
+    delta_means: dict[str, float] = {}
+    selective_magnitudes: dict[str, float] = {}
+    selective_vecs: dict[str, np.ndarray] = {}
+
+    for name in variant_names:
+        vec = np.asarray(change_vectors[name], dtype=float)
+        if vec.size == 0:
+            delta_means[name] = 0.0
+            selective_magnitudes[name] = 0.0
+            selective_vecs[name] = vec
+            continue
+        c = float(vec.mean())
+        sel = vec - c
+        delta_means[name] = c
+        selective_magnitudes[name] = float(np.linalg.norm(sel))
+        selective_vecs[name] = sel
+
+    matrix: dict[str, dict[str, float]] = {a: {} for a in variant_names}
+    for i, a in enumerate(variant_names):
+        sa = selective_magnitudes[a]
+        matrix[a][a] = 1.0 if sa > 0 else float("nan")
+        for b in variant_names[i + 1:]:
+            sb = selective_magnitudes[b]
+            if sa == 0 or sb == 0:
+                cos = float("nan")
+            else:
+                dot = float(np.dot(selective_vecs[a], selective_vecs[b]))
+                cos = dot / (sa * sb)
+                cos = max(-1.0, min(1.0, cos))
+            matrix[a][b] = cos
+            matrix[b][a] = cos
+    return delta_means, selective_magnitudes, matrix

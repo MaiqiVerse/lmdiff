@@ -40,7 +40,7 @@ from lmdiff.tasks.capability_radar import DomainRadarResult, RadarResult
 from lmdiff.diff import DiffReport, FullReport, PairTaskResult
 from lmdiff.geometry import GeoResult
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 def _clean_value(v: Any) -> Any:
@@ -188,14 +188,56 @@ def _geo_result(r: GeoResult) -> dict[str, Any]:
         "base_name": r.base_name,
         "change_vectors": _clean_value(r.change_vectors),
         "cosine_matrix": _clean_value(r.cosine_matrix),
+        "delta_means": _clean_value(r.delta_means),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "magnitudes": _clean_value(r.magnitudes),
         "metadata": _clean_value(r.metadata),
         "n_probes": r.n_probes,
         "per_probe": _clean_value(r.per_probe),
         "schema_version": SCHEMA_VERSION,
+        "selective_cosine_matrix": _clean_value(r.selective_cosine_matrix),
+        "selective_magnitudes": _clean_value(r.selective_magnitudes),
         "variant_names": list(r.variant_names),
     }
+
+
+def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
+    """Reconstruct a GeoResult from a to_json_dict / json.loads output.
+
+    Accepts schema_version "1" (legacy; decomposition fields empty) and "2"
+    (populated). Numeric None (JSON null) values in cosine / selective
+    cosine matrices are restored to float("nan") so the in-memory result
+    behaves identically whether it came from analyze() or a v2 round trip.
+    """
+    sv = str(d.get("schema_version", "1"))
+    if sv not in ("1", "2"):
+        raise ValueError(f"unsupported GeoResult schema_version: {sv!r}")
+
+    def _nan_of(v: Any) -> float:
+        return float("nan") if v is None else float(v)
+
+    def _nan_matrix(m: dict[str, dict[str, Any]] | None) -> dict[str, dict[str, float]]:
+        if not m:
+            return {}
+        return {a: {b: _nan_of(val) for b, val in row.items()} for a, row in m.items()}
+
+    kwargs: dict[str, Any] = dict(
+        base_name=d["base_name"],
+        variant_names=list(d["variant_names"]),
+        n_probes=int(d["n_probes"]),
+        magnitudes={k: float(v) for k, v in d["magnitudes"].items()},
+        cosine_matrix=_nan_matrix(d["cosine_matrix"]),
+        change_vectors={k: [float(x) for x in v] for k, v in d["change_vectors"].items()},
+        per_probe={k: {p: float(val) for p, val in row.items()} for k, row in d["per_probe"].items()},
+        metadata=dict(d.get("metadata", {})),
+    )
+    if sv == "2":
+        kwargs["delta_means"] = {k: float(v) for k, v in d.get("delta_means", {}).items()}
+        kwargs["selective_magnitudes"] = {
+            k: float(v) for k, v in d.get("selective_magnitudes", {}).items()
+        }
+        kwargs["selective_cosine_matrix"] = _nan_matrix(d.get("selective_cosine_matrix"))
+    return GeoResult(**kwargs)
 
 
 @to_json_dict.register(FullReport)

@@ -19,6 +19,10 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-011: tokenizers_equivalent wrongly split slow/fast tokenizer variants
 - L-012: Mock engine tests silently take BPB path when Config.model strings differ
 - L-013: Geometry uses global NaN filter, not BD's per-pair skip
+- L-014: v01 math probes function as an entropy-direction detector
+- L-015: config-only variant δ mixes behavior shift with conditioning asymmetry
+- L-016: InferenceEngine.__new__ reuse trick is load-bearing
+- L-017: δ = constant + selective decomposition recovers cosine resolution
 - L-018: JSON dict keys come back alphabetical, not in insertion order
 
 ---
@@ -350,6 +354,143 @@ Metrics that are per-variant only (e.g. "mean δ magnitude per variant") can use
 
 **Related code:** `lmdiff/geometry.py::ChangeGeometry.analyze` — the `valid_indices` construction
 **Related test:** `tests/test_geometry.py::TestNaNHandling`
+
+---
+
+## L-014: v01 math probes function as an entropy-direction detector
+
+**Date:** 2026-04-20
+**Phase:** 2 (family geometry experiments)
+**Severity:** Interpretation rule — the probe set has a directionality property not documented before.
+
+**Observation:** Running ChangeGeometry on Llama-2-7b against every entropy-reducing variant, the per-domain δ magnitude ordering is always `math > knowledge > code`, independent of which modification produced the variant:
+
+```
+variant      type         math    know    code    note
+yarn         weight_mod   9.91    6.56    5.08    RoPE scaling
+long         weight_mod   8.04    7.71    5.68    long context
+code         weight_mod   7.25    4.16    4.36    code pretrain (BPB)
+sysprompt    config_only  10.96   8.55    4.92    "You are a helpful assistant"
+temp         config_only  2.29    2.75    5.34    temperature=1.5 sampling
+```
+
+`temp` is the only variant with the opposite ordering (`code > know > math`).
+
+**Mechanism:** v01 math probes (`"17 + 25 = "`, etc.) are a region of the probe space where Llama-2 base has high self-entropy — the base distribution is not very peaked on the right continuation. Any modification that tightens the output distribution (lowers entropy) drops CE on these probes by more than it drops the base-scoring-the-variant CE, so δ = CE(base of V) − CE(V of V) is large on math, smaller on the already-confident knowledge/code domains. This is not a probe-set bias — the probe set is functioning as a direction detector.
+
+**Diagnostic signature:** `math > knowledge > code` per-domain ordering → entropy-reducing modification; reverse ordering → entropy-raising. This is a more robust 2-bit behavioral signal than the raw magnitude number.
+
+**Implications for reporting:**
+- Magnitude ordering tells you "how much the variant moved in v01's high-entropy region," not "how much it moved overall."
+- Cross-variant magnitude comparisons are valid as numbers (same unit) but reflect probe-basis-specific shift, not universal shift.
+- Paper and README should carry a probe-basis caveat whenever magnitudes are compared across variants.
+
+**Validation:** partial (3 variants) + extended (5 variants) experiments — consistent signature. A future Phase 2 Step 4 run with lm-eval-style probes would check whether the ordering persists when the probe distribution changes.
+
+---
+
+## L-015: config-only variant δ mixes behavior shift with conditioning asymmetry
+
+**Date:** 2026-04-20
+**Phase:** 2 (extended family geometry)
+**Severity:** Interpretation rule — a naive magnitude comparison between weight-mod and config-only variants is misleading.
+
+**Observation:** `sysprompt` variant (same Llama-2-7b weights, `system_prompt="You are a helpful assistant."`) has magnitude 14.75, larger than every weight-mod variant in the extended experiment (yarn 12.93, long 12.50, code 9.43). Taken at face value this says "adding a system prompt is a bigger behavioral change than fine-tuning 7B parameters on 32k context." The face value is wrong.
+
+**Mechanism:** A config-only variant's δ vector carries two components that token-level CE cannot separate:
+1. The variant actually produced a different continuation distribution given the prompt (genuine behavioral shift).
+2. Scoring asymmetry: during `_run_config_only`, base scores with only the bare prompt, but variant's self-scoring sees `system_prompt + prompt`. The variant's self-CE therefore benefits from extra conditioning information the base didn't have. This inflates δ irrespective of actual behavioral change.
+
+Weight-mod variants don't have component 2 — base and variant see the same bare prompt at score time.
+
+**Rule:**
+- Config-only and weight-mod magnitudes share units (nats / bpb) so arithmetic comparison is well-defined, but they are not semantically comparable.
+- `GeoResult.metadata["variant_types"]` marks each variant as `"weight_mod"` or `"config_only"`. Any downstream report that ranks variants by magnitude MUST disclose the type; cross-type claims like "config change matters more than fine-tuning" are not supported by the current measurement.
+- Truly separating components 1 and 2 requires a fixed-reference-continuation scoring mode where both base and variant score the same reference text. Not implemented yet — future Phase 2 work.
+
+**Validation:** extended experiment observed, bit-identical across two seeded runs, so not sampling noise.
+
+---
+
+## L-016: InferenceEngine.__new__ reuse trick is load-bearing
+
+**Date:** 2026-04-20
+**Phase:** 2 (extended family geometry)
+**Severity:** Maintenance trap — a deliberate bypass of `__init__` will silently break when the engine gains a new required attribute.
+
+**Symptom/use:** `scripts/run_family_geometry_extended.py` needs to run a config-only variant (same weights, different `system_prompt` or `decode`) without reloading 7B weights. The base engine already occupies ~14 GB; a second load would OOM on a 32 GB GPU. The script reuses the base engine's weights via:
+
+```python
+variant_engine = InferenceEngine.__new__(InferenceEngine)
+variant_engine.config = variant_config
+variant_engine.device = base_engine.device
+variant_engine._model = base_engine._model
+variant_engine._tokenizer = base_engine._tokenizer
+# then variant_engine.generate / score work normally
+```
+
+**Why it works:** Today, `InferenceEngine.__init__` only sets four attributes downstream methods read — `config`, `device`, `_model`, `_tokenizer`. Bypassing `__init__` skips `_load()` (weight download + GPU placement) but still satisfies `generate()` and `score()`.
+
+**Why it's fragile:** Any new required attribute added to `__init__` (e.g. `_chat_template`, `_adapter_state`, `_quantization_config`) makes the script fail not at construction but deep inside `generate()` or `score()` as an `AttributeError` at the first attribute access. The script's VRAM reuse is the load-bearing property; there is no test for it because creating two 7B engines would blow CI VRAM budgets.
+
+**Protection:**
+- A future cleanup could expose `InferenceEngine.from_shared(other, config)` as a first-class API. Not worth it for one caller — the hack is documented instead.
+- Anyone adding required attributes to `InferenceEngine.__init__` should grep for `InferenceEngine.__new__` and update the script (or promote the pattern to a helper).
+
+**Validation:** extended experiment run #1 + run #2 both completed with Phase B VRAM peak ~18.6 GB (base weights + activations only). A reload would have pushed peak to ~28 GB.
+
+---
+
+## L-017: δ = constant + selective decomposition recovers cosine resolution
+
+**Date:** 2026-04-20
+**Phase:** 2 (extended family geometry, Step 1.5)
+**Severity:** Analysis rule — the original cosine matrix alone can be misleadingly compressed.
+
+**Observation:** Decomposing each variant's change vector as `δ = c·𝟙 + ε` (with `c = mean(δ)`) on the 5-variant extended experiment:
+
+| variant     | type          | magnitude | const_frac | selective_mag |
+|-------------|---------------|-----------|------------|---------------|
+| yarn        | weight_mod    | 12.93     | 0.73       | 6.76          |
+| long        | weight_mod    | 12.50     | 0.86       | 4.73          |
+| code        | weight_mod    | 9.43      | 0.74       | 4.76          |
+| sysprompt   | config_only   | 14.75     | 0.78       | 6.94          |
+| temp        | config_only   | 6.43      | 0.35       | 5.18          |
+
+Four entropy-reducing variants (yarn, long, code, sysprompt) sit at constant_fraction ∈ [0.72, 0.86] (mean 0.77). The entropy-raising variant (temp) drops to 0.35.
+
+**Original cosine vs selective cosine** (selective cosine = cosine after centering both vectors = Pearson correlation):
+
+```
+pair                   original  selective
+yarn vs long             0.868    0.402
+yarn vs code             0.856    0.457
+yarn vs sysprompt        0.853    0.410
+long vs code             0.873    0.388
+long vs sysprompt        0.912    0.533
+code vs sysprompt        0.846    0.353
+--- temp-involving ---
+yarn vs temp             0.560    0.131
+long vs temp             0.599    0.165
+code vs temp             0.514    0.007
+sysprompt vs temp        0.535    0.032
+```
+
+**Implications:**
+- The [0.85, 0.91] narrow band in the original cosine matrix is mostly illusory. Four different modification mechanisms all happen to lift δ roughly uniformly across probes; that uniform offset contributes a near-parallel `c·𝟙` component to each δ, collapsing their cosines into a tight cluster.
+- Selective cosine removes the offset and recovers ~3× resolution: entropy-reducing variants still cluster but now in [0.35, 0.53] (real shared selective pattern), and entropy-reducing vs entropy-raising cosines collapse to [0.00, 0.17] (effectively orthogonal, not weakly correlated as the original cosine suggested).
+- The three metrics carry orthogonal information:
+  - `magnitudes` — how far δ moved in total
+  - `cosine_matrix` — raw directional agreement (dominated by constant offset when constant_fraction is high)
+  - `selective_cosine_matrix` — directional agreement after removing the uniform offset
+  - `constant_fractions` — how much of the δ energy is "uniform offset" vs "selective pattern"
+
+**Framework implications:**
+- `GeoResult` stores all four; downstream chooses what to show.
+- Terminal and JSON reports emit both cosine matrices plus the constant_fraction column.
+- Paper and README must name which cosine they are reporting; both should be reported together.
+
+**Validation:** Extended experiment (5 variants, 90 probes). Robustness to probe set change is a Phase 2 Step 4 item.
 
 ---
 
