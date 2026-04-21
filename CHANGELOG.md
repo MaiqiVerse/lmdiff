@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.0] - 2026-04-21
+## [0.2.1] - 2026-04-21
 
 ### Added
 - `GeoResult.pca_map(n_components)` — PCA projection of change vectors via numpy SVD; returns `PCAResult` with coords + explained variance ratio.

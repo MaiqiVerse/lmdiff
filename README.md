@@ -112,7 +112,7 @@ Three output-level metrics:
 
 **CapabilityRadar** adds per-domain accuracy + BD breakdown across math/knowledge/code (or any multi-domain probe set).
 
-**ChangeGeometry** (v0.2.0, extended in v0.3.0) compares one base model against *N* variants simultaneously. For each variant it builds a change vector δ by probe, then exposes magnitudes, a full pairwise cosine matrix, and a selective (mean-subtracted, Pearson) cosine matrix that separates "uniform behavioral shift" from "selective behavioral shift". v0.3.0 adds `pca_map()`, `domain_heatmap()`, `complementarity()`, and scipy-backed `cluster()` for further decomposition.
+**ChangeGeometry** (v0.2.0, extended in v0.2.1) compares one base model against *N* variants simultaneously. For each variant it builds a change vector δ by probe, then exposes magnitudes, a full pairwise cosine matrix, and a selective (mean-subtracted, Pearson) cosine matrix that separates "uniform behavioral shift" from "selective behavioral shift". v0.2.1 adds `pca_map()`, `domain_heatmap()`, `complementarity()`, and scipy-backed `cluster()` for further decomposition.
 
 ```python
 from lmdiff import ChangeGeometry, Config, ProbeSet
@@ -162,7 +162,7 @@ write_json(report, "output.json")
 
 ## Status
 
-Phase 2 shipped — published to PyPI as `lmdiff-kit` v0.3.0. Now working: everything from v0.1.x plus **ChangeGeometry** (N-variant δ-vector geometry with PCA / domain heatmap / complementarity / hierarchical clustering), **lm-eval-harness adapter** (30+ task registry), `loglikelihood_accuracy` (acc_norm-style MCQ scoring), `F1` and `Gsm8kNumberMatch` evaluators, and a matplotlib figure suite under the `[viz]` extra (radar, direction heatmap, PCA scatter, per-domain bars).
+Phase 2 shipped — published to PyPI as `lmdiff-kit` v0.2.1. Now working: everything from v0.1.x plus **ChangeGeometry** (N-variant δ-vector geometry with PCA / domain heatmap / complementarity / hierarchical clustering), **lm-eval-harness adapter** (30+ task registry), `loglikelihood_accuracy` (acc_norm-style MCQ scoring), `F1` and `Gsm8kNumberMatch` evaluators, and a matplotlib figure suite under the `[viz]` extra (radar, direction heatmap, PCA scatter, per-domain bars).
 
 Not yet: representation / trajectory / causal metrics, HTML / LaTeX reports, HumanEval-style executional tasks (sandboxing deferred — δ-magnitude-only usage is already available). See `CLAUDE.md` for the full roadmap.
 
