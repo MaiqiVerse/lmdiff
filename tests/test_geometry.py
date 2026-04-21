@@ -457,7 +457,7 @@ class TestJsonGeometry:
         d = to_json_dict(r)
         s = to_json(r)
         reloaded = json.loads(s)
-        assert reloaded["schema_version"] == "2"
+        assert reloaded["schema_version"] == "3"
         assert reloaded["base_name"] == "llama2-7b"
         assert reloaded["variant_names"] == ["13b", "70b", "chat"]
         assert reloaded["magnitudes"]["13b"] == pytest.approx(1.52)
@@ -788,7 +788,7 @@ class TestSelectiveJsonRoundTrip:
             base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
         )
         d = to_json_dict(r1)
-        assert d["schema_version"] == "2"
+        assert d["schema_version"] == "3"
         s = json.dumps(d, sort_keys=True)
         round_tripped = geo_result_from_json_dict(json.loads(s))
 
@@ -958,3 +958,454 @@ class TestGeometryE2E:
         # Same engine twice under greedy decode → identical outputs → identical δ
         assert result.cosine_matrix["d1"]["d2"] == pytest.approx(1.0, abs=1e-6)
         assert result.magnitudes["d1"] == pytest.approx(result.magnitudes["d2"], abs=1e-6)
+
+
+# ── Commit A: probe_domains + analysis methods ──
+
+from lmdiff.geometry import (  # noqa: E402
+    ClusterResult,
+    ComplementarityResult,
+    PCAResult,
+)
+
+
+class TestProbeDomainsPopulated:
+    def test_list_str_input_leaves_probe_domains_empty(self, monkeypatch):
+        result = _build_two_variant_geo(
+            monkeypatch,
+            base_of_a=[3.0, 4.0, 5.0], self_a=[1.0, 2.0, 3.0],
+            base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
+        )
+        assert result.probe_domains == ()
+
+    def test_probeset_flows_through_analyze(self, monkeypatch):
+        probes_ps = ProbeSet([
+            Probe(id="p0", text="p0", domain="math", expected="x"),
+            Probe(id="p1", text="p1", domain="code", expected="y"),
+            Probe(id="p2", text="p2", domain="math", expected="z"),
+        ])
+
+        outputs_a = ["a0", "a1", "a2"]
+        outputs_b = ["b0", "b1", "b2"]
+        engine_a = _make_mock_engine("A", outputs_a, self_ce=[1.0, 2.0, 3.0])
+        engine_b = _make_mock_engine("B", outputs_b, self_ce=[1.0, 3.0, 4.0])
+
+        def base_score_side(prompts, continuations=None, continuation_ids=None):
+            sr = MagicMock()
+            if continuations == outputs_a:
+                sr.cross_entropies = [3.0, 4.0, 5.0]
+            elif continuations == outputs_b:
+                sr.cross_entropies = [2.0, 5.0, 1.0]
+            else:
+                raise AssertionError(f"unexpected: {continuations}")
+            sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
+            return sr
+
+        engine_base = MagicMock(name="engine-base")
+        engine_base.model_name = "base"
+        engine_base.score.side_effect = base_score_side
+
+        _install_mock_engines(
+            monkeypatch,
+            {"base": engine_base, "A": engine_a, "B": engine_b},
+        )
+        cg = ChangeGeometry(
+            base=_cfg("base"),
+            variants={"A": _cfg("A"), "B": _cfg("B")},
+            prompts=probes_ps,
+        )
+        result = cg.analyze(max_new_tokens=8)
+        assert result.probe_domains == ("math", "code", "math")
+        assert len(result.probe_domains) == result.n_probes
+
+
+class TestPCAMap:
+    def _manual_two_variant(self) -> GeoResult:
+        return GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=3,
+            magnitudes={
+                "A": float(np.linalg.norm([1.0, 0.0, 0.0])),
+                "B": float(np.linalg.norm([0.0, 1.0, 1.0])),
+            },
+            cosine_matrix={
+                "A": {"A": 1.0, "B": 0.0},
+                "B": {"A": 0.0, "B": 1.0},
+            },
+            change_vectors={
+                "A": [1.0, 0.0, 0.0],
+                "B": [0.0, 1.0, 1.0],
+            },
+            per_probe={
+                "A": {"p0": 1.0, "p1": 0.0, "p2": 0.0},
+                "B": {"p0": 0.0, "p1": 1.0, "p2": 1.0},
+            },
+            metadata={},
+        )
+
+    def test_matches_numpy_svd(self):
+        result = self._manual_two_variant()
+        pca = result.pca_map(n_components=2)
+        assert isinstance(pca, PCAResult)
+        assert pca.n_variants == 2
+        assert pca.n_components == 2
+        assert set(pca.coords.keys()) == {"A", "B"}
+        X = np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 1.0]])
+        U, S, _ = np.linalg.svd(X, full_matrices=False)
+        expected = U * S
+        for i, name in enumerate(result.variant_names):
+            np.testing.assert_allclose(
+                pca.coords[name], expected[i, :2], atol=1e-9,
+            )
+
+    def test_explained_variance_ratio_sums_to_one(self):
+        result = self._manual_two_variant()
+        pca = result.pca_map(n_components=2)
+        assert sum(pca.explained_variance_ratio) == pytest.approx(1.0, abs=1e-9)
+
+    def test_n_components_greater_than_n_variants_raises(self):
+        result = self._manual_two_variant()
+        with pytest.raises(ValueError, match="n_components"):
+            result.pca_map(n_components=3)
+
+    def test_single_variant_raises(self):
+        result = GeoResult(
+            base_name="base",
+            variant_names=["only"],
+            n_probes=3,
+            magnitudes={"only": 1.0},
+            cosine_matrix={"only": {"only": 1.0}},
+            change_vectors={"only": [1.0, 0.0, 0.0]},
+            per_probe={"only": {}},
+            metadata={},
+        )
+        with pytest.raises(ValueError, match="n_variants"):
+            result.pca_map()
+
+    def test_n_components_greater_than_n_probes_raises(self):
+        result = GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=1,
+            magnitudes={"A": 1.0, "B": 1.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 1.0}, "B": {"A": 1.0, "B": 1.0}},
+            change_vectors={"A": [1.0], "B": [1.0]},
+            per_probe={"A": {}, "B": {}},
+            metadata={},
+        )
+        with pytest.raises(ValueError, match="n_components"):
+            result.pca_map(n_components=2)
+
+
+class TestDomainHeatmap:
+    def _geo_with_domains(self) -> GeoResult:
+        # math x 2 (indices 0,1), code x 2 (indices 2,3)
+        # A=[3,4,0,0] math=5, code=0
+        # B=[0,0,6,8] math=0, code=10
+        return GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=4,
+            magnitudes={"A": 5.0, "B": 10.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 0.0}, "B": {"A": 0.0, "B": 1.0}},
+            change_vectors={"A": [3.0, 4.0, 0.0, 0.0], "B": [0.0, 0.0, 6.0, 8.0]},
+            per_probe={
+                "A": {"p0": 3.0, "p1": 4.0, "p2": 0.0, "p3": 0.0},
+                "B": {"p0": 0.0, "p1": 0.0, "p2": 6.0, "p3": 8.0},
+            },
+            metadata={},
+            probe_domains=("math", "math", "code", "code"),
+        )
+
+    def test_per_domain_magnitudes(self):
+        result = self._geo_with_domains()
+        hm = result.domain_heatmap()
+        assert hm["A"]["math"] == pytest.approx(5.0)
+        assert hm["A"]["code"] == pytest.approx(0.0)
+        assert hm["B"]["math"] == pytest.approx(0.0)
+        assert hm["B"]["code"] == pytest.approx(10.0)
+
+    def test_raises_when_probe_domains_empty(self):
+        result = GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=3,
+            magnitudes={"A": 1.0, "B": 1.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 0.0}, "B": {"A": 0.0, "B": 1.0}},
+            change_vectors={"A": [1.0, 0.0, 0.0], "B": [0.0, 1.0, 0.0]},
+            per_probe={"A": {}, "B": {}},
+            metadata={},
+            probe_domains=(),
+        )
+        with pytest.raises(ValueError, match="probe_domains"):
+            result.domain_heatmap()
+
+    def test_none_domain_coalesces_to_unknown(self):
+        result = GeoResult(
+            base_name="base",
+            variant_names=["A"],
+            n_probes=3,
+            magnitudes={"A": float(np.linalg.norm([1.0, 2.0, 3.0]))},
+            cosine_matrix={"A": {"A": 1.0}},
+            change_vectors={"A": [1.0, 2.0, 3.0]},
+            per_probe={"A": {}},
+            metadata={},
+            probe_domains=(None, "math", None),
+        )
+        hm = result.domain_heatmap()
+        assert "unknown" in hm["A"]
+        assert "math" in hm["A"]
+        assert hm["A"]["unknown"] == pytest.approx(
+            float(np.linalg.norm([1.0, 3.0])),
+        )
+        assert hm["A"]["math"] == pytest.approx(2.0)
+
+
+class TestComplementarity:
+    def _make(self) -> GeoResult:
+        return GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=4,
+            magnitudes={"A": 5.0, "B": 10.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 0.0}, "B": {"A": 0.0, "B": 1.0}},
+            change_vectors={"A": [3.0, 4.0, 0.0, 0.0], "B": [0.0, 0.0, 6.0, 8.0]},
+            per_probe={"A": {}, "B": {}},
+            metadata={},
+            probe_domains=("math", "math", "code", "code"),
+        )
+
+    def test_unique_domains_split(self):
+        result = self._make()
+        comp = result.complementarity("A", "B", threshold=0.3)
+        assert isinstance(comp, ComplementarityResult)
+        assert comp.overlap_domains == ()
+        assert comp.unique_v1_domains == ("math",)
+        assert comp.unique_v2_domains == ("code",)
+
+    def test_magnitude_ratio(self):
+        result = self._make()
+        comp = result.complementarity("A", "B")
+        assert comp.magnitude_ratio == pytest.approx(0.5)
+        comp2 = result.complementarity("B", "A")
+        assert comp2.magnitude_ratio == pytest.approx(2.0)
+
+    def test_equal_magnitudes_ratio_one(self):
+        result = GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=2,
+            magnitudes={"A": 2.0, "B": 2.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 1.0}, "B": {"A": 1.0, "B": 1.0}},
+            change_vectors={"A": [2.0, 0.0], "B": [2.0, 0.0]},
+            per_probe={"A": {}, "B": {}},
+            metadata={},
+            probe_domains=("math", "code"),
+        )
+        comp = result.complementarity("A", "B")
+        assert comp.magnitude_ratio == pytest.approx(1.0)
+
+    def test_cosine_and_selective_reported(self):
+        result = self._make()
+        comp = result.complementarity("A", "B")
+        assert comp.cosine == pytest.approx(0.0)
+        assert math.isnan(comp.selective_cosine)
+
+    def test_unknown_variant_raises(self):
+        result = self._make()
+        with pytest.raises(ValueError, match="unknown variant"):
+            result.complementarity("A", "nope")
+
+
+class TestCluster:
+    def _three_variants(self) -> GeoResult:
+        return GeoResult(
+            base_name="base",
+            variant_names=["A", "B", "C"],
+            n_probes=3,
+            magnitudes={"A": 1.0, "B": 1.0, "C": 1.0},
+            cosine_matrix={
+                "A": {"A": 1.0, "B": 0.9, "C": 0.1},
+                "B": {"A": 0.9, "B": 1.0, "C": 0.15},
+                "C": {"A": 0.1, "B": 0.15, "C": 1.0},
+            },
+            change_vectors={
+                "A": [1.0, 0.0, 0.0],
+                "B": [0.9, 0.1, 0.1],
+                "C": [0.0, 0.0, 1.0],
+            },
+            per_probe={"A": {}, "B": {}, "C": {}},
+            metadata={},
+        )
+
+    def test_cosine_linkage_shape(self):
+        result = self._three_variants()
+        cr = result.cluster(method="average", distance_metric="cosine")
+        assert isinstance(cr, ClusterResult)
+        assert cr.labels == ("A", "B", "C")
+        assert len(cr.linkage_matrix) == 2
+        for row in cr.linkage_matrix:
+            assert len(row) == 4
+        assert cr.method == "average"
+        assert cr.distance_metric == "cosine"
+        assert cr.n_variants == 3
+
+    def test_euclidean_runs(self):
+        result = self._three_variants()
+        cr = result.cluster(method="ward", distance_metric="euclidean")
+        assert cr.method == "ward"
+        assert cr.distance_metric == "euclidean"
+        assert len(cr.linkage_matrix) == 2
+
+    def test_different_methods_run_without_error(self):
+        result = self._three_variants()
+        single = result.cluster(method="single", distance_metric="cosine")
+        complete = result.cluster(method="complete", distance_metric="cosine")
+        assert single.method == "single"
+        assert complete.method == "complete"
+
+    def test_single_variant_raises(self):
+        result = GeoResult(
+            base_name="base",
+            variant_names=["only"],
+            n_probes=1,
+            magnitudes={"only": 1.0},
+            cosine_matrix={"only": {"only": 1.0}},
+            change_vectors={"only": [1.0]},
+            per_probe={"only": {}},
+            metadata={},
+        )
+        with pytest.raises(ValueError, match="n_variants"):
+            result.cluster()
+
+    def test_bad_method_raises(self):
+        result = self._three_variants()
+        with pytest.raises(ValueError, match="method"):
+            result.cluster(method="wumbo")
+
+    def test_bad_metric_raises(self):
+        result = self._three_variants()
+        with pytest.raises(ValueError, match="distance_metric"):
+            result.cluster(distance_metric="manhattan")
+
+    def test_import_error_when_scipy_missing(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name.startswith("scipy"):
+                raise ImportError("no scipy")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        result = self._three_variants()
+        with pytest.raises(ImportError, match=r"pip install lmdiff-kit\[viz\]"):
+            result.cluster()
+
+
+class TestSchemaV3RoundTrip:
+    def test_probe_domains_preserved(self):
+        from lmdiff.report.json_report import (
+            geo_result_from_json_dict, to_json_dict,
+        )
+        result = GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=3,
+            magnitudes={"A": 1.0, "B": 2.0},
+            cosine_matrix={
+                "A": {"A": 1.0, "B": 0.5},
+                "B": {"A": 0.5, "B": 1.0},
+            },
+            change_vectors={"A": [1.0, 0.0, 0.0], "B": [0.0, 2.0, 0.0]},
+            per_probe={
+                "A": {"p0": 1.0, "p1": 0.0, "p2": 0.0},
+                "B": {"p0": 0.0, "p1": 2.0, "p2": 0.0},
+            },
+            metadata={"n_total_probes": 3, "n_skipped": 0, "bpb_normalized": {}},
+            delta_means={"A": 0.333, "B": 0.667},
+            selective_magnitudes={"A": 0.816, "B": 1.633},
+            selective_cosine_matrix={
+                "A": {"A": 1.0, "B": -0.5},
+                "B": {"A": -0.5, "B": 1.0},
+            },
+            probe_domains=("math", "code", "math"),
+        )
+        d = to_json_dict(result)
+        assert d["schema_version"] == "3"
+        assert d["probe_domains"] == ["math", "code", "math"]
+
+        s = json.dumps(d, sort_keys=True)
+        round_tripped = geo_result_from_json_dict(json.loads(s))
+        assert round_tripped.probe_domains == ("math", "code", "math")
+        assert isinstance(round_tripped.probe_domains, tuple)
+
+    def test_empty_probe_domains_round_trips_as_empty_tuple(self):
+        from lmdiff.report.json_report import (
+            geo_result_from_json_dict, to_json_dict,
+        )
+        result = GeoResult(
+            base_name="base",
+            variant_names=["A"],
+            n_probes=2,
+            magnitudes={"A": 1.0},
+            cosine_matrix={"A": {"A": 1.0}},
+            change_vectors={"A": [1.0, 0.0]},
+            per_probe={"A": {"p0": 1.0, "p1": 0.0}},
+            metadata={"n_total_probes": 2, "n_skipped": 0, "bpb_normalized": {}},
+            probe_domains=(),
+        )
+        s = json.dumps(to_json_dict(result), sort_keys=True)
+        round_tripped = geo_result_from_json_dict(json.loads(s))
+        assert round_tripped.probe_domains == ()
+
+
+class TestSchemaV1V2BackwardCompat:
+    def test_v1_payload_has_empty_probe_domains(self):
+        from lmdiff.report.json_report import geo_result_from_json_dict
+        v1 = {
+            "schema_version": "1",
+            "base_name": "base",
+            "variant_names": ["A"],
+            "n_probes": 2,
+            "magnitudes": {"A": 1.0},
+            "cosine_matrix": {"A": {"A": 1.0}},
+            "change_vectors": {"A": [1.0, 0.0]},
+            "per_probe": {"A": {"p0": 1.0, "p1": 0.0}},
+            "metadata": {},
+        }
+        r = geo_result_from_json_dict(v1)
+        assert r.probe_domains == ()
+        assert r.delta_means == {}
+
+    def test_v2_payload_has_empty_probe_domains(self):
+        from lmdiff.report.json_report import geo_result_from_json_dict
+        v2 = {
+            "schema_version": "2",
+            "base_name": "base",
+            "variant_names": ["A"],
+            "n_probes": 2,
+            "magnitudes": {"A": 1.0},
+            "cosine_matrix": {"A": {"A": 1.0}},
+            "change_vectors": {"A": [1.0, 0.0]},
+            "per_probe": {"A": {"p0": 1.0, "p1": 0.0}},
+            "metadata": {},
+            "delta_means": {"A": 0.5},
+            "selective_magnitudes": {"A": 0.707},
+            "selective_cosine_matrix": {"A": {"A": 1.0}},
+        }
+        r = geo_result_from_json_dict(v2)
+        assert r.probe_domains == ()
+        assert r.delta_means == {"A": 0.5}
+
+    def test_invalid_schema_version_raises(self):
+        from lmdiff.report.json_report import geo_result_from_json_dict
+        with pytest.raises(ValueError, match="schema_version"):
+            geo_result_from_json_dict({
+                "schema_version": "99",
+                "base_name": "x", "variant_names": [], "n_probes": 0,
+                "magnitudes": {}, "cosine_matrix": {},
+                "change_vectors": {}, "per_probe": {}, "metadata": {},
+            })

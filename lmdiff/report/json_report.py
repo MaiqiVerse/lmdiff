@@ -40,7 +40,7 @@ from lmdiff.tasks.capability_radar import DomainRadarResult, RadarResult
 from lmdiff.diff import DiffReport, FullReport, PairTaskResult
 from lmdiff.geometry import GeoResult
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 
 def _clean_value(v: Any) -> Any:
@@ -194,6 +194,7 @@ def _geo_result(r: GeoResult) -> dict[str, Any]:
         "metadata": _clean_value(r.metadata),
         "n_probes": r.n_probes,
         "per_probe": _clean_value(r.per_probe),
+        "probe_domains": list(r.probe_domains) if r.probe_domains else [],
         "schema_version": SCHEMA_VERSION,
         "selective_cosine_matrix": _clean_value(r.selective_cosine_matrix),
         "selective_magnitudes": _clean_value(r.selective_magnitudes),
@@ -204,13 +205,15 @@ def _geo_result(r: GeoResult) -> dict[str, Any]:
 def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
     """Reconstruct a GeoResult from a to_json_dict / json.loads output.
 
-    Accepts schema_version "1" (legacy; decomposition fields empty) and "2"
-    (populated). Numeric None (JSON null) values in cosine / selective
-    cosine matrices are restored to float("nan") so the in-memory result
-    behaves identically whether it came from analyze() or a v2 round trip.
+    Accepts schema_version "1" (legacy; decomposition fields empty),
+    "2" (populates delta_means / selective_magnitudes /
+    selective_cosine_matrix), and "3" (adds probe_domains). Numeric None
+    (JSON null) values in cosine / selective cosine matrices are restored
+    to float("nan") so the in-memory result behaves identically whether
+    it came from analyze() or a JSON round trip.
     """
     sv = str(d.get("schema_version", "1"))
-    if sv not in ("1", "2"):
+    if sv not in ("1", "2", "3"):
         raise ValueError(f"unsupported GeoResult schema_version: {sv!r}")
 
     def _nan_of(v: Any) -> float:
@@ -231,12 +234,15 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
         per_probe={k: {p: float(val) for p, val in row.items()} for k, row in d["per_probe"].items()},
         metadata=dict(d.get("metadata", {})),
     )
-    if sv == "2":
+    if sv in ("2", "3"):
         kwargs["delta_means"] = {k: float(v) for k, v in d.get("delta_means", {}).items()}
         kwargs["selective_magnitudes"] = {
             k: float(v) for k, v in d.get("selective_magnitudes", {}).items()
         }
         kwargs["selective_cosine_matrix"] = _nan_matrix(d.get("selective_cosine_matrix"))
+    if sv == "3":
+        raw = d.get("probe_domains", [])
+        kwargs["probe_domains"] = tuple(raw) if raw else ()
     return GeoResult(**kwargs)
 
 
