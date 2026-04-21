@@ -7,3 +7,4 @@ build/
 .claude/
 .vscode/
 examples/*_report.json
+discovery*.json
