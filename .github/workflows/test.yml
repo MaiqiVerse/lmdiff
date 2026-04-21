@@ -18,6 +18,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        # Install [viz] alongside [dev] so optional-dep-dependent tests
+        # (scipy clustering, matplotlib radar rendering) actually run in CI
+        # rather than skip. Tests use pytest.skipif as a safety net for
+        # contributor envs that install [dev] alone.
+        run: pip install -e ".[dev,viz]"
       - name: Run tests
         run: pytest tests/ -q

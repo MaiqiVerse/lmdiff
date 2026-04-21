@@ -969,6 +969,19 @@ from lmdiff.geometry import (  # noqa: E402
 )
 
 
+def _scipy_available() -> bool:
+    try:
+        import scipy  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+scipy_required = pytest.mark.skipif(
+    not _scipy_available(), reason="scipy not installed",
+)
+
+
 class TestProbeDomainsPopulated:
     def test_list_str_input_leaves_probe_domains_empty(self, monkeypatch):
         result = _build_two_variant_geo(
@@ -1239,6 +1252,7 @@ class TestCluster:
             metadata={},
         )
 
+    @scipy_required
     def test_cosine_linkage_shape(self):
         result = self._three_variants()
         cr = result.cluster(method="average", distance_metric="cosine")
@@ -1251,6 +1265,7 @@ class TestCluster:
         assert cr.distance_metric == "cosine"
         assert cr.n_variants == 3
 
+    @scipy_required
     def test_euclidean_runs(self):
         result = self._three_variants()
         cr = result.cluster(method="ward", distance_metric="euclidean")
@@ -1258,6 +1273,7 @@ class TestCluster:
         assert cr.distance_metric == "euclidean"
         assert len(cr.linkage_matrix) == 2
 
+    @scipy_required
     def test_different_methods_run_without_error(self):
         result = self._three_variants()
         single = result.cluster(method="single", distance_metric="cosine")
