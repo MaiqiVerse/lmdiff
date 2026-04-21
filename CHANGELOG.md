@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0] - 2026-04-21
+
+### Added
+- `GeoResult.pca_map(n_components)` — PCA projection of change vectors via numpy SVD; returns `PCAResult` with coords + explained variance ratio.
+- `GeoResult.domain_heatmap()` — per-variant per-domain ‖δ‖ magnitude, partitioned from `probe_domains`.
+- `GeoResult.complementarity(v1, v2, threshold)` — two-variant overlap / unique domain analysis.
+- `GeoResult.cluster(method, distance_metric)` — hierarchical clustering of variants via scipy; returns `ClusterResult` with linkage matrix.
+- `GeoResult.probe_domains` — new field storing per-probe domain labels (populated automatically by `ChangeGeometry.analyze` when given a `ProbeSet`).
+- `lmdiff/viz/direction_heatmap.py` — N×N cosine similarity heatmap.
+- `lmdiff/viz/pca_scatter.py` — 2D PCA scatter of variants.
+- `lmdiff/viz/domain_bar.py` — grouped bar chart of per-variant per-domain ‖δ‖.
+- `scripts/plot_family_geometry.py` — offline figure generator from GeoResult JSON.
+- scipy added to `[viz]` optional dependency.
+
+### Changed
+- GeoResult JSON `schema_version` bumped "2" → "3" (adds `probe_domains`). Reader accepts v1/v2/v3 payloads.
+
+### Notes
+- Backward compatible with v0.2.x public API. Existing `magnitudes`, `cosine_matrix`, `selective_cosine_matrix`, and `constant_fractions` unchanged.
+- `domain_heatmap()`, `complementarity()`, and the `domain_bar` plot all require populated `probe_domains`. For a v1/v2 JSON or a list-of-strings probe set, these methods raise `ValueError` with an instruction to regenerate.
+- Optional-dep-dependent tests (scipy clustering, matplotlib rendering) now use `pytest.skipif`; CI installs `[dev,viz]` so they run. See LESSONS L-021.
+
 ## [0.2.0] - 2026-04-21
 
 ### Added
