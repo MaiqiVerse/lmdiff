@@ -38,7 +38,7 @@ dependencies = [
 [project.optional-dependencies]
 viz = ["matplotlib", "plotly", "scipy"]
 dev = ["pytest", "pytest-cov"]
-lm-eval = ["lm-eval>=0.4.0"]
+lm-eval = ["lm-eval>=0.4.0", "jieba", "fuzzywuzzy", "rouge"]
 
 [project.urls]
 Repository = "https://github.com/MaiqiVerse/lmdiff"
