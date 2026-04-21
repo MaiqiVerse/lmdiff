@@ -16,6 +16,15 @@ A **Configuration** is `model + context + decoding + adapter + agent scaffold`, 
 
 ```bash
 pip install lmdiff-kit
+
+# With lm-eval-harness task loader (hellaswag, arc, gsm8k, mmlu, ...)
+pip install "lmdiff-kit[lm-eval]"
+
+# With matplotlib radar plots
+pip install "lmdiff-kit[viz]"
+
+# Both
+pip install "lmdiff-kit[lm-eval,viz]"
 ```
 
 The import name is `lmdiff`; the PyPI distribution is `lmdiff-kit` (name disambiguation on PyPI).
@@ -103,6 +112,27 @@ Three output-level metrics:
 
 **CapabilityRadar** adds per-domain accuracy + BD breakdown across math/knowledge/code (or any multi-domain probe set).
 
+**ChangeGeometry** (v0.2.0) compares one base model against *N* variants simultaneously. For each variant it builds a change vector δ by probe, then exposes magnitudes, a full pairwise cosine matrix, and a selective (mean-subtracted, Pearson) cosine matrix that separates "uniform behavioral shift" from "selective behavioral shift". Useful when asking *which* modifications push in the same direction.
+
+```python
+from lmdiff import ChangeGeometry, Config, ProbeSet
+geo = ChangeGeometry(
+    base=Config(model="meta-llama/Llama-2-7b-hf"),
+    variants={
+        "yarn": Config(model="NousResearch/Yarn-Llama-2-7b-128k", name="yarn"),
+        "code": Config(model="codellama/CodeLlama-7b-hf", name="code"),
+    },
+    prompts=probes,
+).analyze(max_new_tokens=16)
+```
+
+**lm-eval-harness tasks** (v0.2.0, `[lm-eval]` extra) load directly into ProbeSets:
+
+```python
+from lmdiff.probes.adapters import from_lm_eval
+probes = from_lm_eval("hellaswag", limit=100, seed=42)  # or arc_challenge, gsm8k, ...
+```
+
 All return structured results with per-probe breakdowns in `.details`.
 
 ## Configuration abstraction
@@ -132,11 +162,9 @@ write_json(report, "output.json")
 
 ## Status
 
-Phase 1 shipped — published to PyPI as `lmdiff-kit` v0.1.0. Working: BehavioralDistance, TokenEntropy, TokenKL, CapabilityRadar, CLI, JSON reports, Python API.
+Phase 2 shipped — published to PyPI as `lmdiff-kit` v0.2.0. Now working: everything from v0.1.x plus **ChangeGeometry** (N-variant δ-vector geometry with selective/constant decomposition), **lm-eval-harness adapter** (30+ task registry), `loglikelihood_accuracy` (acc_norm-style MCQ scoring), `F1` and `Gsm8kNumberMatch` evaluators, and matplotlib radar plots under the `[viz]` extra.
 
-Phase 2 in progress: **Change Geometry** — treating behavioral changes as vectors with direction/magnitude/cosine similarity across multiple variants.
-
-Not yet: representation/trajectory/causal metrics, HTML/LaTeX reports, viz. See `CLAUDE.md` for the full roadmap.
+Not yet: representation / trajectory / causal metrics, HTML / LaTeX reports, HumanEval-style executional tasks (sandboxing deferred — δ-magnitude-only usage is already available). See `CLAUDE.md` for the full roadmap.
 
 ## Development
 
