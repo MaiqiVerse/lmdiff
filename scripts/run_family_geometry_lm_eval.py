@@ -300,6 +300,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"\nJSON report: {json_path}")
 
+    # Also dump the raw GeoResult so scripts/plot_family_geometry.py
+    # (which expects a GeoResult JSON) can render the full figure suite
+    # — direction / selective heatmap, PCA scatter, domain bar — from
+    # this experiment without a re-run. The summary `report` above keeps
+    # only per-task aggregates and drops change_vectors / cosine_matrix /
+    # selective_cosine_matrix / probe_domains, which the plotters need.
+    from lmdiff.report.json_report import write_json as _write_geo
+    geo_path = args.output_dir / f"{args.output_prefix}_georesult.json"
+    _write_geo(geo, geo_path)
+    print(f"GeoResult JSON: {geo_path}")
+
     # --- Radars ---
     try:
         from lmdiff.viz.radar import plot_radar
