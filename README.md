@@ -58,6 +58,29 @@ lmdiff run-task gpt2 --probes v01 --evaluator contains_answer
 lmdiff list-metrics
 ```
 
+### Quick start: family experiment
+
+End-to-end ChangeGeometry + per-task accuracy + radar PNGs over an
+lm-eval task mix (requires `pip install "lmdiff-kit[lm-eval,viz]"`):
+
+```bash
+lmdiff family-experiment \
+    --base meta-llama/Llama-2-7b-hf \
+    --variant yarn=NousResearch/Yarn-Llama-2-7b-128k \
+    --variant code=codellama/CodeLlama-7b-hf \
+    --tasks hellaswag,arc_challenge,gsm8k \
+    --output-dir runs/llama2-family
+
+# Re-render the figure suite from a previously written GeoResult JSON
+lmdiff plot-geometry runs/llama2-family/family_geometry_lm_eval_georesult.json \
+    --output-dir runs/llama2-family/figures
+```
+
+`--variant` is repeatable; defaults to the 5-task mix used in the
+Llama-2 example below when `--tasks` is omitted. Both subcommands wrap
+`lmdiff.experiments.family.run_family_experiment` /
+`plot_family_geometry`, also callable directly from Python.
+
 ## Python API
 
 ```python

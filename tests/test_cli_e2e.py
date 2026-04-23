@@ -70,6 +70,38 @@ class TestRadarE2E:
 
 
 @pytest.mark.slow
+class TestFamilyExperimentE2E:
+    """Smoke test that CLI args reach run_family_experiment correctly.
+
+    Patches the heavy library entry point so this stays in 'slow' purely
+    because it exercises CLI plumbing for an experiment that would
+    otherwise need a real model load.
+    """
+
+    def test_cli_args_reach_library(self, tmp_path):
+        from unittest.mock import patch
+        with patch("lmdiff.experiments.family.run_family_experiment") as mock_run:
+            result = runner.invoke(app, [
+                "family-experiment",
+                "--base", "gpt2",
+                "--variant", "small=distilgpt2",
+                "--tasks", "hellaswag",
+                "--limit-per-task", "2",
+                "--output-dir", str(tmp_path),
+                "--no-radars",
+                "--skip-accuracy",
+            ])
+        assert result.exit_code == 0, result.output
+        kw = mock_run.call_args.kwargs
+        assert kw["base"] == "gpt2"
+        assert kw["variants"] == {"small": "distilgpt2"}
+        assert kw["tasks"] == ["hellaswag"]
+        assert kw["limit_per_task"] == 2
+        assert kw["skip_accuracy"] is True
+        assert kw["render_radars"] is False
+
+
+@pytest.mark.slow
 class TestRunTaskE2E:
     def test_run_task_json(self):
         result = runner.invoke(app, [
