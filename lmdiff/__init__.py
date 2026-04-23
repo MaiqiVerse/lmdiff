@@ -8,6 +8,12 @@ from lmdiff.engine import (
     HiddenStatesResult,
     InferenceEngine,
 )
+from lmdiff.experiments.family import (
+    DEFAULT_TASKS,
+    FamilyExperimentResult,
+    plot_family_geometry,
+    run_family_experiment,
+)
 from lmdiff.geometry import ChangeGeometry, GeoResult
 from lmdiff.probes.loader import Probe, ProbeSet
 from lmdiff.tasks.base import BaseEvaluator, EvalResult, Task, TaskResult
@@ -44,4 +50,8 @@ __all__ = [
     "F1",
     "Gsm8kNumberMatch",
     "loglikelihood_accuracy",
+    "DEFAULT_TASKS",
+    "FamilyExperimentResult",
+    "run_family_experiment",
+    "plot_family_geometry",
 ]
