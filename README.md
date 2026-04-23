@@ -185,7 +185,7 @@ write_json(report, "output.json")
 
 ## Status
 
-Phase 2 shipped — published to PyPI as `lmdiff-kit` v0.2.2. Now working: everything from v0.1.x plus **ChangeGeometry** (N-variant δ-vector geometry with PCA / domain heatmap / complementarity / hierarchical clustering, plus per-token normalized magnitudes for cross-probe-set comparison), **lm-eval-harness adapter** (30+ task registry), `loglikelihood_accuracy` (acc_norm-style MCQ scoring), `F1` and `Gsm8kNumberMatch` evaluators, and a matplotlib figure suite under the `[viz]` extra (radar, direction heatmap, PCA scatter, per-domain bars).
+Phase 2 shipped — published to PyPI as `lmdiff-kit` v0.2.2. Now working: everything from v0.1.x plus **ChangeGeometry** (N-variant δ-vector geometry with PCA / domain heatmap / complementarity / hierarchical clustering, plus per-token normalized magnitudes for cross-probe-set comparison), **lm-eval-harness adapter** (30+ task registry), `loglikelihood_accuracy` (acc_norm-style MCQ scoring), `F1` and `Gsm8kNumberMatch` evaluators, the `lmdiff family-experiment` / `lmdiff plot-geometry` CLIs (and matching `lmdiff.experiments.family` library API), and a matplotlib figure suite under the `[viz]` extra (radar, direction heatmap, PCA scatter, per-domain bars).
 
 Not yet: representation / trajectory / causal metrics, HTML / LaTeX reports, HumanEval-style executional tasks (sandboxing deferred — δ-magnitude-only usage is already available). See `CLAUDE.md` for the full roadmap.
 
