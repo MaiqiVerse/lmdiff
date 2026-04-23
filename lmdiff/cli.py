@@ -271,6 +271,103 @@ def run_task(
             console.print(tbl)
 
 
+@app.command(name="family-experiment")
+def family_experiment(
+    base: str = typer.Option(..., "--base", help="HuggingFace id or path for the base model"),
+    variant: list[str] = typer.Option(
+        ...,
+        "--variant",
+        help=(
+            "Repeatable. 'name=model_id' for one variant, "
+            "e.g. --variant yarn=NousResearch/Yarn-Llama-2-7b-128k. "
+            "Pass --variant once per variant."
+        ),
+    ),
+    tasks: Optional[str] = typer.Option(
+        None,
+        "--tasks",
+        help="Comma-separated lm-eval task names (default: lmdiff.experiments DEFAULT_TASKS).",
+    ),
+    limit_per_task: int = typer.Option(100, "--limit-per-task", help="Probes per task."),
+    max_new_tokens: int = typer.Option(16, "--max-new-tokens"),
+    seed: int = typer.Option(42, "--seed"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model precision: bfloat16, float16, float32"),
+    skip_accuracy: bool = typer.Option(
+        False, "--skip-accuracy", help="Only compute delta-magnitude radar (skip accuracy runs).",
+    ),
+    output_dir: Path = typer.Option(
+        ...,
+        "--output-dir",
+        help="Directory for JSON / radar PNG artifacts (created if missing).",
+    ),
+    output_prefix: str = typer.Option(
+        "family_geometry_lm_eval",
+        "--output-prefix",
+        help="Filename prefix for all outputs.",
+    ),
+    no_radars: bool = typer.Option(
+        False, "--no-radars", help="Skip matplotlib radar rendering.",
+    ),
+) -> None:
+    """Run a base x N-variant family geometry + accuracy experiment over lm-eval tasks."""
+    parsed: dict[str, str] = {}
+    for spec in variant:
+        name, model_id = _parse_variant_spec(spec)
+        if name in parsed:
+            raise typer.BadParameter(f"Duplicate variant name: '{name}'")
+        parsed[name] = model_id
+
+    from lmdiff.experiments.family import DEFAULT_TASKS, run_family_experiment
+
+    if tasks is None:
+        task_list = list(DEFAULT_TASKS)
+    else:
+        task_list = [t.strip() for t in tasks.split(",") if t.strip()]
+        if not task_list:
+            raise typer.BadParameter("--tasks must contain at least one task name")
+
+    run_family_experiment(
+        base=base,
+        variants=parsed,
+        tasks=task_list,
+        limit_per_task=limit_per_task,
+        max_new_tokens=max_new_tokens,
+        seed=seed,
+        dtype=dtype,
+        skip_accuracy=skip_accuracy,
+        output_dir=output_dir,
+        output_prefix=output_prefix,
+        write_outputs=True,
+        render_radars=not no_radars,
+        progress=True,
+    )
+
+
+@app.command(name="plot-geometry")
+def plot_geometry(
+    georesult: Path = typer.Argument(..., help="GeoResult JSON path (v1/v2/v3/v4)."),
+    output_dir: Path = typer.Option(
+        ...,
+        "--output-dir",
+        help="Directory to write PNGs + index.html (created if missing).",
+    ),
+    no_index: bool = typer.Option(
+        False, "--no-index", help="Skip writing the index.html preview.",
+    ),
+) -> None:
+    """Render the figure suite (heatmaps, PCA, domain bar) from a GeoResult JSON."""
+    if not georesult.exists():
+        raise typer.BadParameter(f"GeoResult JSON not found: {georesult}")
+
+    from lmdiff.experiments.family import plot_family_geometry
+
+    rendered = plot_family_geometry(
+        georesult, output_dir, write_index_html=not no_index,
+    )
+    if not rendered:
+        raise typer.Exit(code=1)
+
+
 @app.command(name="list-metrics")
 def list_metrics(
     level: Optional[str] = typer.Option(None, help="Filter by metric level"),
