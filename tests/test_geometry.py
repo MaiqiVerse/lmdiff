@@ -1693,3 +1693,141 @@ class TestSchemaV1V2V3BackwardCompatV4Reader:
         assert r.probe_domains == ()
         assert r.avg_tokens_per_probe == ()
         assert r.magnitudes_normalized == {}
+
+
+# ── Step 5.5 part B: per-task normalized + pca_map(use_normalized) ──
+
+class TestMagnitudesPerTaskNormalized:
+    def _geo(self) -> GeoResult:
+        # 4 probes, two domains (math × 2, code × 2), two variants.
+        # δ_A = [3, 4, 0, 0]; δ_B = [0, 0, 6, 8].
+        # avg_tokens = (10, 10, 100, 100) so math probes are short, code long.
+        return GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=4,
+            magnitudes={"A": 5.0, "B": 10.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 0.0}, "B": {"A": 0.0, "B": 1.0}},
+            change_vectors={"A": [3.0, 4.0, 0.0, 0.0], "B": [0.0, 0.0, 6.0, 8.0]},
+            per_probe={
+                "A": {"p0": 3.0, "p1": 4.0, "p2": 0.0, "p3": 0.0},
+                "B": {"p0": 0.0, "p1": 0.0, "p2": 6.0, "p3": 8.0},
+            },
+            metadata={},
+            probe_domains=("math", "math", "code", "code"),
+            avg_tokens_per_probe=(10.0, 10.0, 100.0, 100.0),
+            magnitudes_normalized={"A": 0.0, "B": 0.0},
+        )
+
+    def test_per_task_normalized_formula(self):
+        result = self._geo()
+        hm = result.magnitudes_per_task_normalized()
+        # A on math: ‖(3,4)‖ = 5; n=2, avg_tok=10 → denom=sqrt(20). norm=5/sqrt(20).
+        assert hm["A"]["math"] == pytest.approx(5.0 / math.sqrt(20), abs=1e-9)
+        assert hm["A"]["code"] == pytest.approx(0.0, abs=1e-9)
+        # B on code: ‖(6,8)‖ = 10; n=2, avg_tok=100 → denom=sqrt(200). norm=10/sqrt(200).
+        assert hm["B"]["code"] == pytest.approx(10.0 / math.sqrt(200), abs=1e-9)
+        assert hm["B"]["math"] == pytest.approx(0.0, abs=1e-9)
+
+    def test_normalization_can_invert_per_task_ranking(self):
+        # Raw: B's code magnitude (10) > A's math magnitude (5). After
+        # per-token normalization (code probes 10× longer), the ranking
+        # can flip.
+        result = self._geo()
+        raw = result.domain_heatmap()
+        norm = result.magnitudes_per_task_normalized()
+        # Raw: B-code (10.0) > A-math (5.0)
+        assert raw["B"]["code"] > raw["A"]["math"]
+        # Normalized: A-math (5/sqrt(20)≈1.118) > B-code (10/sqrt(200)≈0.707)
+        assert norm["A"]["math"] > norm["B"]["code"]
+
+    def test_raises_without_probe_domains(self):
+        result = GeoResult(
+            base_name="base", variant_names=["A"], n_probes=2,
+            magnitudes={"A": 1.0}, cosine_matrix={"A": {"A": 1.0}},
+            change_vectors={"A": [1.0, 0.0]}, per_probe={"A": {}},
+            metadata={},
+            avg_tokens_per_probe=(5.0, 5.0),
+            magnitudes_normalized={"A": 0.5},
+        )
+        with pytest.raises(ValueError, match="probe_domains"):
+            result.magnitudes_per_task_normalized()
+
+    def test_raises_without_avg_tokens(self):
+        result = GeoResult(
+            base_name="base", variant_names=["A"], n_probes=2,
+            magnitudes={"A": 1.0}, cosine_matrix={"A": {"A": 1.0}},
+            change_vectors={"A": [1.0, 0.0]}, per_probe={"A": {}},
+            metadata={},
+            probe_domains=("math", "math"),
+        )
+        with pytest.raises(ValueError, match="avg_tokens_per_probe"):
+            result.magnitudes_per_task_normalized()
+
+
+class TestPCAMapUseNormalized:
+    def _geo_with_uneven_lengths(self) -> GeoResult:
+        # 2 variants, 3 probes. avg_tokens (1, 1, 100) — third probe very long.
+        # δ_A = [1, 1, 1] entries; δ_B = [0, 0, 1].
+        # use_normalized=True → δ entries scaled by 1/sqrt(token_count).
+        return GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=3,
+            magnitudes={"A": math.sqrt(3), "B": 1.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 0.5774}, "B": {"A": 0.5774, "B": 1.0}},
+            change_vectors={"A": [1.0, 1.0, 1.0], "B": [0.0, 0.0, 1.0]},
+            per_probe={"A": {"p0": 1, "p1": 1, "p2": 1}, "B": {"p0": 0, "p1": 0, "p2": 1}},
+            metadata={},
+            avg_tokens_per_probe=(1.0, 1.0, 100.0),
+            magnitudes_normalized={},
+        )
+
+    def test_use_normalized_default_true(self):
+        # Default flag is True; with avg_tokens_per_probe populated, PCA
+        # operates on entry-wise scaled vectors. Different from raw.
+        result = self._geo_with_uneven_lengths()
+        pca_norm = result.pca_map(n_components=2)  # default use_normalized=True
+        pca_raw = result.pca_map(n_components=2, use_normalized=False)
+        # Coords must differ — entry scaling changes SVD output.
+        coord_a_norm = pca_norm.coords["A"]
+        coord_a_raw = pca_raw.coords["A"]
+        assert not np.allclose(coord_a_norm, coord_a_raw, atol=1e-6)
+
+    def test_use_normalized_false_matches_legacy(self):
+        # use_normalized=False with any avg_tokens → uses raw change_vectors.
+        result = self._geo_with_uneven_lengths()
+        pca = result.pca_map(n_components=2, use_normalized=False)
+        # Manual SVD on raw vectors:
+        X = np.asarray([[1.0, 1.0, 1.0], [0.0, 0.0, 1.0]])
+        U, S, _ = np.linalg.svd(X, full_matrices=False)
+        expected = U * S
+        for i, name in enumerate(["A", "B"]):
+            np.testing.assert_allclose(
+                pca.coords[name], expected[i, :2], atol=1e-9,
+            )
+
+    def test_use_normalized_falls_back_when_avg_tokens_empty(self):
+        # Legacy GeoResult: avg_tokens_per_probe == (). Even with
+        # use_normalized=True (default), PCA falls back to raw silently.
+        result = GeoResult(
+            base_name="base", variant_names=["A", "B"], n_probes=3,
+            magnitudes={"A": math.sqrt(3), "B": 1.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 0.0}, "B": {"A": 0.0, "B": 1.0}},
+            change_vectors={"A": [1.0, 1.0, 1.0], "B": [0.0, 0.0, 1.0]},
+            per_probe={"A": {}, "B": {}},
+            metadata={},
+            # No avg_tokens_per_probe.
+        )
+        pca_default = result.pca_map(n_components=2)
+        pca_explicit_raw = result.pca_map(n_components=2, use_normalized=False)
+        # When fallback hits, both calls produce identical PCA.
+        for name in ["A", "B"]:
+            np.testing.assert_allclose(
+                pca_default.coords[name], pca_explicit_raw.coords[name], atol=1e-12,
+            )
+
+    def test_explained_variance_ratio_still_sums_to_one(self):
+        result = self._geo_with_uneven_lengths()
+        pca = result.pca_map(n_components=2)
+        assert sum(pca.explained_variance_ratio) == pytest.approx(1.0, abs=1e-9)

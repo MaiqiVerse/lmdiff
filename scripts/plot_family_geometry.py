@@ -140,27 +140,47 @@ def main(argv: list[str] | None = None) -> int:
             if out is not None:
                 entries.append(("PCA scatter", "pca_scatter.png"))
 
-    # 4. Domain bar (needs probe_domains — v3)
+    # 4. Domain bar — prefer per-token-normalized (v4) when available,
+    # fall back to raw (v3). Skip entirely without probe_domains.
     if not geo.probe_domains:
         print("  [WARN] domain_bar skipped: probe_domains empty "
               "(legacy v1/v2 JSON or list[str] prompts)", file=sys.stderr)
     else:
-        try:
-            heatmap = geo.domain_heatmap()
-        except ValueError as exc:
-            print(f"  [WARN] domain_bar skipped: domain_heatmap failed: {exc}",
-                  file=sys.stderr)
-        else:
+        heatmap = None
+        domain_bar_title = f"Per-domain δ magnitude — base: {geo.base_name}"
+        if geo.avg_tokens_per_probe:
+            try:
+                heatmap = geo.magnitudes_per_task_normalized()
+                domain_bar_title = (
+                    f"Per-domain δ magnitude (per-token normalized) "
+                    f"— base: {geo.base_name}"
+                )
+            except ValueError as exc:
+                print(f"  [WARN] normalized domain_bar failed, falling back to raw: {exc}",
+                      file=sys.stderr)
+        if heatmap is None:
+            try:
+                heatmap = geo.domain_heatmap()
+            except ValueError as exc:
+                print(f"  [WARN] domain_bar skipped: domain_heatmap failed: {exc}",
+                      file=sys.stderr)
+
+        if heatmap is not None:
             from lmdiff.viz.domain_bar import plot_domain_bar
             out = _plot_or_warn(
                 "domain_bar",
                 plot_domain_bar,
                 domain_heatmap=heatmap,
                 out_path=args.output_dir / "domain_bar.png",
-                title=f"Per-domain δ magnitude — base: {geo.base_name}",
+                title=domain_bar_title,
             )
             if out is not None:
-                entries.append(("Per-domain δ magnitude", "domain_bar.png"))
+                label = (
+                    "Per-domain δ magnitude (per-token normalized)"
+                    if geo.avg_tokens_per_probe
+                    else "Per-domain δ magnitude (raw)"
+                )
+                entries.append((label, "domain_bar.png"))
 
     # Index
     if entries:
