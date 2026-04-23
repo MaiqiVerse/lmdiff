@@ -457,7 +457,7 @@ class TestJsonGeometry:
         d = to_json_dict(r)
         s = to_json(r)
         reloaded = json.loads(s)
-        assert reloaded["schema_version"] == "3"
+        assert reloaded["schema_version"] == "4"
         assert reloaded["base_name"] == "llama2-7b"
         assert reloaded["variant_names"] == ["13b", "70b", "chat"]
         assert reloaded["magnitudes"]["13b"] == pytest.approx(1.52)
@@ -788,7 +788,7 @@ class TestSelectiveJsonRoundTrip:
             base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
         )
         d = to_json_dict(r1)
-        assert d["schema_version"] == "3"
+        assert d["schema_version"] == "4"
         s = json.dumps(d, sort_keys=True)
         round_tripped = geo_result_from_json_dict(json.loads(s))
 
@@ -1350,7 +1350,7 @@ class TestSchemaV3RoundTrip:
             probe_domains=("math", "code", "math"),
         )
         d = to_json_dict(result)
-        assert d["schema_version"] == "3"
+        assert d["schema_version"] == "4"
         assert d["probe_domains"] == ["math", "code", "math"]
 
         s = json.dumps(d, sort_keys=True)
@@ -1425,3 +1425,271 @@ class TestSchemaV1V2BackwardCompat:
                 "magnitudes": {}, "cosine_matrix": {},
                 "change_vectors": {}, "per_probe": {}, "metadata": {},
             })
+
+
+# ── Step 5.5: per-token magnitude normalization (schema v4) ──
+
+def _mock_engine_with_real_tokenizer(
+    name: str,
+    completions: list[str],
+    self_ce: list[float],
+    base_of_v_ce: list[float] | None = None,
+    tokens_per_probe: int = 4,
+    encode_fn=None,
+):
+    """Like _make_mock_engine but supplies a tokenizer.encode that returns
+    actual token-id lists so analyze() can `len()` it. Default encode_fn
+    returns `tokens_per_probe` ids per call.
+    """
+    engine = _make_mock_engine(
+        name, completions, self_ce, base_of_v_ce, tokens_per_probe,
+    )
+    if encode_fn is None:
+        engine.tokenizer.encode.side_effect = (
+            lambda text, add_special_tokens=False: list(range(tokens_per_probe))
+        )
+    else:
+        engine.tokenizer.encode.side_effect = encode_fn
+    return engine
+
+
+class TestAvgTokensPerProbe:
+    def test_length_matches_n_probes(self, monkeypatch):
+        outputs_a = ["a0", "a1", "a2"]
+        engine_a = _mock_engine_with_real_tokenizer(
+            "A", outputs_a, self_ce=[1.0, 2.0, 3.0], tokens_per_probe=5,
+        )
+        engine_base = _mock_engine_with_real_tokenizer(
+            "base", ["ignored"], self_ce=[0.0],
+            base_of_v_ce=[3.0, 4.0, 5.0], tokens_per_probe=5,
+        )
+        def base_score_side(prompts, continuations=None, continuation_ids=None):
+            sr = MagicMock()
+            sr.cross_entropies = [3.0, 4.0, 5.0]
+            sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
+            return sr
+        engine_base.score.side_effect = base_score_side
+
+        _install_mock_engines(monkeypatch, {"base": engine_base, "A": engine_a})
+        cg = ChangeGeometry(
+            base=_cfg("base"),
+            variants={"A": _cfg("A")},
+            prompts=["p0", "p1", "p2"],
+        )
+        result = cg.analyze(max_new_tokens=8)
+        assert len(result.avg_tokens_per_probe) == result.n_probes
+        assert result.avg_tokens_per_probe == (5.0, 5.0, 5.0)
+
+    def test_uses_base_tokenizer_not_variant(self, monkeypatch):
+        # Base says 7 tokens per probe, variant says 11 (variant should be ignored).
+        engine_a = _mock_engine_with_real_tokenizer(
+            "A", ["a0", "a1"], self_ce=[1.0, 2.0], tokens_per_probe=11,
+        )
+        engine_base = _mock_engine_with_real_tokenizer(
+            "base", ["ignored"], self_ce=[0.0],
+            base_of_v_ce=[2.0, 3.0], tokens_per_probe=7,
+        )
+        def base_score_side(prompts, continuations=None, continuation_ids=None):
+            sr = MagicMock()
+            sr.cross_entropies = [2.0, 3.0]
+            sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
+            return sr
+        engine_base.score.side_effect = base_score_side
+
+        _install_mock_engines(monkeypatch, {"base": engine_base, "A": engine_a})
+        cg = ChangeGeometry(
+            base=_cfg("base"),
+            variants={"A": _cfg("A")},
+            prompts=["p0", "p1"],
+        )
+        result = cg.analyze()
+        assert result.avg_tokens_per_probe == (7.0, 7.0)
+
+    def test_legacy_mock_yields_empty_avg_tokens(self, monkeypatch):
+        # _make_mock_engine doesn't configure tokenizer.encode → MagicMock
+        # default returns a MagicMock from .encode(); len(MagicMock()) is 0.
+        # So avg_tokens_per_probe is all-zero and magnitudes_normalized is
+        # skipped (denom=0). Existing tests rely on this graceful degradation.
+        result = _build_two_variant_geo(
+            monkeypatch,
+            base_of_a=[3.0, 4.0, 5.0], self_a=[1.0, 2.0, 3.0],
+            base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
+        )
+        assert result.avg_tokens_per_probe == (0.0, 0.0, 0.0)
+        assert result.magnitudes_normalized == {}
+
+
+class TestMagnitudesNormalized:
+    def test_formula_correctness(self, monkeypatch):
+        # 3 probes × 5 tokens each → mean_tokens = 5, denom = sqrt(3 * 5).
+        # δ_A = [2, 2, 2] → ‖δ_A‖ = sqrt(12); normalized = sqrt(12)/sqrt(15).
+        outputs_a = ["a0", "a1", "a2"]
+        engine_a = _mock_engine_with_real_tokenizer(
+            "A", outputs_a, self_ce=[1.0, 2.0, 3.0], tokens_per_probe=5,
+        )
+        engine_base = _mock_engine_with_real_tokenizer(
+            "base", ["ignored"], self_ce=[0.0],
+            base_of_v_ce=[3.0, 4.0, 5.0], tokens_per_probe=5,
+        )
+        def base_score_side(prompts, continuations=None, continuation_ids=None):
+            sr = MagicMock()
+            sr.cross_entropies = [3.0, 4.0, 5.0]
+            sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
+            return sr
+        engine_base.score.side_effect = base_score_side
+
+        _install_mock_engines(monkeypatch, {"base": engine_base, "A": engine_a})
+        cg = ChangeGeometry(
+            base=_cfg("base"),
+            variants={"A": _cfg("A")},
+            prompts=["p0", "p1", "p2"],
+        )
+        result = cg.analyze()
+        expected = math.sqrt(12) / math.sqrt(3 * 5)
+        assert result.magnitudes_normalized["A"] == pytest.approx(expected, abs=1e-9)
+        assert result.magnitudes["A"] == pytest.approx(math.sqrt(12), abs=1e-9)
+
+    def test_uniform_lengths_proportional_to_raw(self, monkeypatch):
+        # Uniform L → normalized = raw / sqrt(n*L), uniform scale; ratio of
+        # normalized magnitudes equals ratio of raw magnitudes.
+        outputs_a = ["a0", "a1", "a2"]
+        outputs_b = ["b0", "b1", "b2"]
+        L = 7
+        engine_a = _mock_engine_with_real_tokenizer(
+            "A", outputs_a, self_ce=[1.0, 2.0, 3.0], tokens_per_probe=L,
+        )
+        engine_b = _mock_engine_with_real_tokenizer(
+            "B", outputs_b, self_ce=[1.0, 3.0, 4.0], tokens_per_probe=L,
+        )
+        def base_score_side(prompts, continuations=None, continuation_ids=None):
+            sr = MagicMock()
+            if continuations == outputs_a:
+                sr.cross_entropies = [3.0, 4.0, 5.0]
+            elif continuations == outputs_b:
+                sr.cross_entropies = [2.0, 5.0, 1.0]
+            else:
+                raise AssertionError(f"unexpected: {continuations}")
+            sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
+            return sr
+        engine_base = _mock_engine_with_real_tokenizer(
+            "base", ["ignored"], self_ce=[0.0], tokens_per_probe=L,
+        )
+        engine_base.score.side_effect = base_score_side
+
+        _install_mock_engines(
+            monkeypatch, {"base": engine_base, "A": engine_a, "B": engine_b},
+        )
+        cg = ChangeGeometry(
+            base=_cfg("base"),
+            variants={"A": _cfg("A"), "B": _cfg("B")},
+            prompts=["p0", "p1", "p2"],
+        )
+        result = cg.analyze()
+
+        denom = math.sqrt(3 * L)
+        for v in ("A", "B"):
+            assert result.magnitudes_normalized[v] == pytest.approx(
+                result.magnitudes[v] / denom, abs=1e-9,
+            )
+        ratio_norm = result.magnitudes_normalized["A"] / result.magnitudes_normalized["B"]
+        ratio_raw = result.magnitudes["A"] / result.magnitudes["B"]
+        assert ratio_norm == pytest.approx(ratio_raw, abs=1e-9)
+
+
+class TestSchemaV4RoundTrip:
+    def test_avg_tokens_and_normalized_round_trip(self):
+        from lmdiff.report.json_report import (
+            geo_result_from_json_dict, to_json_dict,
+        )
+        result = GeoResult(
+            base_name="base",
+            variant_names=["A"],
+            n_probes=3,
+            magnitudes={"A": 2.0},
+            cosine_matrix={"A": {"A": 1.0}},
+            change_vectors={"A": [1.0, 1.0, 1.0]},
+            per_probe={"A": {"p0": 1.0, "p1": 1.0, "p2": 1.0}},
+            metadata={"n_total_probes": 3, "n_skipped": 0, "bpb_normalized": {}},
+            avg_tokens_per_probe=(5.0, 7.0, 9.0),
+            magnitudes_normalized={"A": 0.5},
+        )
+        d = to_json_dict(result)
+        assert d["schema_version"] == "4"
+        assert d["avg_tokens_per_probe"] == [5.0, 7.0, 9.0]
+        assert d["magnitudes_normalized"] == {"A": 0.5}
+
+        s = json.dumps(d, sort_keys=True)
+        rt = geo_result_from_json_dict(json.loads(s))
+        assert rt.avg_tokens_per_probe == (5.0, 7.0, 9.0)
+        assert isinstance(rt.avg_tokens_per_probe, tuple)
+        assert rt.magnitudes_normalized == {"A": 0.5}
+
+    def test_empty_avg_tokens_round_trips(self):
+        from lmdiff.report.json_report import (
+            geo_result_from_json_dict, to_json_dict,
+        )
+        result = GeoResult(
+            base_name="base", variant_names=["A"], n_probes=2,
+            magnitudes={"A": 1.0}, cosine_matrix={"A": {"A": 1.0}},
+            change_vectors={"A": [1.0, 0.0]}, per_probe={"A": {}},
+            metadata={"n_total_probes": 2, "n_skipped": 0, "bpb_normalized": {}},
+        )
+        s = json.dumps(to_json_dict(result), sort_keys=True)
+        rt = geo_result_from_json_dict(json.loads(s))
+        assert rt.avg_tokens_per_probe == ()
+        assert rt.magnitudes_normalized == {}
+
+
+class TestSchemaV1V2V3BackwardCompatV4Reader:
+    def test_v3_payload_has_empty_v4_fields(self):
+        from lmdiff.report.json_report import geo_result_from_json_dict
+        v3 = {
+            "schema_version": "3",
+            "base_name": "base", "variant_names": ["A"], "n_probes": 2,
+            "magnitudes": {"A": 1.0}, "cosine_matrix": {"A": {"A": 1.0}},
+            "change_vectors": {"A": [1.0, 0.0]},
+            "per_probe": {"A": {"p0": 1.0, "p1": 0.0}},
+            "metadata": {},
+            "delta_means": {"A": 0.5},
+            "selective_magnitudes": {"A": 0.707},
+            "selective_cosine_matrix": {"A": {"A": 1.0}},
+            "probe_domains": ["math", "code"],
+        }
+        r = geo_result_from_json_dict(v3)
+        assert r.probe_domains == ("math", "code")
+        assert r.avg_tokens_per_probe == ()
+        assert r.magnitudes_normalized == {}
+
+    def test_v2_payload_has_empty_v4_fields(self):
+        from lmdiff.report.json_report import geo_result_from_json_dict
+        v2 = {
+            "schema_version": "2",
+            "base_name": "base", "variant_names": ["A"], "n_probes": 2,
+            "magnitudes": {"A": 1.0}, "cosine_matrix": {"A": {"A": 1.0}},
+            "change_vectors": {"A": [1.0, 0.0]},
+            "per_probe": {"A": {"p0": 1.0, "p1": 0.0}},
+            "metadata": {},
+            "delta_means": {"A": 0.5},
+            "selective_magnitudes": {"A": 0.707},
+            "selective_cosine_matrix": {"A": {"A": 1.0}},
+        }
+        r = geo_result_from_json_dict(v2)
+        assert r.probe_domains == ()
+        assert r.avg_tokens_per_probe == ()
+        assert r.magnitudes_normalized == {}
+
+    def test_v1_payload_has_empty_v4_fields(self):
+        from lmdiff.report.json_report import geo_result_from_json_dict
+        v1 = {
+            "schema_version": "1",
+            "base_name": "base", "variant_names": ["A"], "n_probes": 2,
+            "magnitudes": {"A": 1.0}, "cosine_matrix": {"A": {"A": 1.0}},
+            "change_vectors": {"A": [1.0, 0.0]},
+            "per_probe": {"A": {"p0": 1.0, "p1": 0.0}},
+            "metadata": {},
+        }
+        r = geo_result_from_json_dict(v1)
+        assert r.delta_means == {}
+        assert r.probe_domains == ()
+        assert r.avg_tokens_per_probe == ()
+        assert r.magnitudes_normalized == {}

@@ -110,6 +110,11 @@ class GeoResult:
     (length n_probes), one entry per probe. Enables domain_heatmap(),
     complementarity(), and per-domain analysis. () when the caller passed
     a bare list[str] to ChangeGeometry or when the JSON is v1/v2.
+
+    avg_tokens_per_probe + magnitudes_normalized (schema v4) provide a
+    per-token-normalized view of magnitude that's comparable across probe
+    sets with very different prompt lengths (e.g. ~30-token MCQ vs
+    ~9000-token long-context). See LESSONS L-022.
     """
     base_name: str
     variant_names: list[str]
@@ -123,6 +128,19 @@ class GeoResult:
     selective_magnitudes: dict[str, float] = field(default_factory=dict)
     selective_cosine_matrix: dict[str, dict[str, float]] = field(default_factory=dict)
     probe_domains: tuple[str | None, ...] = ()
+    avg_tokens_per_probe: tuple[float, ...] = ()
+    """Per-probe token count (using base_engine.tokenizer at analyze time).
+    Aligned with change_vectors after the NaN filter; len == n_probes when
+    populated. Empty tuple for legacy v1/v2/v3 GeoResult or when reconstructed
+    from a JSON without the field. Schema v4 (L-022)."""
+
+    magnitudes_normalized: dict[str, float] = field(default_factory=dict)
+    """Per-token bulk-normalized ‖δ‖: raw / sqrt(n_probes × mean_tokens).
+
+    Interprets the L2 norm as RMS per-token CE difference, comparable across
+    probe sets with very different prompt lengths. Empty when
+    avg_tokens_per_probe is empty (no token data available). Schema v4
+    (L-022)."""
 
     def summary_table(self) -> list[dict]:
         """One row per variant: {variant, magnitude, cosines}."""
@@ -424,6 +442,15 @@ class ChangeGeometry:
         variant_names = list(self.variants.keys())
         base_engine = self.base_engine
 
+        # Pre-compute per-probe token counts using the base tokenizer. CPU
+        # only — no model forward pass. Needed for magnitudes_normalized
+        # (schema v4) so per-task magnitudes from tasks with very different
+        # prompt lengths can be compared on RMS-per-token terms.
+        all_probe_tokens: list[int] = [
+            len(base_engine.tokenizer.encode(p, add_special_tokens=False))
+            for p in self.prompts
+        ]
+
         raw_deltas: dict[str, list[float]] = {}
         bpb_flags: dict[str, bool] = {}
 
@@ -478,6 +505,19 @@ class ChangeGeometry:
             all_domains = [p.domain for p in self.probe_set]
             probe_domains = tuple(all_domains[i] for i in valid_indices)
 
+        # Schema v4 (L-022): per-probe token counts + bulk-normalized magnitudes.
+        avg_tokens_per_probe: tuple[float, ...] = tuple(
+            float(all_probe_tokens[i]) for i in valid_indices
+        )
+        magnitudes_normalized: dict[str, float] = {}
+        if avg_tokens_per_probe:
+            mean_tokens = float(np.mean(avg_tokens_per_probe))
+            denom = math.sqrt(n_valid * mean_tokens) if mean_tokens > 0 else 0.0
+            if denom > 0:
+                magnitudes_normalized = {
+                    name: magnitudes[name] / denom for name in variant_names
+                }
+
         metadata = {
             "n_total_probes": n_total,
             "n_skipped": n_total - n_valid,
@@ -503,6 +543,8 @@ class ChangeGeometry:
             selective_magnitudes=selective_magnitudes,
             selective_cosine_matrix=selective_cosine_matrix,
             probe_domains=probe_domains,
+            avg_tokens_per_probe=avg_tokens_per_probe,
+            magnitudes_normalized=magnitudes_normalized,
         )
 
     def _delta_for_variant(
