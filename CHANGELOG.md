@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0] - 2026-04-22
+
+### Added
+- **`GeoResult.avg_tokens_per_probe`** — per-probe token count from the base tokenizer, length == `n_probes` after the NaN filter.
+- **`GeoResult.magnitudes_normalized`** — bulk per-token-normalized magnitude: `raw / sqrt(n_probes × mean_tokens)`. Comparable across probe sets with very different prompt lengths.
+- **`GeoResult.magnitudes_per_task_normalized()`** — per-variant per-task per-token-normalized magnitude (requires both `probe_domains` and `avg_tokens_per_probe`).
+- **`GeoResult.pca_map(use_normalized=True)`** — new flag; when enabled and `avg_tokens_per_probe` is populated, scales each probe entry δ_v[i] by 1/sqrt(token_count_for_probe_i) before SVD. Default flipped to `True` (was raw-only).
+- `scripts/plot_family_geometry.py` — `domain_bar` now defaults to `magnitudes_per_task_normalized()` when v4 token data is present, falls back to raw `domain_heatmap()` on v3 / older.
+
+### Changed
+- GeoResult JSON `schema_version` bumped `"3"` → `"4"`. Reader accepts v1, v2, v3, v4.
+- Default `pca_map(use_normalized=True)`. Existing v1/v2/v3 GeoResults keep producing raw PCA (graceful fallback when `avg_tokens_per_probe` is empty).
+
+### Notes
+- Backward compatible with v0.2.x public API. `magnitudes`, `cosine_matrix`, `selective_cosine_matrix`, `change_vectors`, `probe_domains`, `constant_fractions` all unchanged.
+- Per-token normalization motivated by L-022: in lm-eval task mixes with very heterogeneous prompt lengths (e.g. ~30-token MCQ vs ~9000-token long-context QA), raw `‖δ‖` is dominated by the longest-prompt task and obscures per-token CE differences across the rest.
+- The previous `[lm-eval]` extra picked up `jieba` / `fuzzywuzzy` / `rouge` so longbench tasks load without an extra step. Same in v0.4.0.
+
 ## [0.2.1] - 2026-04-21
 
 ### Added

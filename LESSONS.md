@@ -27,6 +27,7 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-019: default code axis uses capability MCQ, not codegen task
 - L-020: lm-eval tasks can sys.exit() instead of raising
 - L-021: tests of optional-dep features need skipif, or CI breaks silently
+- L-022: per-task ‖δ‖ is dominated by prompt length; normalize per token to compare across heterogeneous task mixes
 
 ---
 
@@ -594,3 +595,53 @@ In-memory GeoResult and JSON-roundtripped GeoResult are NOT interchangeable on `
 **Diagnostic signature:** local `pytest` green, GitHub CI red on the same commit, failing test invokes an optional import. The delta is usually which extras got pip-installed.
 
 **Related code / workflow:** `tests/test_geometry.py::TestCluster`, `tests/test_viz_radar.py::TestRender`, `.github/workflows/test.yml`.
+
+---
+
+## L-022: per-task ‖δ‖ is dominated by prompt length; normalize per token to compare across heterogeneous task mixes
+
+**Date:** 2026-04-22
+**Phase:** 2 (post-extended-experiment)
+**Severity:** Interpretation rule. Raw `‖δ‖` is technically correct but, on probe sets with very heterogeneous prompt lengths, masks per-token CE differences across the rest of the tasks under one outlier task's contribution.
+
+**Symptom:** A 5-task lm-eval family geometry experiment (hellaswag / arc_challenge / gsm8k / mmlu_college_computer_science / longbench_2wikimqa, 100 probes each) over Llama-2-7B and three weight-mod variants produced per-task `‖δ‖`:
+
+```
+task                              yarn   long   code
+hellaswag (~57 tok/probe)         7.05   7.78   3.29
+arc_challenge (~32)               1.32  19.26   2.20
+gsm8k (~72)                       2.62  14.14   5.02
+mmlu_college_cs (~116)            2.02  11.76   6.93
+longbench_2wikimqa (~9000)       76.11  78.56  33.33
+total ‖δ‖                        76.52  83.32  34.64
+```
+
+`longbench_2wikimqa` accounted for **94-99.5% of every variant's total `‖δ‖`** purely by prompt length: long context → small per-token CE differences that L2-norm together into a large number. The original cosine matrix (`[0.947, 0.953]`) and selective cosine matrix (`[0.928, 0.958]`) both looked nearly singular — but only because longbench dominated.
+
+The per-token diagnostic (Pearson `r(avg_tokens, ‖δ‖) > 0.98` for every variant) confirmed prompt length, not actual behavioral specificity, was driving the magnitude pattern.
+
+**Mechanism:** `‖δ_v‖² = Σ_probe δ²`. Each probe's δ contribution scales with the squared per-token CE difference summed over all of that probe's continuation tokens. A 9000-token probe with even a small per-token gap produces ~280× the squared contribution of a 32-token probe with the same per-token gap. Without normalization, "magnitude per task" reduces to "tokens per task."
+
+**Rule:** When comparing magnitudes across probe sets with non-uniform prompt lengths (anything mixing MCQ, generate-until, and long-context tasks), report **per-token-normalized** magnitude:
+
+```
+norm(‖δ_v‖) = ‖δ_v‖ / sqrt(n_probes × mean_tokens)
+```
+
+This interprets the L2 norm as RMS per-token CE difference. For per-task breakdown, compute per-task n and per-task mean tokens separately. Both are exposed on `GeoResult` as of schema v4:
+
+- `GeoResult.magnitudes_normalized`: bulk per-variant scalar
+- `GeoResult.magnitudes_per_task_normalized()`: per-(variant, task) breakdown
+- `GeoResult.pca_map(use_normalized=True)` (default v4+): entry-wise per-probe scaling so PCA reflects per-token shift, not prompt-length budget
+
+**Diagnostic signature:**
+- One task contributes >70% of every variant's total `‖δ‖`.
+- Pearson `r` between per-task `avg_tokens` and per-task `‖δ‖` exceeds 0.95 for every variant.
+- Cosine matrix narrows to `[0.9, 1.0]` and selective cosine doesn't widen the band as expected from L-017.
+
+In all of those cases, switch to normalized magnitudes for cross-task comparison and re-interpret.
+
+**Caveat:** Per-token normalization is the right move *only* when comparing across tasks of very different lengths. Within a single task (or a probe set with uniform-ish length), raw `‖δ‖` is fine and avoids extra abstraction. Schema v4 keeps both — raw is preserved unchanged.
+
+**Related code:** `lmdiff/geometry.py` (Step 5.5: `avg_tokens_per_probe`, `magnitudes_normalized`, `magnitudes_per_task_normalized`, `pca_map(use_normalized)`).
+**Related script:** `scripts/diagnose_probe_length_effect.py` reproduces the Pearson / per-token-normalized table from any family-experiment summary JSON.
