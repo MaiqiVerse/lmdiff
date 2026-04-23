@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +13,13 @@ from lmdiff.cli import app
 os.environ.setdefault("COLUMNS", "200")
 runner = CliRunner()
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _plain(s: str) -> str:
+    """Strip ANSI escape sequences that rich/typer inject into help output."""
+    return _ANSI_RE.sub("", s)
+
 
 # ── help / registration ───────────────────────────────────────────────
 
@@ -20,20 +28,23 @@ class TestRegistration:
     def test_main_help_lists_new_commands(self):
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        assert "family-experiment" in result.output
-        assert "plot-geometry" in result.output
+        plain = _plain(result.output)
+        assert "family-experiment" in plain
+        assert "plot-geometry" in plain
 
     def test_family_experiment_help(self):
         result = runner.invoke(app, ["family-experiment", "--help"])
         assert result.exit_code == 0
-        assert "--variant" in result.output
-        assert "--base" in result.output
-        assert "--output-dir" in result.output
+        plain = _plain(result.output)
+        assert "--variant" in plain
+        assert "--base" in plain
+        assert "--output-dir" in plain
 
     def test_plot_geometry_help(self):
         result = runner.invoke(app, ["plot-geometry", "--help"])
         assert result.exit_code == 0
-        assert "--output-dir" in result.output
+        plain = _plain(result.output)
+        assert "--output-dir" in plain
 
 
 # ── --variant parsing (repeatable, NOT comma-separated) ───────────────
@@ -71,7 +82,7 @@ class TestVariantParsing:
             ],
         )
         assert result.exit_code != 0
-        assert "name=model_id" in result.output
+        assert "name=model_id" in _plain(result.output)
 
     def test_duplicate_variant_name_rejected(self, tmp_path):
         result = runner.invoke(
@@ -85,7 +96,7 @@ class TestVariantParsing:
             ],
         )
         assert result.exit_code != 0
-        assert "Duplicate variant" in result.output
+        assert "Duplicate variant" in _plain(result.output)
 
 
 # ── option forwarding ────────────────────────────────────────────────
@@ -153,7 +164,8 @@ class TestPlotGeometryCli:
             ],
         )
         assert result.exit_code != 0
-        assert "not found" in result.output.lower() or "does not exist" in result.output.lower()
+        plain = _plain(result.output).lower()
+        assert "not found" in plain or "does not exist" in plain
 
     def test_calls_library_with_existing_input(self, tmp_path):
         fake_json = tmp_path / "geo.json"
