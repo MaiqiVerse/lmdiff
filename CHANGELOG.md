@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.0] - 2026-04-22
+## [0.2.2] - 2026-04-22
 
 ### Added
 - **`GeoResult.avg_tokens_per_probe`** — per-probe token count from the base tokenizer, length == `n_probes` after the NaN filter.
@@ -16,7 +16,7 @@
 ### Notes
 - Backward compatible with v0.2.x public API. `magnitudes`, `cosine_matrix`, `selective_cosine_matrix`, `change_vectors`, `probe_domains`, `constant_fractions` all unchanged.
 - Per-token normalization motivated by L-022: in lm-eval task mixes with very heterogeneous prompt lengths (e.g. ~30-token MCQ vs ~9000-token long-context QA), raw `‖δ‖` is dominated by the longest-prompt task and obscures per-token CE differences across the rest.
-- The previous `[lm-eval]` extra picked up `jieba` / `fuzzywuzzy` / `rouge` so longbench tasks load without an extra step. Same in v0.4.0.
+- The previous `[lm-eval]` extra picked up `jieba` / `fuzzywuzzy` / `rouge` so longbench tasks load without an extra step. Same in v0.2.2.
 
 ## [0.2.1] - 2026-04-21
 
