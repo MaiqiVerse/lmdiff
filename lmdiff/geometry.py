@@ -177,11 +177,24 @@ class GeoResult:
 
     # ── Phase 2 Commit A: analysis helpers ──────────────────────────
 
-    def pca_map(self, n_components: int = 2) -> PCAResult:
+    def pca_map(
+        self, n_components: int = 2, *, use_normalized: bool = True,
+    ) -> PCAResult:
         """Project variants into PC space via SVD on stacked change vectors.
 
         Does not center across variants — magnitude information in δ is
         meaningful (see L-017). Uses numpy SVD; sklearn is not a dependency.
+
+        Args:
+            n_components: number of principal components to retain.
+            use_normalized: if True (default; schema v4) and
+                avg_tokens_per_probe is populated, scale each probe entry
+                δ_v[i] by 1 / sqrt(token_count_for_probe_i) before SVD.
+                This entry-wise per-probe scaling makes longer-prompt
+                probes contribute proportionally to their per-token CE
+                difference rather than dominating by token count alone
+                (see LESSONS L-022). Falls back silently to raw vectors
+                when avg_tokens_per_probe is empty (legacy GeoResult).
 
         Raises:
             ValueError: when n_components exceeds n_variants or n_probes,
@@ -209,6 +222,13 @@ class GeoResult:
             [self.change_vectors[name] for name in self.variant_names],
             dtype=float,
         )
+        if use_normalized and self.avg_tokens_per_probe:
+            tokens = np.asarray(self.avg_tokens_per_probe, dtype=float)
+            # Scale each column j by 1/sqrt(tokens_j); zero-token probes
+            # would blow up — clamp to 1.0 for those (rare edge case).
+            scale = 1.0 / np.sqrt(np.where(tokens > 0, tokens, 1.0))
+            X = X * scale[None, :]
+
         # SVD: X = U diag(S) Vt. PC coords are U * S (same as X @ V).
         U, S, _Vt = np.linalg.svd(X, full_matrices=False)
         coords_full = U * S  # shape (n_variants, min(n_variants, n_probes))
@@ -266,6 +286,62 @@ class GeoResult:
                 sub = vec[indices]
                 per_domain[domain] = float(np.linalg.norm(sub))
             out[name] = per_domain
+        return out
+
+    def magnitudes_per_task_normalized(self) -> dict[str, dict[str, float]]:
+        """Per-variant per-task per-token-normalized magnitude.
+
+        For each (variant, domain) where domain is treated as a task:
+            norm = ‖δ restricted to domain‖ / sqrt(n_domain_probes × avg_domain_tokens)
+
+        Domains with zero probes or zero average tokens render NaN. None
+        domains coalesce to "unknown".
+
+        Requires probe_domains AND avg_tokens_per_probe (schema v4).
+        """
+        if not self.probe_domains:
+            raise ValueError(
+                "magnitudes_per_task_normalized requires probe_domains; "
+                "rebuild GeoResult from a ProbeSet, or use a v3+ JSON."
+            )
+        if not self.avg_tokens_per_probe:
+            raise ValueError(
+                "magnitudes_per_task_normalized requires avg_tokens_per_probe; "
+                "rebuild GeoResult from a fresh analyze() call (schema v4)."
+            )
+        if len(self.probe_domains) != self.n_probes:
+            raise ValueError(
+                f"probe_domains length {len(self.probe_domains)} != n_probes {self.n_probes}"
+            )
+        if len(self.avg_tokens_per_probe) != self.n_probes:
+            raise ValueError(
+                f"avg_tokens_per_probe length {len(self.avg_tokens_per_probe)} "
+                f"!= n_probes {self.n_probes}"
+            )
+
+        # Group probe indices by resolved domain key.
+        by_domain: dict[str, list[int]] = {}
+        for idx, d in enumerate(self.probe_domains):
+            key = d if d is not None else "unknown"
+            by_domain.setdefault(key, []).append(idx)
+
+        tokens = np.asarray(self.avg_tokens_per_probe, dtype=float)
+
+        out: dict[str, dict[str, float]] = {}
+        for name in self.variant_names:
+            vec = np.asarray(self.change_vectors[name], dtype=float)
+            per_task: dict[str, float] = {}
+            for domain, indices in by_domain.items():
+                sub = vec[indices]
+                sub_tokens = tokens[indices]
+                n_task = len(indices)
+                avg_tok = float(sub_tokens.mean()) if n_task > 0 else 0.0
+                denom = math.sqrt(n_task * avg_tok) if avg_tok > 0 else 0.0
+                if denom > 0:
+                    per_task[domain] = float(np.linalg.norm(sub) / denom)
+                else:
+                    per_task[domain] = float("nan")
+            out[name] = per_task
         return out
 
     def complementarity(
