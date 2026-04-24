@@ -5,15 +5,19 @@ when you want to drive an experiment from Python (or from the CLI) without
 re-implementing the load/geometry/accuracy/plot wiring.
 """
 from lmdiff.experiments.family import (
+    DEFAULT_DOMAIN_ORDER,
     DEFAULT_TASKS,
     FamilyExperimentResult,
+    TASK_TO_DOMAIN,
     plot_family_geometry,
     run_family_experiment,
 )
 
 __all__ = [
+    "DEFAULT_DOMAIN_ORDER",
     "DEFAULT_TASKS",
     "FamilyExperimentResult",
+    "TASK_TO_DOMAIN",
     "plot_family_geometry",
     "run_family_experiment",
 ]

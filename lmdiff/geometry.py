@@ -344,6 +344,53 @@ class GeoResult:
             out[name] = per_task
         return out
 
+    def magnitudes_specialization_zscore(self) -> dict[str, dict[str, float]]:
+        """Per-variant z-scored per-domain normalized magnitude.
+
+        For each variant, take its per-domain normalized magnitudes from
+        ``magnitudes_per_task_normalized()`` and z-score them within that
+        variant's row: ``(v - mean) / std`` over the domains. Reveals
+        training-objective-specific specialization signatures that absolute
+        magnitude ranking masks (L-023).
+
+        Population std (ddof=0) is used for stability across variants with
+        2-10 domains. NaN domain values (zero-probe / zero-token domains
+        emitted by ``magnitudes_per_task_normalized``) are dropped before
+        computing mean/std but emitted as NaN in the output. If a variant's
+        remaining domain magnitudes are all equal (std == 0) or only one
+        domain is finite, that variant's z-scores are all 0.0.
+
+        Returns:
+            ``{variant_name: {domain: z_score}}`` with the same
+            ``(variant, domain)`` keys as ``magnitudes_per_task_normalized()``.
+        """
+        per_domain = self.magnitudes_per_task_normalized()
+        out: dict[str, dict[str, float]] = {}
+        for variant, domain_vals in per_domain.items():
+            domains = list(domain_vals.keys())
+            arr = np.asarray([domain_vals[d] for d in domains], dtype=float)
+            mask = np.isfinite(arr)
+            if mask.sum() <= 1:
+                # 0 or 1 finite values → no spread to z-score against.
+                out[variant] = {
+                    d: (0.0 if mask[i] else float("nan"))
+                    for i, d in enumerate(domains)
+                }
+                continue
+            finite = arr[mask]
+            mean = float(finite.mean())
+            std = float(finite.std(ddof=0))
+            zs: dict[str, float] = {}
+            for i, d in enumerate(domains):
+                if not mask[i]:
+                    zs[d] = float("nan")
+                elif std == 0.0:
+                    zs[d] = 0.0
+                else:
+                    zs[d] = float((arr[i] - mean) / std)
+            out[variant] = zs
+        return out
+
     def complementarity(
         self, v1: str, v2: str, threshold: float = 0.3,
     ) -> ComplementarityResult:

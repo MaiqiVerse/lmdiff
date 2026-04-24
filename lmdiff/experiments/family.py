@@ -49,6 +49,27 @@ DEFAULT_TASKS: tuple[str, ...] = (
     "longbench_2wikimqa",
 )
 
+# Mapping from lm-eval task name to lmdiff domain label. Mirrors
+# KNOWN_TASK_DOMAINS in lmdiff/probes/adapters.py for the DEFAULT_TASKS
+# subset, but is the canonical source for summary-JSON serialization
+# (task-keyed wire format → domain-keyed GeoResult dicts).
+TASK_TO_DOMAIN: dict[str, str] = {
+    "hellaswag": "commonsense",
+    "arc_challenge": "reasoning",
+    "gsm8k": "math",
+    "mmlu_college_computer_science": "code",
+    "longbench_2wikimqa": "long-context",
+}
+
+DEFAULT_DOMAIN_ORDER: list[str] = [
+    "commonsense",
+    "reasoning",
+    "math",
+    "code",
+    "long-context",
+]
+
+
 # Evaluator class for each generate_until task whose accuracy we score.
 GENERATE_EVALUATORS: dict[str, type] = {
     "gsm8k": Gsm8kNumberMatch,
@@ -82,12 +103,21 @@ class FamilyExperimentResult:
     delta_magnitude_by_variant_normalized: dict[str, dict[str, float]] = field(
         default_factory=dict,
     )
+    delta_specialization_zscore_by_variant: dict[str, dict[str, float]] = field(
+        default_factory=dict,
+    )
     accuracy_by_variant: dict[str, dict[str, float]] = field(default_factory=dict)
     output_paths: dict[str, Path] = field(default_factory=dict)
     timings: dict[str, float] = field(default_factory=dict)
 
     def to_summary_dict(self) -> dict:
-        """JSON-serializable summary (drops the heavy GeoResult)."""
+        """JSON-serializable summary (drops the heavy GeoResult).
+
+        Inner keys of ``delta_magnitude_by_variant*`` and
+        ``delta_specialization_zscore_by_variant`` are lm-eval *task* names
+        (e.g. ``hellaswag``) — task→domain reverse-lookup happens in the
+        helper functions before serialization.
+        """
         return {
             "base": self.base,
             "variants": dict(self.variants),
@@ -98,6 +128,9 @@ class FamilyExperimentResult:
             "delta_magnitude_by_variant": self.delta_magnitude_by_variant,
             "delta_magnitude_by_variant_normalized": (
                 self.delta_magnitude_by_variant_normalized
+            ),
+            "delta_specialization_zscore_by_variant": (
+                self.delta_specialization_zscore_by_variant
             ),
             "accuracy_by_variant": self.accuracy_by_variant,
             "geometry_metadata": self.geo.metadata,
@@ -184,19 +217,52 @@ def _compute_normalized_delta_by_task(
 ) -> dict[str, dict[str, float]]:
     """Per-token-normalized δ magnitude per variant per task.
 
+    GeoResult.magnitudes_per_task_normalized() is keyed by *domain* label.
+    The summary-JSON wire format keeps the inner key as the lm-eval *task*
+    name for consumer stability, so we reverse-lookup via TASK_TO_DOMAIN.
+
     Falls back to {} when GeoResult lacks probe_domains or token counts
     (legacy v1/v2/v3 JSON, or list[str] prompts).
     """
     if not geo.probe_domains or not geo.avg_tokens_per_probe:
         return {}
     try:
-        heatmap = geo.magnitudes_per_task_normalized()
+        per_domain = geo.magnitudes_per_task_normalized()
     except ValueError:
         return {}
-    # Restrict to task_names ordering, and tolerate missing keys.
     out: dict[str, dict[str, float]] = {}
-    for variant, per_domain in heatmap.items():
-        out[variant] = {t: float(per_domain.get(t, 0.0)) for t in task_names}
+    for variant, domain_vals in per_domain.items():
+        per_task: dict[str, float] = {}
+        for task in task_names:
+            domain = TASK_TO_DOMAIN.get(task, task)
+            per_task[task] = float(domain_vals.get(domain, 0.0))
+        out[variant] = per_task
+    return out
+
+
+def _compute_specialization_zscore_by_task(
+    geo: GeoResult, task_names: list[str],
+) -> dict[str, dict[str, float]]:
+    """Per-variant per-task specialization z-score keyed by lm-eval task name.
+
+    Same task→domain mapping as _compute_normalized_delta_by_task, but
+    reads from GeoResult.magnitudes_specialization_zscore() (row-wise
+    z-score of normalized magnitudes; see L-023).
+    """
+    if not geo.probe_domains or not geo.avg_tokens_per_probe:
+        return {}
+    try:
+        per_domain = geo.magnitudes_specialization_zscore()
+    except ValueError:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    for variant, domain_zs in per_domain.items():
+        per_task: dict[str, float] = {}
+        for task in task_names:
+            domain = TASK_TO_DOMAIN.get(task, task)
+            val = domain_zs.get(domain)
+            per_task[task] = float(val) if val is not None else 0.0
+        out[variant] = per_task
     return out
 
 
@@ -299,6 +365,7 @@ def run_family_experiment(
         for variant, task_deltas in per_task_delta.items()
     }
     delta_mag_normalized = _compute_normalized_delta_by_task(geo, task_names)
+    delta_zscore = _compute_specialization_zscore_by_task(geo, task_names)
 
     del cg
     gc.collect()
@@ -352,6 +419,7 @@ def run_family_experiment(
         geo=geo,
         delta_magnitude_by_variant=delta_mag_by_variant,
         delta_magnitude_by_variant_normalized=delta_mag_normalized,
+        delta_specialization_zscore_by_variant=delta_zscore,
         accuracy_by_variant=accuracy_by_variant,
         timings=timings,
     )
@@ -632,6 +700,8 @@ def plot_family_geometry(
 
 __all__ = [
     "DEFAULT_TASKS",
+    "TASK_TO_DOMAIN",
+    "DEFAULT_DOMAIN_ORDER",
     "GENERATE_EVALUATORS",
     "FamilyExperimentResult",
     "run_family_experiment",
