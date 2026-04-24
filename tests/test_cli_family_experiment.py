@@ -172,8 +172,8 @@ class TestPlotGeometryCli:
         fake_json.write_text("{}", encoding="utf-8")
         out_dir = tmp_path / "figs"
 
-        with patch("lmdiff.experiments.family.plot_family_geometry") as mock_plot:
-            mock_plot.return_value = {"direction_heatmap": out_dir / "x.png"}
+        with patch("lmdiff.viz.family_figures.plot_family_figures") as mock_plot:
+            mock_plot.return_value = {"cosine_raw": out_dir / "x.png"}
             result = runner.invoke(
                 app,
                 [
@@ -184,32 +184,69 @@ class TestPlotGeometryCli:
             )
         assert result.exit_code == 0, result.output
         mock_plot.assert_called_once()
-        args, kwargs = mock_plot.call_args
-        assert args[0] == fake_json
-        assert args[1] == out_dir
-        assert kwargs["write_index_html"] is True
+        kwargs = mock_plot.call_args.kwargs
+        # Default: which=None renders all 7 figures.
+        assert kwargs["which"] is None
+        assert kwargs["dpi"] == 200
 
-    def test_no_index_flag_forwarded(self, tmp_path):
+    def test_figures_subset_flag_forwarded(self, tmp_path):
         fake_json = tmp_path / "geo.json"
         fake_json.write_text("{}", encoding="utf-8")
-        with patch("lmdiff.experiments.family.plot_family_geometry") as mock_plot:
-            mock_plot.return_value = {"direction_heatmap": tmp_path / "x.png"}
+        with patch("lmdiff.viz.family_figures.plot_family_figures") as mock_plot:
+            mock_plot.return_value = {"specialization": tmp_path / "x.png"}
             result = runner.invoke(
                 app,
                 [
                     "plot-geometry",
                     str(fake_json),
                     "--output-dir", str(tmp_path / "out"),
-                    "--no-index",
+                    "--figures", "specialization,cosine_raw",
                 ],
             )
         assert result.exit_code == 0, result.output
-        assert mock_plot.call_args.kwargs["write_index_html"] is False
+        assert mock_plot.call_args.kwargs["which"] == ["specialization", "cosine_raw"]
+
+    def test_unknown_figure_key_rejected(self, tmp_path):
+        fake_json = tmp_path / "geo.json"
+        fake_json.write_text("{}", encoding="utf-8")
+        result = runner.invoke(
+            app,
+            [
+                "plot-geometry",
+                str(fake_json),
+                "--output-dir", str(tmp_path / "out"),
+                "--figures", "nonexistent_figure",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Unknown figure key" in _plain(result.output)
+
+    def test_variant_and_domain_order_flags_forwarded(self, tmp_path):
+        fake_json = tmp_path / "geo.json"
+        fake_json.write_text("{}", encoding="utf-8")
+        with patch("lmdiff.viz.family_figures.plot_family_figures") as mock_plot:
+            mock_plot.return_value = {"cosine_raw": tmp_path / "x.png"}
+            result = runner.invoke(
+                app,
+                [
+                    "plot-geometry",
+                    str(fake_json),
+                    "--output-dir", str(tmp_path / "out"),
+                    "--variant-order", "yarn,long",
+                    "--domain-order", "code,math",
+                    "--dpi", "150",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        kw = mock_plot.call_args.kwargs
+        assert kw["variant_order"] == ["yarn", "long"]
+        assert kw["domain_order"] == ["code", "math"]
+        assert kw["dpi"] == 150
 
     def test_empty_render_returns_nonzero(self, tmp_path):
         fake_json = tmp_path / "geo.json"
         fake_json.write_text("{}", encoding="utf-8")
-        with patch("lmdiff.experiments.family.plot_family_geometry") as mock_plot:
+        with patch("lmdiff.viz.family_figures.plot_family_figures") as mock_plot:
             mock_plot.return_value = {}
             result = runner.invoke(
                 app,
