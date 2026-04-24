@@ -1831,3 +1831,82 @@ class TestPCAMapUseNormalized:
         result = self._geo_with_uneven_lengths()
         pca = result.pca_map(n_components=2)
         assert sum(pca.explained_variance_ratio) == pytest.approx(1.0, abs=1e-9)
+
+
+# ── v0.2.3 part A: magnitudes_specialization_zscore (L-023) ──
+
+class TestMagnitudesSpecializationZscore:
+    """Row-wise z-score over per-domain normalized magnitudes."""
+
+    def _geo(self) -> GeoResult:
+        # 6 probes spread across 3 domains (2 each), 2 variants.
+        # δ_A puts mass on math (3,4) → others zero.
+        # δ_B puts mass on long-context (6,8).
+        return GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=6,
+            magnitudes={"A": 5.0, "B": 10.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 0.0}, "B": {"A": 0.0, "B": 1.0}},
+            change_vectors={
+                "A": [3.0, 4.0, 0.0, 0.0, 0.0, 0.0],
+                "B": [0.0, 0.0, 0.0, 0.0, 6.0, 8.0],
+            },
+            per_probe={
+                "A": {"p0": 3.0, "p1": 4.0, "p2": 0.0, "p3": 0.0, "p4": 0.0, "p5": 0.0},
+                "B": {"p0": 0.0, "p1": 0.0, "p2": 0.0, "p3": 0.0, "p4": 6.0, "p5": 8.0},
+            },
+            metadata={},
+            probe_domains=("math", "math", "code", "code", "long-context", "long-context"),
+            avg_tokens_per_probe=(10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
+        )
+
+    def test_row_zscore_zero_mean_and_unit_std(self):
+        result = self._geo()
+        zs = result.magnitudes_specialization_zscore()
+        for variant in ["A", "B"]:
+            vals = list(zs[variant].values())
+            arr = np.asarray(vals, dtype=float)
+            assert arr.mean() == pytest.approx(0.0, abs=1e-9)
+            assert arr.std(ddof=0) == pytest.approx(1.0, abs=1e-9)
+
+    def test_specialization_picks_active_domain(self):
+        result = self._geo()
+        zs = result.magnitudes_specialization_zscore()
+        # A peaks on math (only domain with non-zero δ).
+        assert zs["A"]["math"] == max(zs["A"].values())
+        # B peaks on long-context.
+        assert zs["B"]["long-context"] == max(zs["B"].values())
+
+    def test_constant_row_returns_all_zeros(self):
+        # All domains have identical normalized magnitudes → std = 0 → z = 0.
+        result = GeoResult(
+            base_name="base",
+            variant_names=["V"],
+            n_probes=4,
+            magnitudes={"V": 4.0},
+            cosine_matrix={"V": {"V": 1.0}},
+            change_vectors={"V": [1.0, 1.0, 1.0, 1.0]},
+            per_probe={"V": {"p0": 1.0, "p1": 1.0, "p2": 1.0, "p3": 1.0}},
+            metadata={},
+            probe_domains=("a", "a", "b", "b"),
+            avg_tokens_per_probe=(8.0, 8.0, 8.0, 8.0),
+        )
+        zs = result.magnitudes_specialization_zscore()
+        assert zs["V"]["a"] == 0.0
+        assert zs["V"]["b"] == 0.0
+
+    def test_raises_without_probe_domains(self):
+        result = GeoResult(
+            base_name="base",
+            variant_names=["A"],
+            n_probes=2,
+            magnitudes={"A": 1.0},
+            cosine_matrix={"A": {"A": 1.0}},
+            change_vectors={"A": [1.0, 0.0]},
+            per_probe={"A": {"p0": 1.0, "p1": 0.0}},
+            avg_tokens_per_probe=(4.0, 4.0),
+            # probe_domains intentionally empty → upstream raises.
+        )
+        with pytest.raises(ValueError):
+            result.magnitudes_specialization_zscore()

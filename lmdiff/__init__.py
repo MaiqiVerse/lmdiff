@@ -9,8 +9,10 @@ from lmdiff.engine import (
     InferenceEngine,
 )
 from lmdiff.experiments.family import (
+    DEFAULT_DOMAIN_ORDER,
     DEFAULT_TASKS,
     FamilyExperimentResult,
+    TASK_TO_DOMAIN,
     plot_family_geometry,
     run_family_experiment,
 )
@@ -51,6 +53,8 @@ __all__ = [
     "Gsm8kNumberMatch",
     "loglikelihood_accuracy",
     "DEFAULT_TASKS",
+    "DEFAULT_DOMAIN_ORDER",
+    "TASK_TO_DOMAIN",
     "FamilyExperimentResult",
     "run_family_experiment",
     "plot_family_geometry",
