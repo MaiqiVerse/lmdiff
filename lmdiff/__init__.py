@@ -1,35 +1,75 @@
-"""lmdiff: compare language model configurations."""
+"""lmdiff: compare language model configurations.
 
-from lmdiff.config import Config
-from lmdiff.diff import DiffReport, FullReport, ModelDiff, PairTaskResult
-from lmdiff.engine import (
-    ForwardResult,
-    GenerationResult,
-    HiddenStatesResult,
-    InferenceEngine,
-)
-from lmdiff.experiments.family import (
-    DEFAULT_DOMAIN_ORDER,
-    DEFAULT_MAX_NEW_TOKENS,
-    DEFAULT_TASKS,
-    FamilyExperimentResult,
-    TASK_MAX_NEW_TOKENS,
-    TASK_TO_DOMAIN,
-    plot_family_geometry,
-    resolve_max_new_tokens,
-    run_family_experiment,
-)
-from lmdiff.geometry import ChangeGeometry, GeoResult
-from lmdiff.probes.loader import Probe, ProbeSet
-from lmdiff.tasks.base import BaseEvaluator, EvalResult, Task, TaskResult
-from lmdiff.tasks.evaluators import (
-    ContainsAnswer,
-    ExactMatch,
-    F1,
-    Gsm8kNumberMatch,
-    MultipleChoice,
-)
-from lmdiff.tasks.loglikelihood import loglikelihood_accuracy
+Top-level symbols are resolved lazily via :pep:`562`. ``import lmdiff``
+does not import torch / transformers / matplotlib; each heavy dependency
+is pulled in the first time you reference a symbol that needs it
+(``from lmdiff import ModelDiff``, ``lmdiff.ChangeGeometry(...)``, ...).
+
+This keeps ``lmdiff --help`` and ``lmdiff list-metrics`` fast and lets
+the package import succeed on torch-less environments — they only fail
+at the moment you reach for a torch-using symbol.
+"""
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING
+
+# Map every public symbol to the submodule that defines it. __getattr__
+# below will resolve the target lazily on first access and then cache it
+# in the module globals() so repeated access is free.
+_LAZY: dict[str, str] = {
+    # config (lightweight)
+    "Config": "lmdiff.config",
+    # diff / engine / geometry (pull torch + transformers)
+    "DiffReport": "lmdiff.diff",
+    "FullReport": "lmdiff.diff",
+    "ModelDiff": "lmdiff.diff",
+    "PairTaskResult": "lmdiff.diff",
+    "ForwardResult": "lmdiff.engine",
+    "GenerationResult": "lmdiff.engine",
+    "HiddenStatesResult": "lmdiff.engine",
+    "InferenceEngine": "lmdiff.engine",
+    "ChangeGeometry": "lmdiff.geometry",
+    "GeoResult": "lmdiff.geometry",
+    # probes
+    "Probe": "lmdiff.probes.loader",
+    "ProbeSet": "lmdiff.probes.loader",
+    # tasks
+    "BaseEvaluator": "lmdiff.tasks.base",
+    "EvalResult": "lmdiff.tasks.base",
+    "Task": "lmdiff.tasks.base",
+    "TaskResult": "lmdiff.tasks.base",
+    "ContainsAnswer": "lmdiff.tasks.evaluators",
+    "ExactMatch": "lmdiff.tasks.evaluators",
+    "F1": "lmdiff.tasks.evaluators",
+    "Gsm8kNumberMatch": "lmdiff.tasks.evaluators",
+    "MultipleChoice": "lmdiff.tasks.evaluators",
+    "loglikelihood_accuracy": "lmdiff.tasks.loglikelihood",
+    # experiments (transitively pulls engine → torch)
+    "DEFAULT_DOMAIN_ORDER": "lmdiff.experiments.family",
+    "DEFAULT_MAX_NEW_TOKENS": "lmdiff.experiments.family",
+    "DEFAULT_TASKS": "lmdiff.experiments.family",
+    "FamilyExperimentResult": "lmdiff.experiments.family",
+    "TASK_MAX_NEW_TOKENS": "lmdiff.experiments.family",
+    "TASK_TO_DOMAIN": "lmdiff.experiments.family",
+    "plot_family_geometry": "lmdiff.experiments.family",
+    "resolve_max_new_tokens": "lmdiff.experiments.family",
+    "run_family_experiment": "lmdiff.experiments.family",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY:
+        module = importlib.import_module(_LAZY[name])
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module 'lmdiff' has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals().keys()) | set(_LAZY.keys()))
+
 
 __all__ = [
     "Config",
@@ -65,3 +105,47 @@ __all__ = [
     "run_family_experiment",
     "plot_family_geometry",
 ]
+
+# Type-checkers need eager names; keep this block under TYPE_CHECKING so
+# it never runs at runtime.
+if TYPE_CHECKING:  # pragma: no cover
+    from lmdiff.config import Config  # noqa: F401
+    from lmdiff.diff import (  # noqa: F401
+        DiffReport,
+        FullReport,
+        ModelDiff,
+        PairTaskResult,
+    )
+    from lmdiff.engine import (  # noqa: F401
+        ForwardResult,
+        GenerationResult,
+        HiddenStatesResult,
+        InferenceEngine,
+    )
+    from lmdiff.experiments.family import (  # noqa: F401
+        DEFAULT_DOMAIN_ORDER,
+        DEFAULT_MAX_NEW_TOKENS,
+        DEFAULT_TASKS,
+        FamilyExperimentResult,
+        TASK_MAX_NEW_TOKENS,
+        TASK_TO_DOMAIN,
+        plot_family_geometry,
+        resolve_max_new_tokens,
+        run_family_experiment,
+    )
+    from lmdiff.geometry import ChangeGeometry, GeoResult  # noqa: F401
+    from lmdiff.probes.loader import Probe, ProbeSet  # noqa: F401
+    from lmdiff.tasks.base import (  # noqa: F401
+        BaseEvaluator,
+        EvalResult,
+        Task,
+        TaskResult,
+    )
+    from lmdiff.tasks.evaluators import (  # noqa: F401
+        ContainsAnswer,
+        ExactMatch,
+        F1,
+        Gsm8kNumberMatch,
+        MultipleChoice,
+    )
+    from lmdiff.tasks.loglikelihood import loglikelihood_accuracy  # noqa: F401
