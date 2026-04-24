@@ -117,39 +117,45 @@ radar_result = md.run_radar(probes=probes, max_new_tokens=16)
 print_radar(radar_result)
 ```
 
-## Example: Llama-2-7B family comparison
+## Metrics: what each one means
 
-One base model, seven variants, 90 completion-style probes across math/knowledge/code:
+lmdiff reports several metrics at three levels. The rule of thumb:
 
-| Variant | Modification | BD | KL | ΔEntropy |
-|---|---|---|---|---|
-| 7B + temp=1.5 | Decoding only | 0.59 | 0.00 | +0.00 |
-| CodeLlama-7B | Domain fine-tune | 0.79 | — | — |
-| Llama-2-13B | Scale up | 0.85 | 0.17 | −0.06 |
-| YaRN-128k | RoPE scaling | 0.99 | 0.35 | +0.05 |
-| Llama-2-7B-32K | Continued pretrain | 1.07 | 0.71 | +0.41 |
-| 7B + system prompt | Prefix context | 1.09 | 1.62 | −0.11 |
-| Llama-2-7B-chat | RLHF | 1.15 | 1.14 | −0.41 |
+- **Output-level** metrics (`BD`, `KL`, `ΔEntropy`) answer: *how different is variant A from base on a single probe set?*
+- **Capability-level** metrics (`CapabilityRadar`) answer: *which skills improved or degraded?*
+- **Geometry-level** metrics (`ChangeGeometry`) answer: *do two or more variants drift from base in the same direction, and on which domains?*
 
-BD = Behavioral Distance (nats). KL = symmetric TokenKL. ΔEntropy = entropy(variant) − entropy(base). CodeLlama has a different vocabulary; KL/Entropy require matching tokenizers.
+### Output-level metrics (pairwise: base vs one variant)
 
-**What this table shows:**
+| Metric | Units | What it measures |
+|---|---|---|
+| **BehavioralDistance (BD)** | nats or bits-per-byte | How surprised each model is by the other's output, symmetrically. `BD = 0` means behaviorally identical; `BD > 1` means one model finds the other's text roughly as surprising as a different language. BPB-normalized when tokenizers differ. |
+| **TokenKL** | nats | Symmetric KL divergence over the full next-token vocabulary, averaged over positions. `KL = 0` means the models agree on every token's distribution. Requires matching tokenizers. |
+| **ΔEntropy** | nats | Mean per-token entropy of variant minus base. Positive = variant is more uncertain (often: more creative, or less confident). Negative = variant is more confident (often: RLHF'd, distilled, or narrow fine-tune). |
 
-A single system prompt causes more distributional shift (BD=1.09) than scaling to 13B parameters (BD=0.85). Temperature=1.5 changes generation behavior (BD=0.59) but leaves the underlying distribution identical (KL=0, Entropy=0) — it only affects sampling, not the model's beliefs. YaRN and 32K both extend context length, but do it differently: YaRN shifts the distribution without increasing uncertainty (Entropy≈0), while 32K's continued pretraining substantially increases uncertainty (Entropy=+0.41).
+**Reading them together:** `BD` high + `KL` zero means behavior differs but weights don't (e.g. temperature change). `BD` high + `KL` high + `ΔEntropy` ≈ 0 means weights shifted but confidence didn't (e.g. scale-up). `BD` high + `KL` high + `ΔEntropy` large means the model's whole confidence profile changed (e.g. RLHF).
 
-These are the kinds of insights that accuracy benchmarks cannot surface.
+### Capability-level: CapabilityRadar
 
-## What gets measured
+Breaks BD and accuracy down by domain (math, code, commonsense, ...). Surfaces "variant is better overall but worse on math" patterns that a single BD scalar hides.
 
-Three output-level metrics:
+### Geometry-level: ChangeGeometry (multi-variant)
 
-- **BehavioralDistance** — symmetric, self-entropy-baseline-subtracted cross-entropy distance. BPB-normalized when tokenizers differ.
-- **TokenEntropy** — mean per-token next-token entropy delta, A vs B.
-- **TokenKL** — symmetric KL divergence over full vocab.
+For each variant *v*, the **change vector** **δ_v** has one entry per probe, measuring how much the variant's preferred continuation is more natural to itself than to base. Geometry metrics compare these vectors across variants.
 
-**CapabilityRadar** adds per-domain accuracy + BD breakdown across math/knowledge/code (or any multi-domain probe set).
+| Metric | Range | What it answers |
+|---|---|---|
+| **Magnitude** `‖δ_v‖` | ≥ 0 | How much variant *v* deviates from base overall. Largest magnitude = most globally changed variant. |
+| **Per-task normalized magnitude** `‖δ_{v,d}‖ / √(n_d · T̄_d)` | ≥ 0 | How much of that deviation lives on domain *d*, after correcting for the fact that long-context probes accumulate larger raw `‖δ‖` even when the underlying per-token behavior is stable. |
+| **Specialization z-score** `z_{v,d}` | ~[−2.5, +2.5] | Relative to this variant's *own* row mean, which domain is its signature? `z ≥ +1` = this variant is notably more active on this domain than its average across domains. Recovers "what was this variant trained for." |
+| **Cosine similarity** `cos(δ_u, δ_v)` | [−1, +1] | Do variants *u* and *v* push base in the same probe-by-probe direction? `+1` = perfect agreement, `0` = independent, `−1` = opposed. |
+| **Selective cosine / Pearson r** | [−1, +1] | Same, after subtracting each variant's mean δ. Strips out any uniform "variant is X nats harder on every probe" offset and keeps only probe-specific agreement. If raw cosine is high but selective is low, variants agreed because of a shared offset, not because they favor the same probes. |
 
-**ChangeGeometry** (v0.2.0, extended in v0.2.1) compares one base model against *N* variants simultaneously. For each variant it builds a change vector δ by probe, then exposes magnitudes, a full pairwise cosine matrix, and a selective (mean-subtracted, Pearson) cosine matrix that separates "uniform behavioral shift" from "selective behavioral shift". v0.2.1 adds `pca_map()`, `domain_heatmap()`, `complementarity()`, and scipy-backed `cluster()` for further decomposition.
+**Why per-task normalization matters.** In a heterogeneous probe mix (short MCQ + long extractive QA), raw `‖δ‖²` is dominated by the longest probes: in our 4-variant Llama-2 experiment, longbench contributed **88–99%** of each variant's raw `‖δ‖²`. Per-task normalization makes magnitudes comparable across domains so that specialization signatures become visible.
+
+**Why specialization z-score matters.** Per-domain magnitudes already remove length bias, but variants still differ in *overall* activity level. A globally-active variant ranks highest on every domain; to see "which domain is this variant's peak," subtract each variant's own row mean. That's the z-score. Direct absolute comparison answers *"in domain d, who's most active?"*; z-score answers *"for variant v, which domain is its signature?"* — different questions, both tables produced.
+
+**Why the two cosines.** Raw cosine tells you whether variants agree on probe-level direction at all. Selective cosine separates "they have the same offset" from "they prefer the same probes." If `yarn` and `long` both have raw cosine 0.95 with `code`, but `yarn-code` selective is 0.94 and `long-code` is 0.85, then `yarn` and `code` share probe-specific preferences while `long-code` agreement was more offset-driven.
 
 ```python
 from lmdiff import ChangeGeometry, Config, ProbeSet
@@ -163,14 +169,35 @@ geo = ChangeGeometry(
 ).analyze(max_new_tokens=16)
 ```
 
-**lm-eval-harness tasks** (v0.2.0, `[lm-eval]` extra) load directly into ProbeSets:
+**lm-eval-harness tasks** (`[lm-eval]` extra) load directly into ProbeSets:
 
 ```python
 from lmdiff.probes.adapters import from_lm_eval
 probes = from_lm_eval("hellaswag", limit=100, seed=42)  # or arc_challenge, gsm8k, ...
 ```
 
-All return structured results with per-probe breakdowns in `.details`.
+## Example: Llama-2-7B family comparison
+
+One base model, seven variants, 90 completion-style probes across math/knowledge/code:
+
+| Variant | Modification | BD | KL | ΔEntropy | Reading |
+|---|---|---|---|---|---|
+| 7B + temp=1.5 | Decoding only | 0.59 | 0.00 | +0.00 | Behavior shifts (BD>0) but weights and confidence unchanged — sampling-only effect. |
+| CodeLlama-7B | Domain fine-tune | 0.79 | — | — | Different vocab; KL/Entropy undefined (BD uses BPB normalization). |
+| Llama-2-13B | Scale up | 0.85 | 0.17 | −0.06 | Weights differ but confidence nearly unchanged — scaling is mostly quiet. |
+| YaRN-128k | RoPE scaling | 0.99 | 0.35 | +0.05 | Behavior shifts noticeably, confidence unchanged — extends context range without adding uncertainty. |
+| Llama-2-7B-32K | Continued pretrain | 1.07 | 0.71 | **+0.41** | Higher uncertainty across the board — pretraining substantially loosened the distribution. |
+| 7B + system prompt | Prefix context | 1.09 | 1.62 | −0.11 | Largest KL of the set. A single prompt reshapes next-token distributions more than 13B scaling does. |
+| Llama-2-7B-chat | RLHF | 1.15 | 1.14 | **−0.41** | Most confident (lowest entropy) and most behaviorally distant — RLHF sharpens the distribution. |
+
+BD = Behavioral Distance (nats). KL = symmetric TokenKL. ΔEntropy = entropy(variant) − entropy(base). CodeLlama has a different vocabulary; KL/Entropy require matching tokenizers.
+
+**What this table surfaces that accuracy benchmarks don't:**
+
+- A system prompt moves behavior more (KL 1.62) than adding 6B parameters does (KL 0.17).
+- Temperature 1.5 has `KL = 0` — it changes what gets sampled, not what the model believes.
+- YaRN and 32K both extend context, but differently: YaRN shifts without adding uncertainty (ΔEntropy ≈ 0), while 32K's continued pretraining loosens the distribution (ΔEntropy = +0.41).
+- RLHF is the only modification here with **negative** ΔEntropy — it makes the model more certain, not less.
 
 ## Configuration abstraction
 
