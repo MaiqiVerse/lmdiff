@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lmdiff-kit"
-version = "0.2.3"
+version = "0.2.4"
 description = "Framework for comparing language model configurations"
 requires-python = ">=3.10"
 readme = "README.md"
@@ -54,3 +54,8 @@ addopts = "-m 'not slow'"
 [tool.setuptools.packages.find]
 include = ["lmdiff*"]
 exclude = ["scripts*", "examples*", "tests*"]
+
+[tool.setuptools.package-data]
+# Ship the built-in probe sets inside the wheel / sdist. Without this, the
+# default `--probes v01` CLI path is broken after `pip install lmdiff-kit`.
+lmdiff = ["probes/*.json"]
