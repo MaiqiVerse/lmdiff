@@ -645,3 +645,37 @@ In all of those cases, switch to normalized magnitudes for cross-task comparison
 
 **Related code:** `lmdiff/geometry.py` (Step 5.5: `avg_tokens_per_probe`, `magnitudes_normalized`, `magnitudes_per_task_normalized`, `pca_map(use_normalized)`).
 **Related script:** `scripts/diagnose_probe_length_effect.py` reproduces the Pearson / per-token-normalized table from any family-experiment summary JSON.
+
+## L-023: per-token normalized δ magnitude, z-scored within each variant, recovers training-objective specialization signatures
+
+Raw `‖δ‖` magnitude ranking is confounded by two things: (a) prompt-length concentration (L-022 — e.g. longbench contributes 88-99% of raw `‖δ‖²` in the 4-variant Llama-2 family) and (b) global drift scale, which lets one continued-pretrain variant dominate every task in the per-token normalized view as well (`long` is the largest-magnitude variant in *every* domain after L-022 normalization).
+
+Only **row-normalized z-scores** — `(v − mean(v_row)) / std(v_row)` over per-domain normalized magnitudes — expose per-variant specialization fingerprints. Validated on the 4-variant Llama-2 family:
+
+| variant     | commonsense | reasoning | math   | code   | long-context |
+|-------------|-------------|-----------|--------|--------|--------------|
+| `yarn`      | **+1.42**   | -0.86     | -0.60  | -0.96  | **+1.00**    |
+| `long`      | -0.63       | **+1.89** | +0.12  | -0.54  | -0.84        |
+| `code`      | -0.30       | -0.79     | +0.99  | **+1.33** | -1.23     |
+| `math`      | -0.25       | +0.59     | **+1.59** | -0.64 | -1.29     |
+
+Each variant's strongest positive z lands on the domain matching its training objective: `code`→code+gsm8k, `long`→arc/reasoning, `math`→gsm8k, `yarn`→hellaswag+longbench. `yarn` is the only variant with positive z on long-context, consistent with it being the only RoPE-only (no continued-pretrain) variant — the others change short-task behavior so much that long-context drift "dilutes" rather than "stands out."
+
+**Rule:** When comparing per-domain magnitudes across N variants, always show the row-z-score panel alongside (or instead of) the absolute panel. The absolute panel exists to reveal global-amplitude variants (which row-normalization hides by construction), but is otherwise dominated by which variant trained for longer / on broader data.
+
+**Related code:** `lmdiff/geometry.py::GeoResult.magnitudes_specialization_zscore()`, `lmdiff/viz/specialization.py::plot_specialization_heatmap` (paper main figure).
+
+## L-024: lm-eval default `max_new_tokens` must be set per task type, or generative tasks clamp to artifactual zeros
+
+`DEFAULT_TASKS` mixes MCQ (loglikelihood-scored, prompt-only) with generative (`generate_until`-scored, needs to actually emit a scoreable answer). v0.2.2 used a uniform `max_new_tokens=16`. MCQ tasks ignore generation length entirely; generative tasks need:
+
+- `gsm8k` chain-of-thought: ~150-200 tokens for the reasoning trace plus the final number.
+- `longbench_*` extractive QA: ~100+ tokens for span answers / multi-token entities.
+
+At `max_new_tokens=16`, every variant (including base) produced 0.0 accuracy on `gsm8k` and `longbench_2wikimqa` regardless of capability. The δ-magnitude analysis was unaffected (it uses the same short generation across all variants), but the accuracy radar panel was meaningless: `Llemma-7b` (a math-focused model) tied `Yarn-Llama-2-7b-128k` at exactly 0.04 on gsm8k, and the entire family hit 0.00 on longbench. Easy to mistake for "the family doesn't differ on these tasks."
+
+**Rule:** When evaluating a heterogeneous task mix, use `TASK_MAX_NEW_TOKENS` (or pass explicit `--task-max-new-tokens KEY=VAL,...` overrides) for generative tasks. The conservative defaults are `{"gsm8k": 256, "longbench_*": 128}`; raise these if downstream parsing (number extraction, F1) reports zero on most probes despite reasonable-looking generations.
+
+**Diagnostic signature:** all variants get accuracy ≈ 0 on the same generative task while MCQ accuracies look reasonable; the generated outputs visibly stop mid-sentence in `result.details` per-probe rows.
+
+**Related code:** `lmdiff/experiments/family.py::TASK_MAX_NEW_TOKENS`, `resolve_max_new_tokens(task, default, overrides)`, CLI flag `--task-max-new-tokens`.
