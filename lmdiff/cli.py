@@ -349,23 +349,72 @@ def plot_geometry(
     output_dir: Path = typer.Option(
         ...,
         "--output-dir",
-        help="Directory to write PNGs + index.html (created if missing).",
+        "-o",
+        help="Directory to write PNGs (created if missing).",
     ),
-    no_index: bool = typer.Option(
-        False, "--no-index", help="Skip writing the index.html preview.",
+    figures: str = typer.Option(
+        "all",
+        "--figures",
+        help=(
+            "CSV of figure keys to render. Default 'all' = full 7-figure "
+            "paper-grade set. Keys: cosine_raw, cosine_selective, "
+            "normalized_magnitude, specialization, pca_raw, pca_normalized, "
+            "normalization_effect."
+        ),
+    ),
+    variant_order: Optional[str] = typer.Option(
+        None,
+        "--variant-order",
+        help="CSV row/legend order for variants (default: as found in the GeoResult).",
+    ),
+    domain_order: Optional[str] = typer.Option(
+        None,
+        "--domain-order",
+        help="CSV column order for domain heatmaps (default: DEFAULT_DOMAIN_ORDER).",
+    ),
+    dpi: int = typer.Option(
+        200, "--dpi", help="DPI for all rendered PNGs (default: 200, paper-grade).",
     ),
 ) -> None:
-    """Render the figure suite (heatmaps, PCA, domain bar) from a GeoResult JSON."""
+    """Render the v0.2.3 paper-grade family-figure set from a GeoResult JSON."""
     if not georesult.exists():
         raise typer.BadParameter(f"GeoResult JSON not found: {georesult}")
 
-    from lmdiff.experiments.family import plot_family_geometry
+    from lmdiff.viz.family_figures import FIGURE_REGISTRY, plot_family_figures
 
-    rendered = plot_family_geometry(
-        georesult, output_dir, write_index_html=not no_index,
+    if figures.strip().lower() == "all":
+        which: Optional[list[str]] = None
+    else:
+        which = [k.strip() for k in figures.split(",") if k.strip()]
+        unknown = [k for k in which if k not in FIGURE_REGISTRY]
+        if unknown:
+            raise typer.BadParameter(
+                f"Unknown figure key(s): {unknown}. "
+                f"Valid keys: {sorted(FIGURE_REGISTRY)}"
+            )
+
+    v_order = (
+        [s.strip() for s in variant_order.split(",") if s.strip()]
+        if variant_order else None
+    )
+    d_order = (
+        [s.strip() for s in domain_order.split(",") if s.strip()]
+        if domain_order else None
+    )
+
+    rendered = plot_family_figures(
+        georesult,
+        output_dir,
+        which=which,
+        variant_order=v_order,
+        domain_order=d_order,
+        dpi=dpi,
     )
     if not rendered:
         raise typer.Exit(code=1)
+    Console().print(
+        f"Rendered {len(rendered)} figure(s) to {output_dir}"
+    )
 
 
 @app.command(name="list-metrics")

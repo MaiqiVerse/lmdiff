@@ -544,7 +544,13 @@ def plot_family_geometry(
     *,
     write_index_html: bool = True,
 ) -> dict[str, Path]:
-    """Render the full figure suite from a GeoResult (or its JSON path).
+    """Render the pre-v0.2.3 figure suite from a GeoResult (or its JSON path).
+
+    .. deprecated:: 0.2.3
+        Use :func:`lmdiff.viz.family_figures.plot_family_figures` for the
+        7-figure paper-grade set (adds specialization z-score, normalized
+        magnitude, normalization-effect bars). This function will be removed
+        in v0.4.0.
 
     Args:
         geo_or_path: GeoResult instance or path to a v1/v2/v3/v4 GeoResult JSON.
@@ -556,6 +562,14 @@ def plot_family_geometry(
         whose required data is absent (e.g. ``probe_domains`` for the domain
         bar) are skipped with a stderr warning, not raised.
     """
+    import warnings as _warnings
+    _warnings.warn(
+        "lmdiff.experiments.family.plot_family_geometry is deprecated "
+        "since v0.2.3; use lmdiff.viz.plot_family_figures for the paper-grade "
+        "7-figure set. Will be removed in v0.4.0.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if isinstance(geo_or_path, (str, Path)):
         path = Path(geo_or_path)
         if not path.exists():
