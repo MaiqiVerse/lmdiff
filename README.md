@@ -69,17 +69,31 @@ lmdiff family-experiment \
     --variant yarn=NousResearch/Yarn-Llama-2-7b-128k \
     --variant code=codellama/CodeLlama-7b-hf \
     --tasks hellaswag,arc_challenge,gsm8k \
+    --task-max-new-tokens gsm8k=256,longbench_2wikimqa=128 \
     --output-dir runs/llama2-family
 
-# Re-render the figure suite from a previously written GeoResult JSON
+# Render the 7-figure paper-grade set from a GeoResult JSON
 lmdiff plot-geometry runs/llama2-family/family_geometry_lm_eval_georesult.json \
-    --output-dir runs/llama2-family/figures
+    --output-dir runs/llama2-family/figures \
+    --variant-order yarn,long,code,math
 ```
 
 `--variant` is repeatable; defaults to the 5-task mix used in the
-Llama-2 example below when `--tasks` is omitted. Both subcommands wrap
-`lmdiff.experiments.family.run_family_experiment` /
-`plot_family_geometry`, also callable directly from Python.
+Llama-2 example below when `--tasks` is omitted. `plot-geometry` produces
+7 numbered PNGs by default — cosine heatmaps (raw + selective), per-task
+normalized magnitude, **specialization z-score (the paper main figure)**,
+PCA scatter (raw + normalized), and a raw-vs-normalized bar comparison.
+Use `--figures specialization,cosine_selective` to render a subset.
+
+Both subcommands wrap `lmdiff.experiments.family.run_family_experiment`
+and `lmdiff.viz.plot_family_figures`, also callable directly from Python.
+
+> **Note on accuracy clamping (v0.2.2 artifact, fixed in v0.2.3):**
+> generative tasks like `gsm8k` (chain-of-thought) and `longbench_2wikimqa`
+> need 128–256 tokens of generation, not the MCQ default of 16. Pass
+> `--task-max-new-tokens gsm8k=256,longbench_2wikimqa=128` (or rely on
+> `TASK_MAX_NEW_TOKENS` defaults) or accuracy will silently clamp to 0.0.
+> See `LESSONS.md` L-024.
 
 ## Python API
 
@@ -185,7 +199,7 @@ write_json(report, "output.json")
 
 ## Status
 
-Phase 2 shipped — published to PyPI as `lmdiff-kit` v0.2.2. Now working: everything from v0.1.x plus **ChangeGeometry** (N-variant δ-vector geometry with PCA / domain heatmap / complementarity / hierarchical clustering, plus per-token normalized magnitudes for cross-probe-set comparison), **lm-eval-harness adapter** (30+ task registry), `loglikelihood_accuracy` (acc_norm-style MCQ scoring), `F1` and `Gsm8kNumberMatch` evaluators, the `lmdiff family-experiment` / `lmdiff plot-geometry` CLIs (and matching `lmdiff.experiments.family` library API), and a matplotlib figure suite under the `[viz]` extra (radar, direction heatmap, PCA scatter, per-domain bars).
+Phase 2 shipped — published to PyPI as `lmdiff-kit` v0.2.3. Now working: everything from v0.1.x plus **ChangeGeometry** (N-variant δ-vector geometry with PCA / domain heatmap / complementarity / hierarchical clustering, plus per-token normalized magnitudes and **specialization z-score fingerprints** for recovering training-objective signatures), **lm-eval-harness adapter** (30+ task registry), `loglikelihood_accuracy` (acc_norm-style MCQ scoring), `F1` and `Gsm8kNumberMatch` evaluators, the `lmdiff family-experiment` / `lmdiff plot-geometry` CLIs (and matching `lmdiff.experiments.family` library API), per-task generation-length overrides via `TASK_MAX_NEW_TOKENS`, and a paper-grade 7-figure suite under the `[viz]` extra (cosine heatmaps, normalized magnitude, specialization, PCA scatter, normalization effect).
 
 Not yet: representation / trajectory / causal metrics, HTML / LaTeX reports, HumanEval-style executional tasks (sandboxing deferred — δ-magnitude-only usage is already available). See `CLAUDE.md` for the full roadmap.
 

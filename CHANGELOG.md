@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.2.3] - 2026-04-24
+
+### Added
+- `GeoResult.magnitudes_specialization_zscore()` — per-variant row-wise z-scored per-domain normalized magnitudes. Recovers training-objective specialization signatures masked by absolute magnitude ranking (L-023).
+- `lmdiff.experiments.family.TASK_TO_DOMAIN` and `DEFAULT_DOMAIN_ORDER` (exported from top-level).
+- Summary JSON now includes `delta_specialization_zscore_by_variant` field (variant → task_name → z-score).
+- `lmdiff plot-geometry` CLI now produces a 7-figure paper-grade set by default: cosine heatmaps (raw + selective), per-task normalized magnitude, specialization z-score (the paper main figure), PCA scatter (raw + normalized), raw-vs-normalized bar comparison.
+- `lmdiff/viz/` restructured into per-plotter modules (`cosine`, `normalized_magnitude`, `specialization`, `pca`, `normalization_effect`, `family_figures`) with shared `_style.py` (`VARIANT_COLORS`, `VARIANT_MARKERS`, `DEFAULT_DPI`, `BASE_MARKER`).
+- CLI flags `--figures`, `--variant-order`, `--domain-order`, `--dpi` on `plot-geometry`.
+- `lmdiff.experiments.family.TASK_MAX_NEW_TOKENS` — per-task generation length defaults (`gsm8k=256`, `longbench_*=128`; MCQ tasks at 16).
+- `lmdiff.experiments.family.resolve_max_new_tokens(task, default, overrides)` helper.
+- CLI flag `--task-max-new-tokens KEY=VAL,...` on `family-experiment`.
+
+### Fixed
+- Summary JSON `delta_magnitude_by_variant_normalized` was written by querying a domain-keyed dict with task-name keys, producing all-zero values in v0.2.2. Now correctly populated via `TASK_TO_DOMAIN` reverse-lookup. The raw GeoResult JSON (`*_georesult.json`) was never affected.
+- `gsm8k` and `longbench_*` accuracy no longer clamp to artifactual 0.0: v0.2.2 used a uniform `max_new_tokens=16` across all tasks, truncating generative output before a scoreable answer could be produced. MCQ tasks (hellaswag/arc/mmlu_*) behavior unchanged.
+
+### Deprecated
+- `lmdiff.experiments.family.plot_family_geometry` emits `DeprecationWarning` and is superseded by `lmdiff.viz.plot_family_figures`. Will be removed in v0.4.0. Radar PNGs from `run_family_experiment` are unaffected.
+
+### Notes
+- No GeoResult schema bump (still v4). Summary JSON wire format stable: `delta_specialization_zscore_by_variant` field added; existing fields unchanged in structure.
+- Validated against the 4-variant Llama-2 family experiment: specialization fingerprint matches independently to two decimals (yarn hellaswag +1.42, long arc +1.89, code mmlu +1.33, math gsm8k +1.59); normalization effect bars confirm yarn longbench contribution at 98.9% of raw ‖δ‖².
+
 ## [0.2.2] - 2026-04-23
 
 ### Added
