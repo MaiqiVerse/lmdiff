@@ -14,6 +14,15 @@ JSON.
 Both functions are imported by the typer CLI (``lmdiff
 family-experiment`` / ``lmdiff plot-geometry``) and by the legacy
 scripts, which are now thin argparse wrappers.
+
+Note on generation length (v0.2.3, L-024):
+MCQ tasks (hellaswag, arc_challenge, mmlu_*) evaluate via loglikelihood
+and only need ``max_new_tokens=16``. Generative tasks (gsm8k chain-of-
+thought, longbench extractive QA) require longer generation to produce
+scoreable output. ``TASK_MAX_NEW_TOKENS`` provides sensible defaults; a
+uniform 16-token budget across mixed task types causes generative tasks
+to clamp to ~0.0 accuracy regardless of model capability. This is a
+known artifact in v0.2.2 and earlier experiment runs.
 """
 from __future__ import annotations
 
@@ -68,6 +77,33 @@ DEFAULT_DOMAIN_ORDER: list[str] = [
     "code",
     "long-context",
 ]
+
+# Default per-task generation length for accuracy scoring. MCQ tasks fall
+# through to DEFAULT_MAX_NEW_TOKENS via resolve_max_new_tokens(); only
+# generative tasks (CoT math, extractive long-form QA) need longer.
+DEFAULT_MAX_NEW_TOKENS: int = 16
+
+TASK_MAX_NEW_TOKENS: dict[str, int] = {
+    "gsm8k": 256,
+    "longbench_2wikimqa": 128,
+    "longbench_hotpotqa": 128,
+    "longbench_narrativeqa": 128,
+    "longbench_qasper": 128,
+}
+
+
+def resolve_max_new_tokens(
+    task_name: str,
+    default: int = DEFAULT_MAX_NEW_TOKENS,
+    overrides: dict[str, int] | None = None,
+) -> int:
+    """Resolve per-task generation length.
+
+    Priority: ``overrides`` > ``TASK_MAX_NEW_TOKENS`` > ``default``.
+    """
+    if overrides and task_name in overrides:
+        return int(overrides[task_name])
+    return TASK_MAX_NEW_TOKENS.get(task_name, default)
 
 
 # Evaluator class for each generate_until task whose accuracy we score.
@@ -156,12 +192,32 @@ def _load_concatenated_probes(
     return mega, per_task
 
 
-def _accuracy_for_task(task_name: str, probes: ProbeSet, engine: Any) -> float:
-    """Run the correct evaluator for one task on one engine. Returns acc in [0,1] or NaN."""
+def _accuracy_for_task(
+    task_name: str,
+    probes: ProbeSet,
+    engine: Any,
+    *,
+    max_new_tokens: int | None = None,
+    task_max_new_tokens: dict[str, int] | None = None,
+) -> float:
+    """Run the correct evaluator for one task on one engine.
+
+    For generative tasks (output_type == 'generate_until' or unknown task),
+    generation length is resolved via ``resolve_max_new_tokens(task_name,
+    default=max_new_tokens, overrides=task_max_new_tokens)``. MCQ tasks
+    use loglikelihood scoring and ignore generation length.
+
+    Returns acc in [0, 1] or NaN.
+    """
     info = KNOWN_TASK_DOMAINS.get(task_name)
     if info is None:
         from lmdiff.tasks.evaluators import ContainsAnswer
-        task = Task(task_name, probes, ContainsAnswer(), max_new_tokens=32)
+        gen_len = resolve_max_new_tokens(
+            task_name,
+            default=max_new_tokens if max_new_tokens is not None else 32,
+            overrides=task_max_new_tokens,
+        )
+        task = Task(task_name, probes, ContainsAnswer(), max_new_tokens=gen_len)
         return task.run(engine).accuracy
 
     if info.output_type == "multiple_choice":
@@ -174,7 +230,12 @@ def _accuracy_for_task(task_name: str, probes: ProbeSet, engine: Any) -> float:
         if evaluator_cls is None:
             from lmdiff.tasks.evaluators import ContainsAnswer
             evaluator_cls = ContainsAnswer
-        task = Task(task_name, probes, evaluator_cls(), max_new_tokens=64)
+        gen_len = resolve_max_new_tokens(
+            task_name,
+            default=max_new_tokens if max_new_tokens is not None else 64,
+            overrides=task_max_new_tokens,
+        )
+        task = Task(task_name, probes, evaluator_cls(), max_new_tokens=gen_len)
         return task.run(engine).accuracy
 
     return float("nan")
@@ -273,6 +334,7 @@ def run_family_experiment(
     *,
     limit_per_task: int = 100,
     max_new_tokens: int = 16,
+    task_max_new_tokens: dict[str, int] | None = None,
     seed: int = 42,
     dtype: str | None = None,
     skip_accuracy: bool = False,
@@ -290,7 +352,13 @@ def run_family_experiment(
             radars and JSON output.
         tasks: lm-eval task names to concatenate into one probe set.
         limit_per_task: probes per task (forwarded to ``from_lm_eval``).
-        max_new_tokens: generation length for δ computation + generate_until tasks.
+        max_new_tokens: generation length for δ computation. Acts as the
+            fallback default for accuracy-phase generative tasks when no
+            ``TASK_MAX_NEW_TOKENS`` entry or override applies.
+        task_max_new_tokens: ``{task_name: max_new_tokens}`` overrides for
+            the accuracy phase. Priority: this dict > ``TASK_MAX_NEW_TOKENS`` >
+            ``max_new_tokens``. Use this when a uniform 16-token budget would
+            clip generative tasks (gsm8k CoT, longbench QA) to 0.0 accuracy.
         seed: probe-sampling seed for ``from_lm_eval``.
         dtype: forwarded to every ``Config``. ``None`` lets the engine pick.
         skip_accuracy: if True, only Phase A (δ) runs.
@@ -392,7 +460,11 @@ def run_family_experiment(
                 accuracy_by_variant[vname] = {}
                 for task in task_names:
                     ps_task = _task_probeset(per_task_probes, task, mega)
-                    acc = _accuracy_for_task(task, ps_task, engine)
+                    acc = _accuracy_for_task(
+                        task, ps_task, engine,
+                        max_new_tokens=max_new_tokens,
+                        task_max_new_tokens=task_max_new_tokens,
+                    )
                     accuracy_by_variant[vname][task] = acc
                     if progress:
                         if acc == acc:
@@ -716,7 +788,10 @@ __all__ = [
     "DEFAULT_TASKS",
     "TASK_TO_DOMAIN",
     "DEFAULT_DOMAIN_ORDER",
+    "DEFAULT_MAX_NEW_TOKENS",
+    "TASK_MAX_NEW_TOKENS",
     "GENERATE_EVALUATORS",
+    "resolve_max_new_tokens",
     "FamilyExperimentResult",
     "run_family_experiment",
     "plot_family_geometry",
