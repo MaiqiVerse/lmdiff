@@ -290,6 +290,16 @@ def family_experiment(
     ),
     limit_per_task: int = typer.Option(100, "--limit-per-task", help="Probes per task."),
     max_new_tokens: int = typer.Option(16, "--max-new-tokens"),
+    task_max_new_tokens: Optional[str] = typer.Option(
+        None,
+        "--task-max-new-tokens",
+        help=(
+            "CSV of KEY=VAL overrides for accuracy-phase generation length, "
+            "e.g. 'gsm8k=256,longbench_2wikimqa=128'. Without these, gsm8k "
+            "and longbench tasks clamp to artifactual 0.0 accuracy due to "
+            "truncated generation. Defaults populated from TASK_MAX_NEW_TOKENS."
+        ),
+    ),
     seed: int = typer.Option(42, "--seed"),
     dtype: Optional[str] = typer.Option(None, "--dtype", help="Model precision: bfloat16, float16, float32"),
     skip_accuracy: bool = typer.Option(
@@ -326,12 +336,33 @@ def family_experiment(
         if not task_list:
             raise typer.BadParameter("--tasks must contain at least one task name")
 
+    overrides: dict[str, int] | None = None
+    if task_max_new_tokens:
+        overrides = {}
+        for piece in task_max_new_tokens.split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            if "=" not in piece:
+                raise typer.BadParameter(
+                    f"--task-max-new-tokens entry {piece!r} must be 'KEY=VAL'"
+                )
+            k, v = piece.split("=", 1)
+            k = k.strip()
+            try:
+                overrides[k] = int(v.strip())
+            except ValueError as exc:
+                raise typer.BadParameter(
+                    f"--task-max-new-tokens value for {k!r} must be int"
+                ) from exc
+
     run_family_experiment(
         base=base,
         variants=parsed,
         tasks=task_list,
         limit_per_task=limit_per_task,
         max_new_tokens=max_new_tokens,
+        task_max_new_tokens=overrides,
         seed=seed,
         dtype=dtype,
         skip_accuracy=skip_accuracy,

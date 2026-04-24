@@ -9,9 +9,11 @@ import pytest
 
 from lmdiff.experiments.family import (
     DEFAULT_DOMAIN_ORDER,
+    DEFAULT_MAX_NEW_TOKENS,
     DEFAULT_TASKS,
     FamilyExperimentResult,
     GENERATE_EVALUATORS,
+    TASK_MAX_NEW_TOKENS,
     TASK_TO_DOMAIN,
     _accuracy_for_task,
     _compute_normalized_delta_by_task,
@@ -19,6 +21,7 @@ from lmdiff.experiments.family import (
     _l2_norm,
     _partition_delta_by_task,
     plot_family_geometry,
+    resolve_max_new_tokens,
     run_family_experiment,
 )
 from lmdiff.geometry import GeoResult
@@ -614,3 +617,56 @@ class TestSummaryJsonBugFix:
         for variant in expected:
             for task in DEFAULT_TASKS:
                 assert zs[variant][task] == pytest.approx(expected[variant][task])
+
+
+# ── v0.2.3 part C: per-task max_new_tokens (L-024) ─────────────────
+
+
+class TestResolveMaxNewTokens:
+    def test_default_is_16_for_mcq_tasks(self):
+        assert resolve_max_new_tokens("hellaswag") == DEFAULT_MAX_NEW_TOKENS == 16
+        assert resolve_max_new_tokens("arc_challenge") == 16
+        assert resolve_max_new_tokens("mmlu_college_computer_science") == 16
+
+    def test_overrides_for_known_generative_tasks(self):
+        # TASK_MAX_NEW_TOKENS bumps these regardless of the default arg.
+        assert resolve_max_new_tokens("gsm8k") == TASK_MAX_NEW_TOKENS["gsm8k"] == 256
+        assert resolve_max_new_tokens("longbench_2wikimqa") == 128
+        # Non-default arg does NOT override TASK_MAX_NEW_TOKENS:
+        assert resolve_max_new_tokens("gsm8k", default=512) == 256
+
+    def test_explicit_overrides_dict_wins(self):
+        # User-supplied overrides beat both TASK_MAX_NEW_TOKENS and the default.
+        assert resolve_max_new_tokens(
+            "gsm8k", overrides={"gsm8k": 999},
+        ) == 999
+        assert resolve_max_new_tokens(
+            "hellaswag", overrides={"hellaswag": 32},
+        ) == 32
+        # Tasks not in the overrides dict still use the normal resolution.
+        assert resolve_max_new_tokens(
+            "longbench_2wikimqa", overrides={"hellaswag": 32},
+        ) == 128
+
+
+class TestCliTaskMaxNewTokensFlag:
+    def test_csv_parses_into_overrides_dict(self, tmp_path):
+        from typer.testing import CliRunner
+        from unittest.mock import patch
+        from lmdiff.cli import app
+        with patch("lmdiff.experiments.family.run_family_experiment") as mock_run:
+            result = CliRunner().invoke(
+                app,
+                [
+                    "family-experiment",
+                    "--base", "b",
+                    "--variant", "v=m",
+                    "--tasks", "hellaswag",
+                    "--output-dir", str(tmp_path),
+                    "--no-radars",
+                    "--task-max-new-tokens", "gsm8k=512,arc_challenge=64",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        kw = mock_run.call_args.kwargs
+        assert kw["task_max_new_tokens"] == {"gsm8k": 512, "arc_challenge": 64}

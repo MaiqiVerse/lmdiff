@@ -10,10 +10,13 @@ from lmdiff.engine import (
 )
 from lmdiff.experiments.family import (
     DEFAULT_DOMAIN_ORDER,
+    DEFAULT_MAX_NEW_TOKENS,
     DEFAULT_TASKS,
     FamilyExperimentResult,
+    TASK_MAX_NEW_TOKENS,
     TASK_TO_DOMAIN,
     plot_family_geometry,
+    resolve_max_new_tokens,
     run_family_experiment,
 )
 from lmdiff.geometry import ChangeGeometry, GeoResult
@@ -54,8 +57,11 @@ __all__ = [
     "loglikelihood_accuracy",
     "DEFAULT_TASKS",
     "DEFAULT_DOMAIN_ORDER",
+    "DEFAULT_MAX_NEW_TOKENS",
+    "TASK_MAX_NEW_TOKENS",
     "TASK_TO_DOMAIN",
     "FamilyExperimentResult",
+    "resolve_max_new_tokens",
     "run_family_experiment",
     "plot_family_geometry",
 ]
