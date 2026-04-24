@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.4] - 2026-04-24
+
+### Fixed
+- **`v01.json` is now shipped in the wheel and sdist.** v0.2.2 and v0.2.3 published wheels that omitted `lmdiff/probes/v01.json` because `[tool.setuptools.packages.find]` ships Python modules only, not data files. Every CLI default (`--probes v01` across `compare`, `radar`, `run-task`, `geometry`) failed with `BadParameter` immediately after `pip install lmdiff-kit`. Added `[tool.setuptools.package-data] lmdiff = ["probes/*.json"]` so the built-in probe set rides inside both artifacts. Source-install users were unaffected.
+- **`import lmdiff.cli` no longer pulls `torch` and `transformers` at module-load time.** The typer console-script entrypoint (`lmdiff = lmdiff.cli:app`) was loading `lmdiff/__init__.py` → `from lmdiff.diff import ModelDiff` → `engine.py` → `torch`, so `lmdiff --help` and `lmdiff list-metrics` paid full torch-import latency (and hard-crashed on torch-less environments). `lmdiff/__init__.py` now uses :pep:`562` `__getattr__` to lazy-resolve the re-exports — public API (`from lmdiff import ModelDiff`) is unchanged, but torch / transformers are only imported when you actually reach for a symbol that needs them.
+
+### Notes
+- No code changes to metrics, geometry, or viz. Tests pass unchanged (+0).
+- If you're upgrading from v0.2.2 / v0.2.3: this release is strongly recommended, nothing to migrate.
+
 ## [0.2.3] - 2026-04-24
 
 ### Added
