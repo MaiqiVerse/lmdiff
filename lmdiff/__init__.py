@@ -18,8 +18,18 @@ from typing import TYPE_CHECKING
 # below will resolve the target lazily on first access and then cache it
 # in the module globals() so repeated access is free.
 _LAZY: dict[str, str] = {
-    # config (lightweight)
-    "Config": "lmdiff.config",
+    # v0.3.0 Config + sub-specs (lightweight, no torch). The pre-v0.3.0
+    # Config in lmdiff.config remains importable as `from lmdiff.config
+    # import Config` until the deprecation shim in commit 1.1.
+    "Config": "lmdiff._config",
+    "AdapterSpec": "lmdiff._config",
+    "QuantSpec": "lmdiff._config",
+    "PruneSpec": "lmdiff._config",
+    "DecodeSpec": "lmdiff._config",
+    "ICLExample": "lmdiff._config",
+    "Message": "lmdiff._config",
+    "KVCacheSpec": "lmdiff._config",
+    "SteeringSpec": "lmdiff._config",
     # diff / engine / geometry (pull torch + transformers)
     "DiffReport": "lmdiff.diff",
     "FullReport": "lmdiff.diff",
@@ -72,7 +82,17 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    # v0.3.0 Config + sub-specs (lmdiff._config)
     "Config",
+    "AdapterSpec",
+    "QuantSpec",
+    "PruneSpec",
+    "DecodeSpec",
+    "ICLExample",
+    "Message",
+    "KVCacheSpec",
+    "SteeringSpec",
+    # v0.2.x carry-over (still functional; deprecation shim in commit 1.1)
     "ModelDiff",
     "DiffReport",
     "PairTaskResult",
@@ -109,7 +129,17 @@ __all__ = [
 # Type-checkers need eager names; keep this block under TYPE_CHECKING so
 # it never runs at runtime.
 if TYPE_CHECKING:  # pragma: no cover
-    from lmdiff.config import Config  # noqa: F401
+    from lmdiff._config import (  # noqa: F401
+        AdapterSpec,
+        Config,
+        DecodeSpec,
+        ICLExample,
+        KVCacheSpec,
+        Message,
+        PruneSpec,
+        QuantSpec,
+        SteeringSpec,
+    )
     from lmdiff.diff import (  # noqa: F401
         DiffReport,
         FullReport,
