@@ -14,6 +14,8 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
+__version__ = "0.3.0"
+
 # Map every public symbol to the submodule that defines it. __getattr__
 # below will resolve the target lazily on first access and then cache it
 # in the module globals() so repeated access is free.

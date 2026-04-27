@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.3.0] - 2026-04-30
+
+### Added
+- **Top-level `compare()` and `family()` functions** — the new public API. Replaces the v0.2.x `ModelDiff` class. Both accept either model-id strings (coerced to `Config(model=...)`) or pre-built `Config` instances; build engines internally and clean up in a `try/finally`. See `docs/migration/v02-to-v03.md`.
+- **`Config` class** as the unit of comparison — frozen, hashable, validated at construction. Packages model + adapter + quantization + context + decoding + steering through 8 typed sub-specs (`AdapterSpec`, `QuantSpec`, `PruneSpec`, `ICLExample`, `Message`, `KVCacheSpec`, `DecodeSpec`, `SteeringSpec`).
+- **`Engine` Protocol** for backend integration (`runtime_checkable`, PEP 544). Canonical implementation `HFEngine` (HF Transformers, lazy torch import, capability registry). `MinimalEngine` is the copy-paste template for custom backends; `MockEngine` is the test fixture used throughout `tests/unit/`. Reserved capability registry forward-compatible with v0.7+ representation, v2.0+ patching.
+- **`GeoResult.findings`** — 8 data-driven `Finding` types (`MostLikeBaseFinding`, `BiggestMoveFinding`, `DirectionClusterFinding`, `DirectionOutlierFinding`, `SpecializationPeakFinding`, `AccuracyArtifactFinding`, `TokenizerMismatchFinding`, `BaseAccuracyMissingFinding`) extracted from any comparison. Single source of truth across renderers.
+- **5-layer terminal renderer** (`result.print()`) with ANSI colors, adaptive width (< 80 cols collapses to per-variant blocks), `NO_COLOR` / non-tty / `force_color` precedence rules.
+- **3 application-tier figures** (`result.figures(out_dir)`): drift+share dual-view heatmap, direction agreement (raw + selective cosine matrices), raw-vs-normalized magnitude bars. Following the v6 plan §12.1 5-rule template; outputs visually identical to the §14 reference scripts on the calibration data.
+- **Self-contained HTML report** (`result.to_html("report.html")`) — single ~1 MB file with base64-embedded figures, light/dark theme toggle (defaults to OS preference), print stylesheet. `embed_images=False` switches to a small HTML + sibling `figs/` directory.
+- **Markdown renderer** (`result.to_markdown("report.md")`) — GitHub-flavored, mirrors terminal 5-layer structure, bolds row peaks in tables, `⚠`-prefixed blockquote caveats, optional figure links via `figures_dir=` kwarg.
+- **GeoResult schema v5** — adds `share_per_domain` field (per-variant per-domain energy share, rows sum to 1.0). v4 schemas load with `DeprecationWarning` and synthesise the new field on the fly so the in-memory result is always v5-shaped.
+- **`lmdiff.load_result(path)`** for symmetry with `result.save(path)` — round-trips schema v1-v5 JSON.
+- **CLI: `lmdiff family-experiment` + `lmdiff plot-geometry`** subcommands wrap the v0.3.0 entry points; comprehensive migration docs at `docs/migration/v02-to-v03.md`.
+
+### Deprecated
+- `lmdiff.ModelDiff` (use `lmdiff.compare()`).
+- `lmdiff.config.Config` (use top-level `lmdiff.Config` from `lmdiff._config`).
+- v0.2.x kwargs `prompts=` (now `probes=`), `n_samples=` (now `n_probes=`), dict-style `decode={...}` (now `DecodeSpec(...)`).
+- All emit `DeprecationWarning` and continue working in v0.3.x. **Removed in v0.4.0.**
+
+### Architecture
+- Lazy import preserved end-to-end: `import lmdiff` and `import lmdiff.report` do NOT load torch / transformers / matplotlib. Each heavy dependency loads on first use only.
+- Engine capability negotiation runs before any inference: a metric requiring a capability the backend does not declare raises `CapabilityError` immediately, not after a 7B model load.
+- All renderers (terminal / markdown / HTML / JSON / figures) share `result.findings` for narrative content. Cross-renderer consistency — every `Finding.summary` appears verbatim in every channel — is a test invariant.
+- `lmdiff/_LAZY` PEP-562 `__getattr__` mechanism lets callers do `from lmdiff import compare` without paying torch import latency.
+
+### Notes
+- Tests: 790 passing (was 482 in v0.2.4) across config, engine, geometry, findings, report, and 4 viz modules. 7 skipped (lazy-import vacuous-skip guards), 59 deselected (slow / GPU markers).
+- v0.3.0 freezes the new public API surface. Phase 2 (v0.4.0) ships probe taxonomy + 4 builtin task probe sets + YAML loader + the v0.2.x shim removal.
+- Calibration validated on the Llama-2 4-variant family experiment: terminal output structurally matches v6 §13, application figures reproduce the v6 §14 reference outputs to four decimal places.
+
 ## [0.2.4] - 2026-04-24
 
 ### Fixed
