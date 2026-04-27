@@ -316,3 +316,38 @@ def write_json(obj: Any, path: str | Path, indent: int = 2) -> None:
     path = Path(path)
     text = to_json(obj, indent=indent)
     path.write_text(text, encoding="utf-8")
+
+
+# ── v0.3.0 Renderer Protocol adapter (commit 1.5) ─────────────────────
+
+
+def render(
+    result: Any,
+    *,
+    findings: tuple = (),  # noqa: ARG001  reserved for commit 1.6 emission
+    tables: dict | None = None,  # noqa: ARG001
+    path: str | Path | None = None,
+    indent: int = 2,
+    **_unused,
+) -> dict[str, Any]:
+    """Render a GeoResult / DiffReport / FullReport as a v5 JSON dict.
+
+    When ``path`` is given, the dict is also written to disk (UTF-8,
+    sort_keys=True). Returns the dict either way.
+    """
+    payload = to_json_dict(result)
+    if path is not None:
+        text = json.dumps(payload, indent=indent, sort_keys=True, ensure_ascii=False)
+        Path(path).write_text(text, encoding="utf-8")
+    return payload
+
+
+def load_result(path: str | Path) -> "GeoResult":
+    """Load a GeoResult JSON file (any schema 1-5).
+
+    v4 emits ``DeprecationWarning`` and synthesises the v5
+    ``share_per_domain`` field; v5 loads as-is.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    payload = json.loads(text)
+    return geo_result_from_json_dict(payload)

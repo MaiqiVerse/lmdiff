@@ -310,3 +310,40 @@ def _format_cosine(value: float, diagonal: bool) -> str:
     if diagonal:
         return f"[dim]{value:.2f}[/dim]"
     return f"{value:+.3f}"
+
+
+# ── v0.3.0 Renderer Protocol adapter (commit 1.5) ─────────────────────
+
+
+def render(
+    result: "GeoResult",
+    *,
+    findings: tuple = (),  # noqa: ARG001  reserved for commit 1.7+
+    tables: dict | None = None,  # noqa: ARG001
+    file: object = None,
+    **_unused,
+) -> str:
+    """Render a GeoResult to the terminal and also return its plain-text form.
+
+    v0.3.0 skeleton: delegates to the v0.2.x ``print_geometry`` Rich
+    renderer for now and prepends a one-line banner pointing at commit
+    1.7. The 5-layer application-tier terminal output (Layer 1 one-liner,
+    Layer 2 headlines, ...) lands in commit 1.7 without restructuring.
+
+    When ``file`` is given (anything with a ``write`` method), the Rich
+    output goes there; otherwise it goes to ``sys.stdout``. The returned
+    string is a minimal text dump of the result (used by callers that
+    want the content as a string).
+    """
+    console = Console(file=file) if file is not None else Console()
+    console.print(
+        "[dim]([italic]v0.3.0 application-tier terminal renderer arrives "
+        "in commit 1.7[/italic])[/dim]"
+    )
+    print_geometry(result, console=console)
+    # Plain-text return for in-process callers that want a string handle.
+    return (
+        f"GeoResult({result.base_name} vs "
+        f"{', '.join(result.variant_names)}; "
+        f"n_probes={result.n_probes})"
+    )
