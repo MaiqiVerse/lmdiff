@@ -34,7 +34,7 @@ class TestCompareE2E:
         assert out_file.exists()
 
         data = json.loads(out_file.read_text())
-        assert data["schema_version"] == "4"
+        assert data["schema_version"] == "5"
         assert any(r["name"] == "behavioral_distance" for r in data["results"])
         assert data["config_a"]["model"] == "gpt2"
         assert data["config_b"]["model"] == "distilgpt2"

@@ -365,7 +365,7 @@ class TestRunFamilyExperiment:
         assert "magnitudes_total_normalized" in summary
 
         geo_dump = json.loads(geo_path.read_text())
-        assert geo_dump["schema_version"] in ("3", "4")
+        assert geo_dump["schema_version"] in ("3", "4", "5")
 
         assert result.output_paths["summary_json"] == summary_path
         assert result.output_paths["georesult_json"] == geo_path
