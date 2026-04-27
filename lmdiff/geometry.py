@@ -218,10 +218,21 @@ class GeoResult:
             theme=theme,
         )
 
-    def to_markdown(self, path: str | None = None) -> str:
-        """Render to a Markdown string. Writes to ``path`` if given."""
+    def to_markdown(
+        self,
+        out_path: str | None = None,
+        *,
+        figures_dir: str | None = None,
+    ) -> Any:
+        """Render to GitHub-flavored markdown.
+
+        Returns the markdown string when ``out_path`` is None, else the
+        written ``Path``. When ``out_path`` is given, the 3 application
+        figures are rendered to ``out_path.parent / "figs"`` (or
+        ``figures_dir`` when set) and linked relatively.
+        """
         from lmdiff.report._pipeline import render as _r
-        return _r(self, "markdown", path=path)
+        return _r(self, "markdown", out_path=out_path, figures_dir=figures_dir)
 
     def save(self, path: str) -> None:
         """Write the result as v5 JSON."""
