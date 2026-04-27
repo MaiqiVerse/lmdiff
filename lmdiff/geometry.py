@@ -168,6 +168,27 @@ class GeoResult:
             })
         return rows
 
+    # ── v0.3.0 commit 1.6 findings accessor ────────────────────────────
+
+    @property
+    def findings(self) -> tuple:
+        """Lazy tuple of :class:`~lmdiff._findings.Finding` (commit 1.6).
+
+        Computed on first access via
+        :func:`lmdiff._findings.extract_findings` and cached on the instance.
+        Returns an empty tuple when no rule fires.
+        """
+        cached = self.__dict__.get("_findings_cache")
+        if cached is not None:
+            return cached
+        from lmdiff._findings import extract_findings
+        cached = extract_findings(self)
+        # GeoResult is a regular @dataclass (not frozen) so direct
+        # __dict__ mutation is fine; cache via bare attr to keep
+        # equality / hash semantics unaffected.
+        self.__dict__["_findings_cache"] = cached
+        return cached
+
     # ── v0.3.0 commit 1.5 convenience renderer methods ─────────────────
 
     def print(self, file: Any = None) -> None:
