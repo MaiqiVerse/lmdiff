@@ -109,7 +109,10 @@ class TestPipelineDispatch:
         geo = _make_geo()
         out = _pipeline.render(geo, channel="terminal", file=io.StringIO())
         assert isinstance(out, str)
-        assert "GeoResult" in out
+        # The v0.3.0 5-layer renderer (commit 1.7) opens with the
+        # banner "Family experiment:" rather than the v0.3.0-rc stub's
+        # "GeoResult(...)" marker.
+        assert "Family experiment" in out
 
     def test_markdown_channel_returns_md_string(self):
         geo = _make_geo()
@@ -130,8 +133,8 @@ class TestPipelineDispatch:
         assert isinstance(out, dict)
         assert out["schema_version"] == "5"
 
-    def test_figures_channel_skipped_when_matplotlib_missing(self, tmp_path):
-        # matplotlib IS installed locally — call returns a dict of paths.
+    def test_figures_channel_applied_tier_returns_list(self, tmp_path):
+        # Commit 1.9 default: tier='applied' returns list[Path] of 3 PNGs.
         geo = _make_geo()
         try:
             import matplotlib  # noqa: F401
@@ -144,10 +147,28 @@ class TestPipelineDispatch:
             out_dir=tmp_path,
             variant_order=["yarn", "long"],
         )
+        assert isinstance(rendered, list)
+        assert len(rendered) == 3
+        for p in rendered:
+            assert Path(p).exists()
+
+    def test_figures_channel_paper_tier_still_returns_dict(self, tmp_path):
+        # tier='paper' delegates to v0.2.x plot_family_figures.
+        geo = _make_geo()
+        try:
+            import matplotlib  # noqa: F401
+            matplotlib.use("Agg")
+        except ImportError:
+            pytest.skip("matplotlib not available; this test requires it")
+        rendered = _pipeline.render(
+            geo,
+            channel="figures",
+            out_dir=tmp_path,
+            tier="paper",
+            variant_order=["yarn", "long"],
+        )
         assert isinstance(rendered, dict)
-        # cosine_raw always renders from v1+ data
         assert "cosine_raw" in rendered
-        assert Path(rendered["cosine_raw"]).exists()
 
 
 # ── build_tables ─────────────────────────────────────────────────────
@@ -219,10 +240,11 @@ class TestGeoResultConvenience:
         geo = _make_geo()
         geo.print()
         captured = capsys.readouterr()
-        # Skeleton terminal renderer prints the placeholder banner + the
-        # v0.2.x Rich-rendered geometry table.
-        assert "v0.3.0 application-tier" in captured.out
-        assert "Change Geometry" in captured.out
+        # The v0.3.0 5-layer renderer (commit 1.7) opens with the banner
+        # "Family experiment:" and ends with the closing rule.
+        assert "Family experiment" in captured.out
+        assert "Headlines" in captured.out
+        assert "See also" in captured.out
 
     def test_to_html_returns_html_and_writes_file(self, tmp_path):
         geo = _make_geo()

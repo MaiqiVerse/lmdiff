@@ -215,16 +215,23 @@ class GeoResult:
         self,
         out_dir: str,
         *,
+        tier: str = "applied",
         which: list[str] | None = None,
         variant_order: list[str] | None = None,
         domain_order: list[str] | None = None,
         dpi: int = 200,
-    ) -> dict[str, Any]:
-        """Render the v0.2.x 7-figure paper suite into ``out_dir``."""
+    ) -> Any:
+        """Render the figure suite into ``out_dir``.
+
+        ``tier='applied'`` (default since commit 1.9) → 3 v0.3.0
+        application-tier PNGs; returns ``list[Path]``.
+        ``tier='paper'`` → v0.2.x 7-figure paper suite; returns
+        ``dict[str, Path]``.
+        """
         from lmdiff.report._pipeline import render as _r
         return _r(
             self, "figures",
-            out_dir=out_dir, which=which,
+            out_dir=out_dir, tier=tier, which=which,
             variant_order=variant_order, domain_order=domain_order, dpi=dpi,
         )
 

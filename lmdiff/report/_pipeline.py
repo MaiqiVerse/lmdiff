@@ -106,4 +106,51 @@ def _get_renderer(channel: str):
     return mod
 
 
-__all__ = ["build_tables", "render"]
+def _compose_one_liner(findings: tuple, n_probes: int = 0, n_domains: int = 0) -> str:
+    """Compose the Layer-1 one-liner for the terminal renderer.
+
+    Dispatch order (first match wins):
+
+      1. ``DirectionClusterFinding`` + ``DirectionOutlierFinding`` both fire →
+         ``"<k> variants align (cluster), 1 stands apart (outlier)."``.
+      2. ≥3 ``SpecializationPeakFinding`` fire on distinct domains →
+         ``"Each variant acts biggest on a different domain: <peaks>"``.
+      3. ``BiggestMoveFinding`` fires alone → echoes its summary.
+      4. Generic fallback → ``"Variants compared on N probes across M domains."``.
+    """
+    from lmdiff._findings import (
+        BiggestMoveFinding,
+        DirectionClusterFinding,
+        DirectionOutlierFinding,
+        SpecializationPeakFinding,
+    )
+
+    cluster = next(
+        (f for f in findings if isinstance(f, DirectionClusterFinding)), None,
+    )
+    outlier = next(
+        (f for f in findings if isinstance(f, DirectionOutlierFinding)), None,
+    )
+    if cluster is not None and outlier is not None:
+        k = len(cluster.details.get("variants", ()))
+        return f"{k} variants align (cluster), 1 stands apart (outlier)."
+
+    peaks = [f for f in findings if isinstance(f, SpecializationPeakFinding)]
+    if len(peaks) >= 3:
+        domains = {p.details.get("domain") for p in peaks}
+        if len(domains) >= 3:
+            # Per v6 §12.6: each Finding.summary must appear verbatim in
+            # every renderer. Layer 1 prints the summaries directly.
+            joined = "   ".join(p.summary for p in peaks)
+            return f"Each variant acts biggest on a different domain:\n  {joined}"
+
+    biggest = next(
+        (f for f in findings if isinstance(f, BiggestMoveFinding)), None,
+    )
+    if biggest is not None:
+        return biggest.summary
+
+    return f"Variants compared on {n_probes} probes across {n_domains} domains."
+
+
+__all__ = ["build_tables", "render", "_compose_one_liner"]
