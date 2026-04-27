@@ -44,6 +44,7 @@ _LAZY: dict[str, str] = {
     # v0.3.0 user-facing API
     "compare": "lmdiff._api",
     "family": "lmdiff._api",
+    "load_result": "lmdiff.report.json_report",
     # diff / engine / geometry (pull torch + transformers)
     "DiffReport": "lmdiff.diff",
     "FullReport": "lmdiff.diff",
@@ -119,6 +120,7 @@ __all__ = [
     # v0.3.0 user-facing API
     "compare",
     "family",
+    "load_result",
     # v0.2.x carry-over (deprecation shim emits warning at __init__ time)
     "ModelDiff",
     "DiffReport",

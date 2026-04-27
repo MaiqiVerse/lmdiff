@@ -168,6 +168,45 @@ class GeoResult:
             })
         return rows
 
+    # ── v0.3.0 commit 1.5 convenience renderer methods ─────────────────
+
+    def print(self, file: Any = None) -> None:
+        """Render to the terminal renderer (writes to stdout by default)."""
+        from lmdiff.report._pipeline import render as _r
+        _r(self, "terminal", file=file)
+
+    def to_html(self, path: str | None = None) -> str:
+        """Render to an HTML5 string. Writes to ``path`` if given."""
+        from lmdiff.report._pipeline import render as _r
+        return _r(self, "html", path=path)
+
+    def to_markdown(self, path: str | None = None) -> str:
+        """Render to a Markdown string. Writes to ``path`` if given."""
+        from lmdiff.report._pipeline import render as _r
+        return _r(self, "markdown", path=path)
+
+    def save(self, path: str) -> None:
+        """Write the result as v5 JSON."""
+        from lmdiff.report._pipeline import render as _r
+        _r(self, "json", path=path)
+
+    def figures(
+        self,
+        out_dir: str,
+        *,
+        which: list[str] | None = None,
+        variant_order: list[str] | None = None,
+        domain_order: list[str] | None = None,
+        dpi: int = 200,
+    ) -> dict[str, Any]:
+        """Render the v0.2.x 7-figure paper suite into ``out_dir``."""
+        from lmdiff.report._pipeline import render as _r
+        return _r(
+            self, "figures",
+            out_dir=out_dir, which=which,
+            variant_order=variant_order, domain_order=domain_order, dpi=dpi,
+        )
+
     @property
     def constant_fractions(self) -> dict[str, float]:
         """Per-variant ‖c·𝟙‖² / ‖δ‖², i.e. energy fraction of the uniform offset.
