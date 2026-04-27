@@ -6,6 +6,14 @@ Final: merge both into a single 5-variant GeoResult and emit per-domain breakdow
 
 Outputs examples/family_geometry_extended.json + terminal render.
 
+This script pins to the **v0.2.x** ``Config`` (``from lmdiff.config import
+Config``) because Phase B reuses the base engine and reaches into
+``InferenceEngine`` directly — both v0.2.x APIs that have not been ported
+to the v0.3.0 ``Engine`` protocol yet. The simpler partial-family script
+(``run_family_geometry_partial.py``) uses the v0.3.0 ``lmdiff.family()``
+entry point. A DeprecationWarning will be emitted at Config construction;
+it is intentional and expected until v0.4.0.
+
 Run: mamba run -n lmdiff python scripts/run_family_geometry_extended.py
 """
 from __future__ import annotations
@@ -13,12 +21,18 @@ from __future__ import annotations
 import gc
 import math
 import time
+import warnings as _warnings
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from lmdiff import ChangeGeometry, Config, GeoResult, ProbeSet
+from lmdiff import ChangeGeometry, GeoResult, ProbeSet
+# Pin to v0.2.x Config — Phase B reuses InferenceEngine directly (v0.2.x).
+# Suppress the per-construction DeprecationWarning: this script is the
+# v0.2.x compatibility example until Phase 5 lifts engine reuse to v0.3.0.
+_warnings.filterwarnings("ignore", category=DeprecationWarning, module="lmdiff.config")
+from lmdiff.config import Config
 from lmdiff.engine import InferenceEngine, release_cuda_cache
 from lmdiff.report.json_report import write_json
 from lmdiff.report.terminal import print_geometry

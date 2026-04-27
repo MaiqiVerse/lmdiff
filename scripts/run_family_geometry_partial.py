@@ -11,7 +11,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from lmdiff import ChangeGeometry, Config, ProbeSet
+import lmdiff
+from lmdiff import Config, ProbeSet
 from lmdiff.report.json_report import write_json
 from lmdiff.report.terminal import print_geometry
 
@@ -46,14 +47,14 @@ def main() -> None:
         print(f"  {name:6s} = {model_id}")
     print(f"Max new tokens: {MAX_NEW_TOKENS}\n")
 
-    cg = ChangeGeometry(
-        base=base_config,
-        variants=variant_configs,
-        prompts=probes,
-    )
-
     t0 = time.time()
-    result = cg.analyze(max_new_tokens=MAX_NEW_TOKENS)
+    result = lmdiff.family(
+        base_config,
+        variant_configs,
+        probes=probes,
+        n_probes=len(probes),
+        max_new_tokens=MAX_NEW_TOKENS,
+    )
     elapsed = time.time() - t0
     print(f"\nAnalysis finished in {elapsed/60:.1f} min")
 

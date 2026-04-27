@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -59,7 +60,16 @@ class FullReport:
 
 
 class ModelDiff:
-    """Compare two model configurations across metrics."""
+    """Compare two model configurations across metrics.
+
+    .. deprecated:: 0.3.0
+       Use :func:`lmdiff.compare` for pairwise comparison and
+       :func:`lmdiff.family` for one-vs-N. ``ModelDiff`` continues to work
+       for backward compatibility but emits a ``DeprecationWarning`` on
+       construction. ``run(level="representation")`` raises
+       ``NotImplementedError`` in v0.3.0; representation metrics arrive in
+       Phase 5 (v0.7.0). Will be removed in v0.4.0.
+    """
 
     def __init__(
         self,
@@ -68,6 +78,15 @@ class ModelDiff:
         prompts: list[str] | ProbeSet,
         n_samples: int = 5,
     ) -> None:
+        warnings.warn(
+            "lmdiff.ModelDiff (v0.2.x) is deprecated since v0.3.0; "
+            "use `lmdiff.compare(base, variant, probes=..., n_probes=...)` "
+            "for pairwise comparison or `lmdiff.family(base, variants, ...)` "
+            "for one-vs-N. Will be removed in v0.4.0. "
+            "See docs/migration/v02-to-v03.md.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.config_a = config_a
         self.config_b = config_b
 
@@ -100,6 +119,13 @@ class ModelDiff:
         **kwargs: Any,
     ) -> DiffReport:
         """Run all applicable metrics at the given level."""
+        if level == "representation":
+            raise NotImplementedError(
+                "level='representation' is not implemented in v0.3.0. "
+                "Representation metrics (CKA, cosine, effective rank, ...) "
+                "arrive in v0.7.0 / Phase 5. Until then, use level='output' "
+                "or migrate to lmdiff.compare()."
+            )
         if metrics is None:
             metric_classes = _METRICS_BY_LEVEL.get(level, [])
         else:

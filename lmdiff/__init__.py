@@ -41,6 +41,9 @@ _LAZY: dict[str, str] = {
     "CapabilityError": "lmdiff._engine",
     "CrossTokenizerError": "lmdiff._engine",
     "MinimalEngine": "lmdiff.engines.minimal",
+    # v0.3.0 user-facing API
+    "compare": "lmdiff._api",
+    "family": "lmdiff._api",
     # diff / engine / geometry (pull torch + transformers)
     "DiffReport": "lmdiff.diff",
     "FullReport": "lmdiff.diff",
@@ -113,7 +116,10 @@ __all__ = [
     "AttentionWeightsResult",
     "CapabilityError",
     "CrossTokenizerError",
-    # v0.2.x carry-over (still functional; deprecation shim in commit 1.1)
+    # v0.3.0 user-facing API
+    "compare",
+    "family",
+    # v0.2.x carry-over (deprecation shim emits warning at __init__ time)
     "ModelDiff",
     "DiffReport",
     "PairTaskResult",
@@ -172,6 +178,7 @@ if TYPE_CHECKING:  # pragma: no cover
         ScoreResult,
     )
     from lmdiff.engines.minimal import MinimalEngine  # noqa: F401
+    from lmdiff._api import compare, family  # noqa: F401
     from lmdiff.diff import (  # noqa: F401
         DiffReport,
         FullReport,
