@@ -98,24 +98,39 @@ and `lmdiff.viz.plot_family_figures`, also callable directly from Python.
 ## Python API
 
 ```python
-from lmdiff import Config, ModelDiff, ProbeSet
-from lmdiff.report.terminal import print_report, print_radar
+import lmdiff
+from lmdiff import Config, DecodeSpec
+from lmdiff.report.terminal import print_geometry
 
-probes = ProbeSet.from_json("lmdiff/probes/v01.json")
-md = ModelDiff(
-    Config(model="gpt2"),
-    Config(model="distilgpt2"),
-    probes,
+# Pairwise comparison (v0.3.0)
+result = lmdiff.compare(
+    "gpt2",            # str → Config(model="gpt2")
+    "distilgpt2",
+    probes="v01",      # bundled 90-probe set; pass a ProbeSet for custom
+    n_probes=90,
+    max_new_tokens=16,
 )
+print_geometry(result)
 
-# Metric-level comparison
-report = md.run(level="output", max_new_tokens=16)
-print_report(report)
-
-# Per-domain capability radar
-radar_result = md.run_radar(probes=probes, max_new_tokens=16)
-print_radar(radar_result)
+# One-vs-N family comparison
+family = lmdiff.family(
+    Config(model="meta-llama/Llama-2-7b-hf"),
+    {
+        "yarn": "NousResearch/Yarn-Llama-2-7b-128k",
+        "sampled": Config(
+            model="meta-llama/Llama-2-7b-hf",
+            decode=DecodeSpec(strategy="sample", temperature=0.7),
+        ),
+    },
+    probes="v01",
+    n_probes=100,
+)
 ```
+
+> **Migrating from v0.2.x?** `lmdiff.ModelDiff` and `lmdiff.config.Config`
+> still work but emit `DeprecationWarning` and will be removed in v0.4.0.
+> See [`docs/migration/v02-to-v03.md`](docs/migration/v02-to-v03.md) for
+> the mapping table.
 
 ## Metrics: what each one means
 
