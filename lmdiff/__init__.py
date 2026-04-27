@@ -44,6 +44,18 @@ _LAZY: dict[str, str] = {
     # v0.3.0 user-facing API
     "compare": "lmdiff._api",
     "family": "lmdiff._api",
+    "load_result": "lmdiff.report.json_report",
+    # v0.3.0 commit 1.6 findings (eight types + extractor)
+    "Finding": "lmdiff._findings",
+    "MostLikeBaseFinding": "lmdiff._findings",
+    "BiggestMoveFinding": "lmdiff._findings",
+    "DirectionClusterFinding": "lmdiff._findings",
+    "DirectionOutlierFinding": "lmdiff._findings",
+    "SpecializationPeakFinding": "lmdiff._findings",
+    "AccuracyArtifactFinding": "lmdiff._findings",
+    "TokenizerMismatchFinding": "lmdiff._findings",
+    "BaseAccuracyMissingFinding": "lmdiff._findings",
+    "extract_findings": "lmdiff._findings",
     # diff / engine / geometry (pull torch + transformers)
     "DiffReport": "lmdiff.diff",
     "FullReport": "lmdiff.diff",
@@ -119,6 +131,18 @@ __all__ = [
     # v0.3.0 user-facing API
     "compare",
     "family",
+    "load_result",
+    # v0.3.0 commit 1.6 findings
+    "Finding",
+    "MostLikeBaseFinding",
+    "BiggestMoveFinding",
+    "DirectionClusterFinding",
+    "DirectionOutlierFinding",
+    "SpecializationPeakFinding",
+    "AccuracyArtifactFinding",
+    "TokenizerMismatchFinding",
+    "BaseAccuracyMissingFinding",
+    "extract_findings",
     # v0.2.x carry-over (deprecation shim emits warning at __init__ time)
     "ModelDiff",
     "DiffReport",

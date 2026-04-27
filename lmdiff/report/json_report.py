@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from datetime import datetime, timezone
 from functools import singledispatch
 from pathlib import Path
@@ -38,9 +39,13 @@ from lmdiff.metrics.base import MetricLevel, MetricResult
 from lmdiff.tasks.base import EvalResult, TaskResult
 from lmdiff.tasks.capability_radar import DomainRadarResult, RadarResult
 from lmdiff.diff import DiffReport, FullReport, PairTaskResult
-from lmdiff.geometry import GeoResult
+from lmdiff.geometry import GeoResult, _compute_share_per_domain
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
+"""Current GeoResult on-disk schema. Reader accepts v1-v5; writer emits v5
+exclusively. v4 emits DeprecationWarning on load (will hard-fail in v0.4.0).
+v5 added ``share_per_domain`` (per-variant per-domain energy shares,
+synthesisable from existing v4 data; see L-023 / L-022)."""
 
 
 def _clean_value(v: Any) -> Any:
@@ -200,6 +205,7 @@ def _geo_result(r: GeoResult) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "selective_cosine_matrix": _clean_value(r.selective_cosine_matrix),
         "selective_magnitudes": _clean_value(r.selective_magnitudes),
+        "share_per_domain": _clean_value(r.share_per_domain),
         "variant_names": list(r.variant_names),
     }
 
@@ -207,16 +213,23 @@ def _geo_result(r: GeoResult) -> dict[str, Any]:
 def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
     """Reconstruct a GeoResult from a to_json_dict / json.loads output.
 
-    Accepts schema_version "1" (legacy; decomposition fields empty),
-    "2" (populates delta_means / selective_magnitudes /
-    selective_cosine_matrix), "3" (adds probe_domains), and "4" (adds
-    avg_tokens_per_probe + magnitudes_normalized). Numeric None (JSON
-    null) values in cosine / selective cosine matrices are restored to
-    float("nan") so the in-memory result behaves identically whether it
-    came from analyze() or a JSON round trip.
+    Accepts schema versions 1 through 5:
+
+    * v1: legacy; decomposition fields empty.
+    * v2: populates ``delta_means`` / ``selective_magnitudes`` /
+      ``selective_cosine_matrix``.
+    * v3: adds ``probe_domains``.
+    * v4: adds ``avg_tokens_per_probe`` + ``magnitudes_normalized``;
+      emits ``DeprecationWarning`` and synthesises the v5
+      ``share_per_domain`` field on the fly. Will hard-fail in v0.4.0.
+    * v5: adds ``share_per_domain``; loaded as-is.
+
+    Numeric ``None`` (JSON ``null``) values in cosine / selective cosine
+    matrices are restored to ``float('nan')`` so the in-memory result
+    behaves identically whether it came from ``analyze()`` or a round-trip.
     """
     sv = str(d.get("schema_version", "1"))
-    if sv not in ("1", "2", "3", "4"):
+    if sv not in ("1", "2", "3", "4", "5"):
         raise ValueError(f"unsupported GeoResult schema_version: {sv!r}")
 
     def _nan_of(v: Any) -> float:
@@ -237,16 +250,16 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
         per_probe={k: {p: float(val) for p, val in row.items()} for k, row in d["per_probe"].items()},
         metadata=dict(d.get("metadata", {})),
     )
-    if sv in ("2", "3", "4"):
+    if sv in ("2", "3", "4", "5"):
         kwargs["delta_means"] = {k: float(v) for k, v in d.get("delta_means", {}).items()}
         kwargs["selective_magnitudes"] = {
             k: float(v) for k, v in d.get("selective_magnitudes", {}).items()
         }
         kwargs["selective_cosine_matrix"] = _nan_matrix(d.get("selective_cosine_matrix"))
-    if sv in ("3", "4"):
+    if sv in ("3", "4", "5"):
         raw = d.get("probe_domains", [])
         kwargs["probe_domains"] = tuple(raw) if raw else ()
-    if sv == "4":
+    if sv in ("4", "5"):
         raw_tokens = d.get("avg_tokens_per_probe", [])
         kwargs["avg_tokens_per_probe"] = (
             tuple(float(x) for x in raw_tokens) if raw_tokens else ()
@@ -254,7 +267,28 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
         kwargs["magnitudes_normalized"] = {
             k: float(v) for k, v in d.get("magnitudes_normalized", {}).items()
         }
-    return GeoResult(**kwargs)
+    if sv == "5":
+        raw_share = d.get("share_per_domain", {}) or {}
+        kwargs["share_per_domain"] = {
+            v: {dom: float(val) for dom, val in row.items()}
+            for v, row in raw_share.items()
+        }
+
+    result = GeoResult(**kwargs)
+
+    if sv == "4":
+        warnings.warn(
+            "GeoResult JSON schema v4 is deprecated since v0.3.0; the v5 "
+            "share_per_domain field is being synthesised on the fly. "
+            "Re-save with `result.save(path)` (or write_json) to upgrade. "
+            "v4 load support will be removed in v0.4.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Synthesise v5 share_per_domain from the v4 per-domain magnitudes.
+        result.share_per_domain = _compute_share_per_domain(result)
+
+    return result
 
 
 @to_json_dict.register(FullReport)
@@ -282,3 +316,38 @@ def write_json(obj: Any, path: str | Path, indent: int = 2) -> None:
     path = Path(path)
     text = to_json(obj, indent=indent)
     path.write_text(text, encoding="utf-8")
+
+
+# ── v0.3.0 Renderer Protocol adapter (commit 1.5) ─────────────────────
+
+
+def render(
+    result: Any,
+    *,
+    findings: tuple = (),  # noqa: ARG001  reserved for commit 1.6 emission
+    tables: dict | None = None,  # noqa: ARG001
+    path: str | Path | None = None,
+    indent: int = 2,
+    **_unused,
+) -> dict[str, Any]:
+    """Render a GeoResult / DiffReport / FullReport as a v5 JSON dict.
+
+    When ``path`` is given, the dict is also written to disk (UTF-8,
+    sort_keys=True). Returns the dict either way.
+    """
+    payload = to_json_dict(result)
+    if path is not None:
+        text = json.dumps(payload, indent=indent, sort_keys=True, ensure_ascii=False)
+        Path(path).write_text(text, encoding="utf-8")
+    return payload
+
+
+def load_result(path: str | Path) -> "GeoResult":
+    """Load a GeoResult JSON file (any schema 1-5).
+
+    v4 emits ``DeprecationWarning`` and synthesises the v5
+    ``share_per_domain`` field; v5 loads as-is.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    payload = json.loads(text)
+    return geo_result_from_json_dict(payload)
