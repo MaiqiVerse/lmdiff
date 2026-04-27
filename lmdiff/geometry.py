@@ -142,6 +142,21 @@ class GeoResult:
     avg_tokens_per_probe is empty (no token data available). Schema v4
     (L-022)."""
 
+    share_per_domain: dict[str, dict[str, float]] = field(default_factory=dict)
+    """Per-variant per-domain energy share. Schema v5.
+
+    For each variant ``v`` and domain ``d``:
+        ``share_per_domain[v][d] = ‖δ_{v|d}‖² / Σ_d' ‖δ_{v|d'}‖²``
+
+    Rows sum to 1.0 (within float tolerance) when the variant has any
+    non-zero per-domain magnitude. Surfaces the v4 ``domain_heatmap()``
+    output as a top-level field so renderers can consume the
+    "where did variant act biggest" view directly without recomputation.
+
+    Empty when ``probe_domains`` is empty (no domain assignment to
+    compute shares against). Synthesized from ``domain_heatmap()`` when
+    loading a v4 GeoResult JSON (with DeprecationWarning)."""
+
     def summary_table(self) -> list[dict]:
         """One row per variant: {variant, magnitude, cosines}."""
         rows: list[dict] = []
@@ -653,7 +668,7 @@ class ChangeGeometry:
             if self.probe_set.version:
                 metadata["probe_set_version"] = self.probe_set.version
 
-        return GeoResult(
+        result = GeoResult(
             base_name=self.base_config.display_name,
             variant_names=variant_names,
             n_probes=n_valid,
@@ -669,6 +684,12 @@ class ChangeGeometry:
             avg_tokens_per_probe=avg_tokens_per_probe,
             magnitudes_normalized=magnitudes_normalized,
         )
+        # Schema v5: populate share_per_domain. Synthesised from the
+        # per-domain magnitudes the analyze() pass just produced via
+        # `domain_heatmap()`. Empty when probe_domains is empty (no
+        # domain assignment to compute shares against).
+        result.share_per_domain = _compute_share_per_domain(result)
+        return result
 
     def _delta_for_variant(
         self,
@@ -718,6 +739,36 @@ class ChangeGeometry:
             deltas.append(float(ce_bv - ce_vv))
 
         return deltas, use_bpb
+
+
+def _compute_share_per_domain(
+    result: "GeoResult",
+) -> dict[str, dict[str, float]]:
+    """Per-variant per-domain energy share (schema v5).
+
+    For each variant ``v`` and domain ``d``::
+
+        share_per_domain[v][d] = ‖δ_{v|d}‖² / Σ_d' ‖δ_{v|d'}‖²
+
+    Returns ``{}`` when ``probe_domains`` is empty (no domain assignment
+    available). When every per-domain magnitude is zero for a variant,
+    that variant's row is all zeros — never raises ZeroDivisionError.
+    """
+    if not result.probe_domains:
+        return {}
+    try:
+        per_domain = result.domain_heatmap()
+    except ValueError:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    for variant, dom_mags in per_domain.items():
+        sq = {d: float(m) ** 2 for d, m in dom_mags.items()}
+        total = sum(sq.values())
+        if total <= 0:
+            out[variant] = {d: 0.0 for d in sq}
+        else:
+            out[variant] = {d: v / total for d, v in sq.items()}
+    return out
 
 
 def _universally_valid_indices(
