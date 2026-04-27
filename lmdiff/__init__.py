@@ -30,6 +30,17 @@ _LAZY: dict[str, str] = {
     "Message": "lmdiff._config",
     "KVCacheSpec": "lmdiff._config",
     "SteeringSpec": "lmdiff._config",
+    # v0.3.0 Engine protocol + canonical HFEngine + result/error classes.
+    # All lightweight at import; HFEngine instantiation pulls torch lazily.
+    "Engine": "lmdiff._engine",
+    "HFEngine": "lmdiff._engine",
+    "ScoreResult": "lmdiff._engine",
+    "GenerateResult": "lmdiff._engine",
+    "HiddenStatesResult": "lmdiff._engine",
+    "AttentionWeightsResult": "lmdiff._engine",
+    "CapabilityError": "lmdiff._engine",
+    "CrossTokenizerError": "lmdiff._engine",
+    "MinimalEngine": "lmdiff.engines.minimal",
     # diff / engine / geometry (pull torch + transformers)
     "DiffReport": "lmdiff.diff",
     "FullReport": "lmdiff.diff",
@@ -92,6 +103,16 @@ __all__ = [
     "Message",
     "KVCacheSpec",
     "SteeringSpec",
+    # v0.3.0 Engine protocol + impls + result / error types
+    "Engine",
+    "HFEngine",
+    "MinimalEngine",
+    "ScoreResult",
+    "GenerateResult",
+    "HiddenStatesResult",
+    "AttentionWeightsResult",
+    "CapabilityError",
+    "CrossTokenizerError",
     # v0.2.x carry-over (still functional; deprecation shim in commit 1.1)
     "ModelDiff",
     "DiffReport",
@@ -140,6 +161,17 @@ if TYPE_CHECKING:  # pragma: no cover
         QuantSpec,
         SteeringSpec,
     )
+    from lmdiff._engine import (  # noqa: F401
+        AttentionWeightsResult,
+        CapabilityError,
+        CrossTokenizerError,
+        Engine,
+        GenerateResult,
+        HFEngine,
+        HiddenStatesResult,
+        ScoreResult,
+    )
+    from lmdiff.engines.minimal import MinimalEngine  # noqa: F401
     from lmdiff.diff import (  # noqa: F401
         DiffReport,
         FullReport,
