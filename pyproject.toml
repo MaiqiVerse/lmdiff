@@ -48,8 +48,11 @@ lmdiff = "lmdiff.cli:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: marks tests that load real models (deselect with '-m \"not slow\"')"]
-addopts = "-m 'not slow'"
+markers = [
+    "slow: marks tests that load real models (deselect with '-m \"not slow\"')",
+    "gpu: marks tests that require a GPU (HFEngine integration; deselect with '-m \"not gpu\"')",
+]
+addopts = "-m 'not slow and not gpu'"
 
 [tool.setuptools.packages.find]
 include = ["lmdiff*"]
