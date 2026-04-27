@@ -196,15 +196,43 @@ class GeoResult:
         from lmdiff.report._pipeline import render as _r
         _r(self, "terminal", file=file)
 
-    def to_html(self, path: str | None = None) -> str:
-        """Render to an HTML5 string. Writes to ``path`` if given."""
-        from lmdiff.report._pipeline import render as _r
-        return _r(self, "html", path=path)
+    def to_html(
+        self,
+        out_path: str | None = None,
+        *,
+        embed_images: bool = True,
+        theme: str = "auto",
+    ) -> Any:
+        """Render to a self-contained HTML report.
 
-    def to_markdown(self, path: str | None = None) -> str:
-        """Render to a Markdown string. Writes to ``path`` if given."""
+        ``embed_images=True`` (default) inlines PNG figures as base64
+        ``data:`` URIs — single ~1 MB file. ``embed_images=False`` writes
+        a small HTML file with relative ``figs/`` references (requires
+        ``out_path``). See :func:`lmdiff.report.html.render` for details.
+        """
         from lmdiff.report._pipeline import render as _r
-        return _r(self, "markdown", path=path)
+        return _r(
+            self, "html",
+            out_path=out_path,
+            embed_images=embed_images,
+            theme=theme,
+        )
+
+    def to_markdown(
+        self,
+        out_path: str | None = None,
+        *,
+        figures_dir: str | None = None,
+    ) -> Any:
+        """Render to GitHub-flavored markdown.
+
+        Returns the markdown string when ``out_path`` is None, else the
+        written ``Path``. When ``out_path`` is given, the 3 application
+        figures are rendered to ``out_path.parent / "figs"`` (or
+        ``figures_dir`` when set) and linked relatively.
+        """
+        from lmdiff.report._pipeline import render as _r
+        return _r(self, "markdown", out_path=out_path, figures_dir=figures_dir)
 
     def save(self, path: str) -> None:
         """Write the result as v5 JSON."""

@@ -115,11 +115,12 @@ class TestPipelineDispatch:
         assert "Family experiment" in out
 
     def test_markdown_channel_returns_md_string(self):
+        # Commit 1.11: heading is "# lmdiff Family Report".
         geo = _make_geo()
         out = _pipeline.render(geo, channel="markdown")
         assert isinstance(out, str)
-        assert out.startswith("# lmdiff:")
-        assert "| variant |" in out
+        assert out.startswith("# lmdiff Family Report")
+        assert "## Summary" in out
 
     def test_html_channel_returns_html_string(self):
         geo = _make_geo()
@@ -246,20 +247,39 @@ class TestGeoResultConvenience:
         assert "Headlines" in captured.out
         assert "See also" in captured.out
 
-    def test_to_html_returns_html_and_writes_file(self, tmp_path):
+    def test_to_html_returns_path_when_out_path_given(self, tmp_path):
+        # Commit 1.10 contract: with out_path, returns the Path written to;
+        # without, returns the HTML string.
         geo = _make_geo()
         path = tmp_path / "out.html"
         out = geo.to_html(str(path))
-        assert out.startswith("<!DOCTYPE html>")
+        assert isinstance(out, Path)
         assert path.exists()
-        assert path.read_text(encoding="utf-8") == out
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("<!DOCTYPE html>")
 
-    def test_to_markdown_returns_md_and_writes_file(self, tmp_path):
+    def test_to_html_returns_string_when_no_out_path(self, tmp_path):
+        geo = _make_geo()
+        out = geo.to_html()
+        assert isinstance(out, str)
+        assert out.startswith("<!DOCTYPE html>")
+
+    def test_to_markdown_returns_path_when_out_path_given(self, tmp_path):
+        # Commit 1.11 contract: with out_path returns Path; without
+        # returns the markdown string.
         geo = _make_geo()
         path = tmp_path / "out.md"
         out = geo.to_markdown(str(path))
-        assert out.startswith("# lmdiff:")
+        assert isinstance(out, Path)
         assert path.exists()
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("# lmdiff Family Report")
+
+    def test_to_markdown_returns_string_when_no_out_path(self):
+        geo = _make_geo()
+        out = geo.to_markdown()
+        assert isinstance(out, str)
+        assert out.startswith("# lmdiff Family Report")
 
     def test_save_writes_v5_json(self, tmp_path):
         geo = _make_geo()
