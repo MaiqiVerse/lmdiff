@@ -246,13 +246,22 @@ class TestGeoResultConvenience:
         assert "Headlines" in captured.out
         assert "See also" in captured.out
 
-    def test_to_html_returns_html_and_writes_file(self, tmp_path):
+    def test_to_html_returns_path_when_out_path_given(self, tmp_path):
+        # Commit 1.10 contract: with out_path, returns the Path written to;
+        # without, returns the HTML string.
         geo = _make_geo()
         path = tmp_path / "out.html"
         out = geo.to_html(str(path))
-        assert out.startswith("<!DOCTYPE html>")
+        assert isinstance(out, Path)
         assert path.exists()
-        assert path.read_text(encoding="utf-8") == out
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("<!DOCTYPE html>")
+
+    def test_to_html_returns_string_when_no_out_path(self, tmp_path):
+        geo = _make_geo()
+        out = geo.to_html()
+        assert isinstance(out, str)
+        assert out.startswith("<!DOCTYPE html>")
 
     def test_to_markdown_returns_md_and_writes_file(self, tmp_path):
         geo = _make_geo()

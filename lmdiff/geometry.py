@@ -196,10 +196,27 @@ class GeoResult:
         from lmdiff.report._pipeline import render as _r
         _r(self, "terminal", file=file)
 
-    def to_html(self, path: str | None = None) -> str:
-        """Render to an HTML5 string. Writes to ``path`` if given."""
+    def to_html(
+        self,
+        out_path: str | None = None,
+        *,
+        embed_images: bool = True,
+        theme: str = "auto",
+    ) -> Any:
+        """Render to a self-contained HTML report.
+
+        ``embed_images=True`` (default) inlines PNG figures as base64
+        ``data:`` URIs — single ~1 MB file. ``embed_images=False`` writes
+        a small HTML file with relative ``figs/`` references (requires
+        ``out_path``). See :func:`lmdiff.report.html.render` for details.
+        """
         from lmdiff.report._pipeline import render as _r
-        return _r(self, "html", path=path)
+        return _r(
+            self, "html",
+            out_path=out_path,
+            embed_images=embed_images,
+            theme=theme,
+        )
 
     def to_markdown(self, path: str | None = None) -> str:
         """Render to a Markdown string. Writes to ``path`` if given."""
