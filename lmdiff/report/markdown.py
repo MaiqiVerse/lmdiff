@@ -182,14 +182,20 @@ def _build_share_table(
 
 
 def _build_drift_table(
-    variants: list[str], domains: list[str], drift: dict, totals: dict,
+    variants: list[str],
+    domains: list[str],
+    drift: dict,
+    norm_totals: dict,
 ) -> list[str]:
     if not variants or not domains or not drift:
         return []
     lines = ["## How big is each move", ""]
-    lines.append("_per-domain drift magnitude_")
+    lines.append(
+        "_per-domain drift magnitude (raw ‖δ‖); rightmost column is "
+        "per-√token normalized — comparable across runs_"
+    )
     lines.append("")
-    header = "| variant | " + " | ".join(domains) + " | total |"
+    header = "| variant | " + " | ".join(domains) + " | ‖δ‖/√tok |"
     sep = "|---|" + "---|" * (len(domains) + 1)
     lines.append(header)
     lines.append(sep)
@@ -207,9 +213,9 @@ def _build_drift_table(
             if d == peak_dom and isinstance(val, (int, float)) and not math.isnan(val):
                 text = f"**{text}**"
             cells.append(text)
-        total = totals.get(v, float("nan"))
+        norm_total = norm_totals.get(v, float("nan"))
         lines.append(
-            f"| {v} | " + " | ".join(cells) + f" | **{_fmt_float(total, 4)}** |"
+            f"| {v} | " + " | ".join(cells) + f" | **{_fmt_float(norm_total, 4)}** |"
         )
     lines.append("")
     return lines
@@ -350,7 +356,11 @@ def render(
     variants = sorted(list(result.variant_names))
     domains = _ordered_domains(result)
     drift = _domain_drift(result)
-    totals = _per_variant_total_drift(drift)
+    # The previous "total" column was an RMS of per-domain raw ‖δ‖ — not
+    # comparable across runs. Use ``magnitudes_normalized`` (per-√token)
+    # which matches the right pane of ``change_size_bars.png`` and the
+    # v6 §14.4 spec for cross-run-comparable magnitude.
+    norm_totals = dict(result.magnitudes_normalized or {})
     share = tables_local.get("share", {})
     cosine = tables_local.get("cosine", {})
     accuracy = tables_local.get("accuracy", {})
@@ -415,7 +425,7 @@ def render(
         )
         lines.append("")
 
-    lines.extend(_build_drift_table(variants, domains, drift, totals))
+    lines.extend(_build_drift_table(variants, domains, drift, norm_totals))
 
     lines.extend(_build_cosine_table(variants, cosine))
     if render_figs and figs_dir is not None and out_dir is not None:

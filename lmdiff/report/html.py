@@ -386,7 +386,7 @@ def _build_share_table(
 
 
 def _build_drift_table(
-    variants: list[str], domains: list[str], drift: dict, totals: dict,
+    variants: list[str], domains: list[str], drift: dict, norm_totals: dict,
 ) -> str:
     if not variants or not domains or not drift:
         return ""
@@ -400,16 +400,18 @@ def _build_drift_table(
             cls = _drift_class(val)
             attr = f' class="{cls}"' if cls else ""
             cells.append(f'<td{attr}>{_fmt_float(val, 4)}</td>')
-        total_val = totals.get(v, float("nan"))
+        nt = norm_totals.get(v, float("nan"))
         rows.append(
             f'<tr><td>{escape(v)}</td>{"".join(cells)}'
-            f'<td><strong>{_fmt_float(total_val, 4)}</strong></td></tr>'
+            f'<td><strong>{_fmt_float(nt, 4)}</strong></td></tr>'
         )
     return (
         '\n    <h3>How big is each move</h3>'
         '\n    <table>'
-        '\n      <caption>per-domain drift magnitude</caption>'
-        f'\n      <thead><tr><th>variant</th>{head_cells}<th>total</th></tr></thead>'
+        '\n      <caption>per-domain drift magnitude (raw ‖δ‖); rightmost'
+        ' column is per-√token normalized (comparable across runs)</caption>'
+        f'\n      <thead><tr><th>variant</th>{head_cells}'
+        '<th>‖δ‖/√tok</th></tr></thead>'
         f'\n      <tbody>{"".join(rows)}</tbody>'
         '\n    </table>'
     )
@@ -640,7 +642,9 @@ def render(
     variants = sorted(list(result.variant_names))
     domains = _ordered_domains(result)
     drift = _domain_drift(result)
-    totals = _per_variant_total_drift(drift)
+    # See markdown.render() — the per-variant total switched from RMS-of-
+    # per-domain raw (not comparable across runs) to per-√token normalized.
+    norm_totals = dict(result.magnitudes_normalized or {})
     share = tables_local.get("share", {})
     cosine = tables_local.get("cosine", {})
     accuracy = tables_local.get("accuracy", {})
@@ -693,7 +697,7 @@ def render(
         '\n  <section class="tables">'
         '\n    <h2>Numeric tables</h2>'
         f'{_build_share_table(variants, domains, share)}'
-        f'{_build_drift_table(variants, domains, drift, totals)}'
+        f'{_build_drift_table(variants, domains, drift, norm_totals)}'
         f'{_build_cosine_table(variants, cosine)}'
         f'{_build_accuracy_table(variants, accuracy, artifact_tasks)}'
         '\n  </section>'
