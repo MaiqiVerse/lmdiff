@@ -8,10 +8,11 @@ Two horizontal-bar charts side-by-side:
     contribution (a length artifact, not a real-drift artefact)
   - Right: ‖δ‖ per √token (after L-022 per-token normalization)
 
-Bottom-line panel: per-token-normalized ranking + the methodology
-caveat about length-bias. The caveat is a fixed methodology note (not a
-data finding) and always shown, per spec invariant (no domain knowledge
-in figure narrative — but methodology notes are explicitly OK).
+Bottom-line panel: per-token-normalized ranking + a length-bias
+caveat. The caveat text is **data-driven** — it only references
+``long_context_domain`` when the run actually contains probes from
+that domain. Runs without long-context probes get a generic
+"raw vs per-token" note instead, so we never describe absent data.
 """
 from __future__ import annotations
 
@@ -47,7 +48,7 @@ def render_change_size(
     out_path: str | Path,
     *,
     variant_order: list[str] | None = None,
-    findings: tuple | None = None,  # noqa: ARG001 (methodology caveat is fixed)
+    findings: tuple | None = None,  # noqa: ARG001 (reserved for future use)
     long_context_domain: str = "long-context",
     dpi: int = 180,
 ) -> Path:
@@ -77,10 +78,11 @@ def render_change_size(
         mask_long = domains_all == long_context_domain
     else:
         mask_long = np.zeros(0, dtype=bool)
+    has_long_context = bool(mask_long.any())
     pct_long: dict[str, float] = {}
     for v in variants:
         denom = float((cv[v] ** 2).sum())
-        if denom <= 0 or mask_long.size == 0:
+        if denom <= 0 or not has_long_context:
             pct_long[v] = 0.0
         else:
             pct_long[v] = float(100.0 * (cv[v][mask_long] ** 2).sum() / denom)
@@ -120,7 +122,7 @@ def render_change_size(
                     va="center", fontsize=11, fontweight="bold")
         if long_portion > raw_max * 0.05:
             ax_raw.text(long_portion / 2, k,
-                        f"longbench\n{pct_long[v]:.1f}%",
+                        f"{long_context_domain}\n{pct_long[v]:.1f}%",
                         va="center", ha="center", fontsize=8,
                         color="white", fontweight="bold")
 
@@ -129,8 +131,12 @@ def render_change_size(
     ax_raw.invert_yaxis()
     ax_raw.set_xlim(0, raw_max * 1.18)
     ax_raw.set_xlabel("‖δ‖ raw", fontsize=10)
-    ax_raw.set_title("Before normalization — long probes dominate",
-                     fontsize=11, color="#444", pad=10)
+    ax_raw.set_title(
+        ("Before normalization — long probes dominate"
+         if has_long_context
+         else "Raw magnitude (length-weighted)"),
+        fontsize=11, color="#444", pad=10,
+    )
     for s in ("top", "right"):
         ax_raw.spines[s].set_visible(False)
     ax_raw.tick_params(axis="both", length=2)
@@ -155,16 +161,32 @@ def render_change_size(
 
     fig.text(0.07, 0.94, "How far has each variant moved from base?",
              fontsize=20, fontweight="bold", color="#222")
-    fig.text(0.07, 0.895,
-             "Hatched portion = share dominated by long-context probes "
-             "(a length artifact, not real drift)",
+    if has_long_context:
+        subtitle = (
+            f"Hatched portion = share dominated by {long_context_domain} "
+            "probes (a length artifact, not real drift)"
+        )
+    else:
+        subtitle = (
+            "Raw vs per-token magnitude — both are reported because raw "
+            "‖δ‖ is length-weighted"
+        )
+    fig.text(0.07, 0.895, subtitle,
              fontsize=11, color="#555", style="italic")
 
+    if has_long_context:
+        legend_text = (
+            "Longer raw bars don't mean larger real change — they mean "
+            "longer probes. Per-token normalization (right) shows the "
+            "actual per-token drift."
+        )
+    else:
+        legend_text = (
+            "Raw ‖δ‖ scales with prompt length; per-token normalization "
+            "(right) is the comparable metric across runs."
+        )
     ax_legend.text(
-        0.5, 0.5,
-        "Longer raw bars don't mean larger real change — they mean "
-        "longer probes. Per-token normalization (right) shows the actual "
-        "per-token drift.",
+        0.5, 0.5, legend_text,
         ha="center", va="center", fontsize=10, color="#444",
         transform=ax_legend.transAxes,
     )
@@ -172,12 +194,24 @@ def render_change_size(
     ax_takeaway.text(0.0, 1.0, "Bottom line",
                      fontsize=14, fontweight="bold", color="#222",
                      transform=ax_takeaway.transAxes, va="top")
+    if has_long_context:
+        bottom_text = (
+            f"{long_context_domain} probes are\n"
+            "much longer than the\n"
+            "other domains here.\n"
+            "Without normalization,\n"
+            "they hide real differences."
+        )
+    else:
+        bottom_text = (
+            "Use per-token ‖δ‖ to\n"
+            "compare across runs.\n"
+            "Raw ‖δ‖ depends on\n"
+            "prompt length and\n"
+            "probe count."
+        )
     ax_takeaway.text(
-        0.0, 0.92,
-        "Longbench probes are 100×\n"
-        "longer than other tasks.\n"
-        "Without normalization,\n"
-        "they hide real differences.",
+        0.0, 0.92, bottom_text,
         fontsize=10.5, color="#333",
         transform=ax_takeaway.transAxes, va="top", linespacing=1.5,
     )
