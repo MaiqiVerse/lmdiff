@@ -93,6 +93,18 @@ def render_direction(
     if n_v == 0:
         raise ValueError("render_direction: no variants in result")
 
+    # Layout that scales with N. Up to 4 variants the v0.3.0 layout is fine.
+    # Beyond that, cells get crowded: per-cell text labels collide with the
+    # number, x-tick labels with long names overlap, and the fixed 14×7
+    # canvas no longer fits two square heatmaps side-by-side.
+    compact_cells = n_v > 4
+    max_label_len = max((len(v) for v in variants), default=0)
+    rotate_x = 30 if (max_label_len > 8 or n_v > 5) else 0
+    # Each heatmap pane gets ~1.6" per cell, capped sensibly.
+    pane_in = max(4.0, min(1.6 * n_v, 10.0))
+    fig_w = pane_in * 2 + 3.2  # two panes + takeaway column
+    fig_h = max(6.5, pane_in + 1.7)
+
     def _matrix(src: dict) -> "np.ndarray":
         return np.array([
             [src.get(a, {}).get(b, float("nan")) for b in variants]
@@ -116,12 +128,12 @@ def render_direction(
     cmap = ListedColormap(colors_list)
     norm_cmap = BoundaryNorm(boundaries, cmap.N)
 
-    fig = plt.figure(figsize=(14, 7))
+    fig = plt.figure(figsize=(fig_w, fig_h))
     gs = fig.add_gridspec(
         3, 3,
-        width_ratios=[2.7, 2.7, 1.0],
-        height_ratios=[5.5, 0.6, 0.7],
-        hspace=0.30, wspace=0.20,
+        width_ratios=[pane_in, pane_in, 2.6],
+        height_ratios=[pane_in, 0.6, 0.7],
+        hspace=0.30, wspace=0.22,
         left=0.06, right=0.98, top=0.85, bottom=0.05,
     )
     ax_raw = fig.add_subplot(gs[0, 0])
@@ -130,6 +142,11 @@ def render_direction(
     ax_legend = fig.add_subplot(gs[2, 0:2])
     ax_takeaway.axis("off")
     ax_legend.axis("off")
+
+    # Cell font sizes shrink as the grid grows so numbers fit cleanly.
+    num_fs = 13 if n_v <= 4 else (11 if n_v <= 6 else 9.5)
+    lbl_fs = 8.5 if n_v <= 4 else 7.5
+    tick_fs = 11 if n_v <= 5 else (10 if n_v <= 7 else 9)
 
     def _draw(ax, mat, title_top, title_bot):
         ax.imshow(mat, cmap=cmap, norm=norm_cmap)
@@ -151,14 +168,25 @@ def render_direction(
                     else:
                         lbl, num_color, txt_color = "✗ uncorrelated", "white", "white"
                     num_str = f"{v:+.2f}" if v == v else "n/a"
-                ax.text(j, i - 0.18, num_str, ha="center", va="center",
-                        fontsize=13, fontweight="bold", color=num_color)
-                ax.text(j, i + 0.22, lbl, ha="center", va="center",
-                        fontsize=8.5, color=txt_color, style="italic")
+                if compact_cells:
+                    # No room for the sub-label without overlap; the cell's
+                    # color band already encodes the bucket and the legend
+                    # strip below explains it.
+                    ax.text(j, i, num_str, ha="center", va="center",
+                            fontsize=num_fs, fontweight="bold", color=num_color)
+                else:
+                    ax.text(j, i - 0.18, num_str, ha="center", va="center",
+                            fontsize=num_fs, fontweight="bold", color=num_color)
+                    ax.text(j, i + 0.22, lbl, ha="center", va="center",
+                            fontsize=lbl_fs, color=txt_color, style="italic")
         ax.set_xticks(range(n_v))
         ax.set_yticks(range(n_v))
-        ax.set_xticklabels(variants, fontsize=11, fontweight="bold")
-        ax.set_yticklabels(variants, fontsize=11, fontweight="bold")
+        ax.set_xticklabels(
+            variants, fontsize=tick_fs, fontweight="bold",
+            rotation=rotate_x, ha=("right" if rotate_x else "center"),
+            rotation_mode="anchor",
+        )
+        ax.set_yticklabels(variants, fontsize=tick_fs, fontweight="bold")
         ax.tick_params(axis="both", length=0)
         for s in ax.spines.values():
             s.set_visible(False)
