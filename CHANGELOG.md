@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.2] - 2026-04-28
+
+### Fixed
+- **`n_probes=` is now per-task for multi-task `lm_eval:` strings** — surfaced during the v0.3.0 7-variant Llama-2 demo. With `probes="lm_eval:hellaswag+arc_challenge+gsm8k+mmlu_college_computer_science+longbench_2wikimqa", n_probes=100`, all 100 probes came from the first task (`hellaswag`/`commonsense`), making a multi-domain comparison impossible. Root cause: `_coerce_to_probe_set` called `from_lm_eval(t)` per task without `limit=`, concatenated all task probes, then `compare()` sliced the merged set with `[:n_probes]` — head-of-list slicing of a concatenation only keeps the first task. The 5-task spec above now loads 500 probes (100 per task), matching the v0.2.x calibration convention. Flat probe sets (`"v01"`, `ProbeSet` instances) keep the v0.3.0 "total" semantics. New additive `GeoResult.metadata` keys: `n_probes_per_task`, `task_breakdown`, `tasks` (no schema bump). Asymmetry is documented in `compare()` / `family()`.
+- **`render_direction` layout now scales with N variants** — the v0.3.0 layout was hardcoded to 14×7 inches with per-cell text labels positioned for ≤4 variants. At N=7 the x-tick labels overlapped (`system_prompt` running into `temp_1.5`) and per-cell sub-labels collided with the cosine number. Figure size now scales (~1.6"/cell, capped at 10"), x-ticks rotate 30° when names are long or N>5, and the per-cell sub-label is dropped at N>4 (the cell color band already encodes the bucket). The 4-variant path is unchanged.
+- **`render_change_size` narrative is data-driven** — the v0.3.0 figure unconditionally claimed "Longbench probes are 100× longer than other tasks" in the bottom-line panel and "Hatched portion = share dominated by long-context probes" in the subtitle, even when `result.probe_domains` contained zero `long-context` probes (the v0.3.0 demo's `commonsense`-only run hit this). The narrative is now gated on `mask_long.any()`. When long-context probes are present, the existing wording renders with the actual `long_context_domain` parameter substituted (the hardcoded `"longbench"` string is gone). Otherwise a generic "raw vs per-token" caveat replaces it.
+- **"How big is each move" report section now shows per-√token-normalized magnitude** in markdown / terminal / HTML. The previous "total" column was an RMS-of-per-domain raw value — length-weighted and not comparable across runs. The right pane of `change_size_bars.png` already showed the normalized number; the table column is now consistent with it. Per-domain raw cells are kept (they line up with the figure's hatched left pane). Column header changes from `total` to `‖δ‖/√tok`.
+
+### Notes
+- All 5 fixes are additive or rendering-only; no API breakage and no schema bump. Existing JSON results load and re-render correctly with the new code.
+- Re-rendered the v0.3.0 demo's `family_geometry.json` through the v0.3.2 renderers (in `runs/v032-rerendered/`) to verify all four figure / report fixes. The mono-domain demo data can't show the multi-domain story — the user's GPU re-run with the new per-task `n_probes` semantics is what surfaces the real five-domain split.
+- Tests: 5 new `TestNProbesLmEvalSemantics` cases (per-task limit, single-task = total, no double-truncation, flat-set unchanged, metadata propagation through `family()`); all monkey-patch `from_lm_eval` so lm-eval-harness is not a test dependency. 283 unit tests pass (was 278 → +5).
+
 ## [0.3.1] - 2026-05-01
 
 ### Fixed
