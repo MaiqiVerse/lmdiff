@@ -53,6 +53,16 @@ class InferenceEngine:
         self.config = config
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self._model, self._tokenizer = self._load(config)
+        # device_map="auto" can shard layers across cuda + cpu when GPU
+        # memory is tight (notably after several sequential 7B loads).
+        # Anchor self.device to wherever the input-embedding layer actually
+        # ended up — that's where we must place input_ids — so .generate()
+        # / .score() don't hit cross-device index_select errors.
+        try:
+            embed = self._model.get_input_embeddings()
+            self.device = str(embed.weight.device)
+        except (AttributeError, StopIteration):
+            pass
 
     def _load(
         self, config: Config
