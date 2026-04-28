@@ -41,8 +41,10 @@ def _make_mock_engine(
     engine = MagicMock(name=f"engine-{name}")
     engine.model_name = name
 
-    # generate → GenerationResult-like: one sample per prompt
-    def generate_side(prompts, n_samples=1, max_new_tokens=16):
+    # generate → GenerationResult-like: one sample per prompt.
+    # **kwargs swallows additive engine kwargs (e.g. v0.3.2 progress=,
+    # progress_desc=) without each test having to update its mock.
+    def generate_side(prompts, n_samples=1, max_new_tokens=16, **kwargs):
         n = len(prompts)
         # Each prompt gets one completion and one token id list of fixed length
         gen = MagicMock()
@@ -52,7 +54,7 @@ def _make_mock_engine(
         ]
         return gen
 
-    def score_side(prompts, continuations=None, continuation_ids=None):
+    def score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
         n = len(prompts)
         sr = MagicMock()
         if continuation_ids is not None:
@@ -130,7 +132,7 @@ class TestChangeVectorComputation:
 
         # base needs different CE sequences per variant call. Configure a callable
         # that dispatches based on which continuations text list it receives.
-        def base_score_side(prompts, continuations=None, continuation_ids=None):
+        def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             if continuations is None:
                 raise AssertionError("base should only be called with continuations")
@@ -211,7 +213,7 @@ class TestChangeVectorProperties:
         engine_v1 = make_engine("V1")
         engine_v2 = make_engine("V2")
 
-        def base_score_side(prompts, continuations=None, continuation_ids=None):
+        def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             sr.cross_entropies = [2.0, 3.0, 4.0]
             sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
@@ -242,7 +244,7 @@ class TestChangeVectorProperties:
         # Variant's self-CE equals base-of-variant CE everywhere → δ = 0 vector
         engine_v = _make_mock_engine("V", ["o0", "o1", "o2"], self_ce=[2.0, 2.0, 2.0])
 
-        def base_score_side(prompts, continuations=None, continuation_ids=None):
+        def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             sr.cross_entropies = [2.0, 2.0, 2.0]
             sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
@@ -278,7 +280,7 @@ class TestNaNHandling:
             self_ce=[1.0, float("nan"), 1.0],
         )
 
-        def base_score_side(prompts, continuations=None, continuation_ids=None):
+        def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             if continuations == ["a0", "a1", "a2"]:
                 sr.cross_entropies = [2.0, 2.0, 2.0]
@@ -318,7 +320,7 @@ class TestNaNHandling:
             "V", ["o0", "o1"], self_ce=[float("nan"), float("nan")],
         )
 
-        def base_score_side(prompts, continuations=None, continuation_ids=None):
+        def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             sr.cross_entropies = [1.0, 1.0]
             sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
@@ -615,7 +617,7 @@ def _build_two_variant_geo(
     engine_a = _make_mock_engine("A", outputs_a, self_ce=self_a)
     engine_b = _make_mock_engine("B", outputs_b, self_ce=self_b)
 
-    def base_score_side(prompts, continuations=None, continuation_ids=None):
+    def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
         sr = MagicMock()
         if continuations == outputs_a:
             sr.cross_entropies = list(base_of_a)
@@ -1003,7 +1005,7 @@ class TestProbeDomainsPopulated:
         engine_a = _make_mock_engine("A", outputs_a, self_ce=[1.0, 2.0, 3.0])
         engine_b = _make_mock_engine("B", outputs_b, self_ce=[1.0, 3.0, 4.0])
 
-        def base_score_side(prompts, continuations=None, continuation_ids=None):
+        def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             if continuations == outputs_a:
                 sr.cross_entropies = [3.0, 4.0, 5.0]
@@ -1463,7 +1465,7 @@ class TestAvgTokensPerProbe:
             "base", ["ignored"], self_ce=[0.0],
             base_of_v_ce=[3.0, 4.0, 5.0], tokens_per_probe=5,
         )
-        def base_score_side(prompts, continuations=None, continuation_ids=None):
+        def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             sr.cross_entropies = [3.0, 4.0, 5.0]
             sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
@@ -1489,7 +1491,7 @@ class TestAvgTokensPerProbe:
             "base", ["ignored"], self_ce=[0.0],
             base_of_v_ce=[2.0, 3.0], tokens_per_probe=7,
         )
-        def base_score_side(prompts, continuations=None, continuation_ids=None):
+        def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             sr.cross_entropies = [2.0, 3.0]
             sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
@@ -1531,7 +1533,7 @@ class TestMagnitudesNormalized:
             "base", ["ignored"], self_ce=[0.0],
             base_of_v_ce=[3.0, 4.0, 5.0], tokens_per_probe=5,
         )
-        def base_score_side(prompts, continuations=None, continuation_ids=None):
+        def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             sr.cross_entropies = [3.0, 4.0, 5.0]
             sr.token_ids = [[0, 1, 2, 3]] * len(prompts)
@@ -1561,7 +1563,7 @@ class TestMagnitudesNormalized:
         engine_b = _mock_engine_with_real_tokenizer(
             "B", outputs_b, self_ce=[1.0, 3.0, 4.0], tokens_per_probe=L,
         )
-        def base_score_side(prompts, continuations=None, continuation_ids=None):
+        def base_score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             if continuations == outputs_a:
                 sr.cross_entropies = [3.0, 4.0, 5.0]

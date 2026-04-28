@@ -25,7 +25,7 @@ def _mock_engine_with_scores(all_ces: list[list[float]]):
 
     iter_ces = iter(all_ces)
 
-    def score_side(prompts, continuations=None, continuation_ids=None):
+    def score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
         sr = MagicMock()
         ces = next(iter_ces)
         assert len(ces) == len(prompts), (
