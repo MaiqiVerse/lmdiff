@@ -513,19 +513,80 @@ class HFEngine:
 
     # ── Required methods ──────────────────────────────────────────────
 
-    def score(self, prompt: str, continuation: str) -> ScoreResult:
-        """Compute log-probability of ``continuation`` given ``prompt``.
+    def score(
+        self,
+        prompt: str,
+        continuation: Optional[str] = None,
+        *,
+        continuation_ids: Optional[list[int]] = None,
+    ) -> ScoreResult:
+        """Compute log-probability of a continuation given ``prompt``.
 
-        Returns per-token logprobs at each position of the continuation.
+        Tokenization follows the **lm-eval-harness convention** (used
+        throughout lmdiff for comparability with the v0.2.x
+        :class:`InferenceEngine` backend and with lm-eval scoring
+        semantics):
+
+          full_ids = tokenizer("", add_special_tokens=True)
+                     + tokenize(prompt, add_special_tokens=False)
+                     + tokenize(continuation, add_special_tokens=False)
+
+        — i.e. prompt and continuation are tokenized *separately* and
+        concatenated. This matters for SentencePiece-style tokenizers
+        (Llama, etc.) where joint tokenization can merge the
+        prompt/continuation boundary into a single token, producing a
+        different per-token logprob breakdown. The empty-prefix call
+        sets the BOS-or-not policy per the tokenizer's own convention
+        (Llama → ``[BOS]``, GPT-2 → ``[]``).
+
+        Parameters
+        ----------
+        prompt : str
+            The prompt text. Tokenized with ``add_special_tokens=False``
+            and concatenated to the tokenizer's empty-prefix special tokens.
+        continuation : str, optional
+            The continuation text. Tokenized with
+            ``add_special_tokens=False``. Pass exactly one of
+            ``continuation`` or ``continuation_ids``.
+        continuation_ids : list[int], optional
+            Pre-tokenized continuation token IDs. Used as-is, without
+            re-tokenizing. Recommended for self-scoring (when the same
+            engine that generated the continuation is now scoring it):
+            avoids decode→retokenize round-trip drift.
+
+        Returns
+        -------
+        ScoreResult
+            ``logprobs[i] = log P(continuation_ids[i] | prefix + cont[:i])``,
+            a numpy float32 array of length ``len(continuation_ids)``.
         """
         import numpy as np
         import torch
 
-        prompt_ids = self._tokenizer(prompt, return_tensors="pt").input_ids
-        full_ids = self._tokenizer(prompt + continuation, return_tensors="pt").input_ids
+        if (continuation is None) == (continuation_ids is None):
+            raise ValueError(
+                "pass exactly one of `continuation` or `continuation_ids`"
+            )
 
-        cont_start = prompt_ids.shape[1]
-        cont_token_ids = full_ids[0, cont_start:].tolist()
+        # Mirrors v0.2.x InferenceEngine._encode_for_model exactly: ask
+        # the tokenizer for its "empty prefix with special tokens" — for
+        # Llama-family this is ``[BOS]``, for GPT-2 it's ``[]`` — then
+        # append the prompt with ``add_special_tokens=False``. Asking the
+        # tokenizer (rather than reading ``bos_token_id`` directly) is
+        # what makes this byte-identical across architectures whose
+        # special-token policies differ.
+        empty_prefix = self._tokenizer("", add_special_tokens=True)["input_ids"]
+        prompt_token_ids = self._tokenizer(
+            prompt, add_special_tokens=False,
+        )["input_ids"]
+        prefix_ids: list[int] = list(empty_prefix) + list(prompt_token_ids)
+
+        if continuation_ids is not None:
+            cont_token_ids = list(continuation_ids)
+        else:
+            cont_token_ids = list(self._tokenizer(
+                continuation, add_special_tokens=False,
+            )["input_ids"])
 
         if len(cont_token_ids) == 0:
             return ScoreResult(
@@ -534,23 +595,25 @@ class HFEngine:
                 avg_logprob=0.0,
             )
 
+        full_ids = prefix_ids + cont_token_ids
+        prompt_len = len(prefix_ids)
+
         device = next(self._model.parameters()).device
-        full_ids_dev = full_ids.to(device)
+        input_ids = torch.tensor([full_ids], device=device)
 
         with torch.no_grad():
-            outputs = self._model(full_ids_dev)
+            outputs = self._model(input_ids)
             logits = outputs.logits  # (1, seq_len, vocab_size)
 
-        logprobs_all = torch.log_softmax(logits, dim=-1)
+        # Logits at position t predict token t+1. The continuation occupies
+        # positions [prompt_len, prompt_len + len(cont)); the predictions
+        # come from logits at [prompt_len - 1, prompt_len + len(cont) - 1).
+        shift_logits = logits[0, prompt_len - 1 : prompt_len - 1 + len(cont_token_ids)]
+        log_probs_all = torch.log_softmax(shift_logits, dim=-1)
+        target = torch.tensor(cont_token_ids, device=device)
+        token_log_probs = log_probs_all.gather(1, target.unsqueeze(1)).squeeze(1)
 
-        per_token_logprobs: list[float] = []
-        for i, tok_id in enumerate(cont_token_ids):
-            position = cont_start + i - 1  # logits at t predict token t+1
-            per_token_logprobs.append(
-                float(logprobs_all[0, position, tok_id].item())
-            )
-
-        arr = np.asarray(per_token_logprobs, dtype=np.float32)
+        arr = token_log_probs.detach().float().cpu().numpy()
         return ScoreResult(
             logprobs=arr,
             tokens=cont_token_ids,
