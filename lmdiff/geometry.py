@@ -667,13 +667,35 @@ class ChangeGeometry:
             self._base_engine = InferenceEngine(self.base_config)
         return self._base_engine
 
-    def analyze(self, max_new_tokens: int = 16) -> GeoResult:
+    def analyze(
+        self,
+        max_new_tokens: int = 16,
+        *,
+        progress: bool | None = None,
+    ) -> GeoResult:
+        """Run generate + score for every (base, variant) pair and assemble a GeoResult.
+
+        Pass ``progress=True`` to render per-variant progress bars and
+        phase markers — strongly recommended for large probe sets where
+        a single ``.generate(500_prompts)`` call can take 30+ minutes.
+        Auto-enables on a tty and stays silent in pipelines; set
+        ``LMDIFF_PROGRESS=1`` (or ``=0``) to override.
+        """
+        from lmdiff._progress import phase as _phase, device_map_summary
+
         n_total = len(self.prompts)
         if n_total == 0:
             raise ValueError("cannot analyze on an empty probe set")
 
         variant_names = list(self.variants.keys())
         base_engine = self.base_engine
+
+        # Surface accelerate's silent CPU-spillover failure mode early —
+        # if device_map="auto" sharded the base model across GPU+CPU we
+        # want the user to see it BEFORE 8 hours of slow CPU forwards.
+        warn = device_map_summary(getattr(base_engine, "_model", None))
+        if warn:
+            print(f"[lmdiff WARNING] base: {warn}", flush=True)
 
         # Pre-compute per-probe token counts using the base tokenizer. CPU
         # only — no model forward pass. Needed for magnitudes_normalized
@@ -687,24 +709,35 @@ class ChangeGeometry:
         raw_deltas: dict[str, list[float]] = {}
         bpb_flags: dict[str, bool] = {}
 
-        for name in variant_names:
+        n_v = len(variant_names)
+        for v_idx, name in enumerate(variant_names, 1):
             v_config = self.variants[name]
-            v_engine = InferenceEngine(v_config)
-            try:
-                raw_deltas[name], bpb_flags[name] = self._delta_for_variant(
-                    base_engine=base_engine,
-                    v_engine=v_engine,
-                    v_config=v_config,
-                    max_new_tokens=max_new_tokens,
-                )
-            finally:
-                # Order matters: drop Python refs first so empty_cache has
-                # something to actually reclaim. Doing empty_cache before
-                # gc.collect() leaves CUDA blocks still owned by live
-                # tensors and effectively does nothing.
-                del v_engine
-                gc.collect()
-                release_cuda_cache()
+            with _phase(
+                f"variant {v_idx}/{n_v} ({name}): load+generate+score",
+                enable=progress,
+            ):
+                v_engine = InferenceEngine(v_config)
+                # Same warning for variant: surface CPU-shard early.
+                vwarn = device_map_summary(getattr(v_engine, "_model", None))
+                if vwarn:
+                    print(f"[lmdiff WARNING] variant {name}: {vwarn}", flush=True)
+                try:
+                    raw_deltas[name], bpb_flags[name] = self._delta_for_variant(
+                        base_engine=base_engine,
+                        v_engine=v_engine,
+                        v_config=v_config,
+                        max_new_tokens=max_new_tokens,
+                        progress=progress,
+                        progress_label=f"v{v_idx}/{n_v} {name}",
+                    )
+                finally:
+                    # Order matters: drop Python refs first so empty_cache has
+                    # something to actually reclaim. Doing empty_cache before
+                    # gc.collect() leaves CUDA blocks still owned by live
+                    # tensors and effectively does nothing.
+                    del v_engine
+                    gc.collect()
+                    release_cuda_cache()
 
         valid_indices = _universally_valid_indices(raw_deltas, n_total)
         n_valid = len(valid_indices)
@@ -792,16 +825,27 @@ class ChangeGeometry:
         v_engine: InferenceEngine,
         v_config: Config,
         max_new_tokens: int,
+        *,
+        progress: bool | None = None,
+        progress_label: str = "",
     ) -> tuple[list[float], bool]:
         """Compute the raw δ vector (possibly containing NaN) for one variant."""
+        prefix = f"{progress_label} " if progress_label else ""
         gen_v = v_engine.generate(
             self.prompts, n_samples=1, max_new_tokens=max_new_tokens,
+            progress=progress, progress_desc=f"{prefix}generate",
         )
         v_outputs = [comps[0] for comps in gen_v.completions]
         v_ids = [tids[0] for tids in gen_v.token_ids]
 
-        score_b_of_v = base_engine.score(self.prompts, continuations=v_outputs)
-        score_v_self = v_engine.score(self.prompts, continuation_ids=v_ids)
+        score_b_of_v = base_engine.score(
+            self.prompts, continuations=v_outputs,
+            progress=progress, progress_desc=f"{prefix}score base|v",
+        )
+        score_v_self = v_engine.score(
+            self.prompts, continuation_ids=v_ids,
+            progress=progress, progress_desc=f"{prefix}score v|v",
+        )
 
         same_tok = v_config.shares_tokenizer_with(self.base_config)
         if same_tok is None:

@@ -265,6 +265,7 @@ def compare(
     task_overrides: Optional[dict[str, dict]] = None,
     engine: Optional[Engine] = None,
     seed: Optional[int] = None,
+    progress: Optional[bool] = None,
 ) -> "Any":
     """Pairwise behavioral comparison between ``base`` and ``variant``.
 
@@ -311,6 +312,12 @@ def compare(
         not closed by ``compare``.
     seed : int | None
         Reserved for future randomized metrics; v0.3.0 ignores it.
+    progress : bool | None
+        Render per-probe progress bars and per-variant phase markers.
+        ``None`` (default) auto-enables on a tty and stays silent in
+        pipelines / log redirection. ``True`` forces progress on
+        regardless of tty; ``False`` disables it. Override via
+        ``LMDIFF_PROGRESS=0`` / ``LMDIFF_PROGRESS=1`` env var.
 
     Notes
     -----
@@ -365,7 +372,7 @@ def compare(
             variants={v02_variant.display_name: v02_variant},
             prompts=probe_set,
         )
-        result = cg.analyze(max_new_tokens=max_new_tokens)
+        result = cg.analyze(max_new_tokens=max_new_tokens, progress=progress)
         if probe_info:
             result.metadata.update(probe_info)
     finally:
@@ -385,6 +392,7 @@ def family(
     task_overrides: Optional[dict[str, dict]] = None,
     engine: Optional[Engine] = None,
     seed: Optional[int] = None,
+    progress: Optional[bool] = None,
 ) -> "Any":
     """Multi-variant ChangeGeometry against a single ``base``.
 
@@ -443,7 +451,7 @@ def family(
             variants=v02_variants,
             prompts=probe_set,
         )
-        result = cg.analyze(max_new_tokens=max_new_tokens)
+        result = cg.analyze(max_new_tokens=max_new_tokens, progress=progress)
         if probe_info:
             result.metadata.update(probe_info)
     finally:
