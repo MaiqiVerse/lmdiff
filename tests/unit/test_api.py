@@ -59,14 +59,17 @@ class TestCoerceToConfig:
 
 class TestCoerceToProbeSet:
     def test_none_loads_v01(self):
-        ps = _coerce_to_probe_set(None)
+        ps, is_lm_eval, info = _coerce_to_probe_set(None)
         # v01 is the bundled 90-probe set
         assert len(ps) > 0
         assert ps.name in (None, "v01") or "v01" in str(ps.name)
+        assert is_lm_eval is False
+        assert info == {}
 
     def test_v01_string_loads_bundled(self):
-        ps = _coerce_to_probe_set("v01")
+        ps, is_lm_eval, info = _coerce_to_probe_set("v01")
         assert len(ps) > 0
+        assert is_lm_eval is False
 
     def test_unknown_name_raises(self):
         with pytest.raises(ValueError, match="unrecognized"):
@@ -277,3 +280,174 @@ class TestLazyImport:
         from lmdiff import compare, family  # noqa: F401
         assert "torch" not in sys.modules
         assert "transformers" not in sys.modules
+
+
+# ── v0.3.2: per-task n_probes semantics on lm_eval multi-task strings ──
+
+
+class TestNProbesLmEvalSemantics:
+    """v0.3.2 fix: ``n_probes=N`` on a multi-task ``lm_eval:`` string is
+    *per-task*, not total. Without this, ``lm_eval:t1+t2+...`` with
+    ``n_probes=100`` had loaded ALL probes from each task, concatenated,
+    and sliced the first 100 — which on multi-task specs always landed
+    inside the first task only (the v0.3.1 surprise the user hit)."""
+
+    def test_lm_eval_multitask_per_task_limit_applied(self, monkeypatch):
+        # Monkeypatch from_lm_eval so we don't need lm-eval-harness installed
+        # to verify the call shape — we just want to confirm `limit=` is
+        # passed per-task.
+        captured: list[tuple[str, int | None]] = []
+
+        def fake_from_lm_eval(task_name, limit=None, num_fewshot=None, seed=42):
+            captured.append((task_name, limit))
+            from lmdiff.probes.loader import Probe, ProbeSet
+            n = limit if limit is not None else 5
+            return ProbeSet(
+                [
+                    Probe(id=f"{task_name}_{i}", text=f"p{i}", domain=task_name)
+                    for i in range(n)
+                ],
+                name=task_name,
+                version="lm-eval-harness",
+            )
+
+        monkeypatch.setattr(
+            "lmdiff.probes.adapters.from_lm_eval", fake_from_lm_eval,
+        )
+
+        from lmdiff._api import _coerce_to_probe_set
+        ps, is_lm_eval, info = _coerce_to_probe_set(
+            "lm_eval:hellaswag+arc_challenge+gsm8k", n_probes=20,
+        )
+        # `limit=20` was forwarded to every task — not just the first.
+        assert captured == [
+            ("hellaswag", 20), ("arc_challenge", 20), ("gsm8k", 20),
+        ]
+        # 3 tasks × 20 = 60 total probes (the v0.3.2 contract).
+        assert len(ps) == 60
+        assert is_lm_eval is True
+        assert info["n_probes_per_task"] == 20
+        assert info["task_breakdown"] == {
+            "hellaswag": 20, "arc_challenge": 20, "gsm8k": 20,
+        }
+        # All 3 task domains represented (the user's bug fix).
+        assert set(p.domain for p in ps) == {
+            "hellaswag", "arc_challenge", "gsm8k",
+        }
+
+    def test_lm_eval_single_task_per_task_equals_total(self, monkeypatch):
+        from lmdiff.probes.loader import Probe, ProbeSet
+        captured = []
+
+        def fake(task_name, limit=None, num_fewshot=None, seed=42):
+            captured.append((task_name, limit))
+            return ProbeSet(
+                [
+                    Probe(id=f"{task_name}_{i}", text=f"p{i}", domain=task_name)
+                    for i in range(limit or 1)
+                ],
+                name=task_name, version="lm-eval-harness",
+            )
+
+        monkeypatch.setattr("lmdiff.probes.adapters.from_lm_eval", fake)
+        from lmdiff._api import _coerce_to_probe_set
+        ps, is_lm_eval, info = _coerce_to_probe_set("lm_eval:hellaswag", n_probes=50)
+        assert captured == [("hellaswag", 50)]
+        assert len(ps) == 50
+
+    def test_compare_does_not_double_truncate_lm_eval(self, monkeypatch):
+        """compare() must skip the secondary slice for lm_eval inputs;
+        otherwise the per-task expansion would be re-truncated at the
+        front of the merged set (v0.3.1 bug)."""
+        from lmdiff.probes.loader import Probe, ProbeSet
+
+        def fake(task_name, limit=None, num_fewshot=None, seed=42):
+            n = limit if limit is not None else 5
+            return ProbeSet(
+                [
+                    Probe(id=f"{task_name}_{i}", text=f"p{i}", domain=task_name)
+                    for i in range(n)
+                ],
+                name=task_name, version="lm-eval-harness",
+            )
+
+        monkeypatch.setattr("lmdiff.probes.adapters.from_lm_eval", fake)
+
+        from unittest.mock import patch
+        engine = MockEngine()
+        with patch("lmdiff.geometry.ChangeGeometry") as MockCG:
+            MockCG.return_value.analyze.return_value = MockEngine()  # placeholder
+            MockCG.return_value.analyze.return_value.metadata = {}
+            from lmdiff import compare
+            compare(
+                "a", "b",
+                probes="lm_eval:hellaswag+arc_challenge+gsm8k",
+                n_probes=4,
+                engine=engine,
+            )
+        # ChangeGeometry was given the full merged set (3 × 4 = 12 probes),
+        # NOT a truncated-to-4 slice.
+        kwargs = MockCG.call_args.kwargs
+        assert len(kwargs["prompts"]) == 12
+
+    def test_flat_probe_set_total_semantics_unchanged(self):
+        """Flat probe sets (bundled v01) keep "total" semantics — no
+        per-task expansion."""
+        from lmdiff._api import _coerce_to_probe_set
+        ps, is_lm_eval, info = _coerce_to_probe_set("v01", n_probes=10)
+        assert is_lm_eval is False
+        assert info == {}
+        # The slice happens in compare()/family(), not in
+        # _coerce_to_probe_set, so the returned set is the full v01.
+        assert len(ps) > 10
+
+    def test_metadata_carries_task_breakdown_through_family(self, monkeypatch):
+        """The resolved task_breakdown info should land in
+        ``GeoResult.metadata`` so renderers can show "5 tasks × 100 each"."""
+        from lmdiff.probes.loader import Probe, ProbeSet
+
+        def fake(task_name, limit=None, num_fewshot=None, seed=42):
+            n = limit if limit is not None else 5
+            return ProbeSet(
+                [
+                    Probe(id=f"{task_name}_{i}", text=f"p{i}", domain=task_name)
+                    for i in range(n)
+                ],
+                name=task_name, version="lm-eval-harness",
+            )
+
+        monkeypatch.setattr("lmdiff.probes.adapters.from_lm_eval", fake)
+
+        from unittest.mock import patch
+        from lmdiff.geometry import GeoResult
+        engine = MockEngine()
+
+        # ChangeGeometry returns a real-shaped fake GeoResult so we can
+        # check that probe_info is merged into metadata.
+        fake_geo = GeoResult(
+            base_name="b",
+            variant_names=["v"],
+            n_probes=15,
+            magnitudes={"v": 1.0},
+            cosine_matrix={"v": {"v": 1.0}},
+            change_vectors={"v": [0.0] * 15},
+            per_probe={"v": {f"p{i}": 0.0 for i in range(15)}},
+            metadata={},
+        )
+        with patch("lmdiff.geometry.ChangeGeometry") as MockCG:
+            MockCG.return_value.analyze.return_value = fake_geo
+            from lmdiff import family
+            result = family(
+                "base",
+                {"v1": "m"},
+                probes="lm_eval:hellaswag+arc_challenge+gsm8k",
+                n_probes=5,
+                engine=engine,
+            )
+        assert result.metadata.get("n_probes_per_task") == 5
+        assert result.metadata.get("task_breakdown") == {
+            "hellaswag": 5, "arc_challenge": 5, "gsm8k": 5,
+        }
+        assert result.metadata.get("tasks") == [
+            "hellaswag", "arc_challenge", "gsm8k",
+        ]

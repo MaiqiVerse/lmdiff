@@ -66,27 +66,42 @@ def _coerce_to_config(value: Union[str, Config]) -> Config:
     )
 
 
-def _coerce_to_probe_set(probes: Union[str, "Any", None]) -> "Any":
+def _coerce_to_probe_set(
+    probes: Union[str, "Any", None],
+    *,
+    n_probes: Optional[int] = None,
+) -> tuple["Any", bool, dict]:
     """Resolve the ``probes`` argument to a ``ProbeSet`` instance.
+
+    Returns ``(probe_set, is_lm_eval_multitask, info)`` where:
+      - ``probe_set`` is the resolved set
+      - ``is_lm_eval_multitask`` flags whether ``n_probes`` was already
+        applied per-task (caller should NOT slice further)
+      - ``info`` is a metadata dict — empty for non-lm_eval inputs;
+        for lm_eval includes ``{"n_probes_per_task": N, "task_breakdown":
+        {task_name: count}, "tasks": [...]}``.
 
     Supported forms:
       - ``None``                              → bundled ``v01``
       - ``"v01"``                             → bundled ``v01.json``
       - ``"lm_eval:hellaswag+arc_challenge"`` → load+concat via the
-        ``from_lm_eval`` adapter
+        ``from_lm_eval`` adapter; ``n_probes`` applies **per task**
+        (so ``n_probes=100`` on a 5-task spec yields 500 probes)
       - ``ProbeSet`` instance                 → returned unchanged
 
-    File-path probes / YAML / the new ``task_type``-aware ``ProbeSet`` land
-    in commit 1.4. For commit 1.1 we re-use the v0.2.x probe handling.
+    Per-task application matches the v0.2.x calibration convention
+    (100 probes/task × 5 tasks = 500) and matches user expectation. For
+    flat probe sets (``"v01"``, ``ProbeSet`` instance) the caller is
+    expected to slice to ``n_probes`` for the "total" semantics.
     """
     from lmdiff.probes.loader import ProbeSet
 
     if probes is None or probes == "v01":
         from pathlib import Path
         v01_path = Path(__file__).parent / "probes" / "v01.json"
-        return ProbeSet.from_json(v01_path)
+        return ProbeSet.from_json(v01_path), False, {}
     if isinstance(probes, ProbeSet):
-        return probes
+        return probes, False, {}
     if isinstance(probes, str):
         if probes.startswith("lm_eval:"):
             from lmdiff.probes.adapters import from_lm_eval
@@ -96,21 +111,32 @@ def _coerce_to_probe_set(probes: Union[str, "Any", None]) -> "Any":
                 raise ValueError(
                     f"lm_eval probe spec {probes!r} contains no task names"
                 )
-            sets = [from_lm_eval(t) for t in task_names]
+            # Per-task limit — the key v0.3.2 fix. Without this the merged
+            # set was concatenated whole and then sliced from the front,
+            # so on multi-task specs only the first task's probes survived.
+            sets = [from_lm_eval(t, limit=n_probes) for t in task_names]
             from lmdiff.probes.loader import Probe
             merged_probes: list[Probe] = []
-            for ps in sets:
+            task_breakdown: dict[str, int] = {}
+            for task_name, ps in zip(task_names, sets):
+                task_breakdown[task_name] = len(ps)
                 merged_probes.extend(ps)
-            return ProbeSet(
+            ps = ProbeSet(
                 merged_probes,
                 name=f"lm_eval:{'+'.join(task_names)}",
                 version="lm-eval-harness",
             )
+            info = {
+                "n_probes_per_task": n_probes,
+                "task_breakdown": task_breakdown,
+                "tasks": list(task_names),
+            }
+            return ps, True, info
         # Bundled name fallback (e.g., a future "v02"):
         from pathlib import Path
         bundled = Path(__file__).parent / "probes" / f"{probes}.json"
         if bundled.exists():
-            return ProbeSet.from_json(bundled)
+            return ProbeSet.from_json(bundled), False, {}
         raise ValueError(
             f"unrecognized probes spec {probes!r}; pass None for the bundled "
             f"v01 set, an 'lm_eval:<task>+<task>' spec, or a ProbeSet instance"
@@ -259,7 +285,18 @@ def compare(
         ``"lm_eval:hellaswag+arc_challenge"`` loads via the lm-eval adapter.
         A ``ProbeSet`` is used as-is.
     n_probes : int
-        Truncate the probe set to the first ``n_probes`` probes.
+        Probe-count cap. Semantics depend on the ``probes`` argument:
+
+          - For a flat probe set (``"v01"``, a ``ProbeSet`` instance):
+            **total** number of probes (head-of-list slice).
+          - For a multi-task ``"lm_eval:task1+task2+..."`` string:
+            **per-task** limit (so ``n_probes=100`` on a 5-task spec
+            loads 500 probes — 100 from each task). Matches the v0.2.x
+            calibration convention.
+
+        The asymmetry is documented; the per-task expansion is the
+        v0.3.2 fix for the v0.3.1 surprise where multi-task strings
+        loaded only the first task's first ``n_probes`` rows.
     metrics : "default" | list[str]
         Either ``"default"`` or a subset of ``_V03_DEFAULT_METRICS``. The
         full registry arrives in Phase 4.
@@ -291,8 +328,18 @@ def compare(
             f"{type(task_overrides).__name__}"
         )
 
-    probe_set = _coerce_to_probe_set(probes)
-    if n_probes is not None and len(probe_set) > n_probes:
+    probe_set, lm_eval_multitask, probe_info = _coerce_to_probe_set(
+        probes, n_probes=n_probes,
+    )
+    # Flat probe sets (bundled / ProbeSet instance) keep the v0.3.0 "total"
+    # semantics; multi-task lm_eval strings already had the limit applied
+    # per-task inside the loader, so we skip the secondary slice to avoid
+    # double-truncation.
+    if (
+        not lm_eval_multitask
+        and n_probes is not None
+        and len(probe_set) > n_probes
+    ):
         probe_set = probe_set[:n_probes]
 
     base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
@@ -319,6 +366,8 @@ def compare(
             prompts=probe_set,
         )
         result = cg.analyze(max_new_tokens=max_new_tokens)
+        if probe_info:
+            result.metadata.update(probe_info)
     finally:
         _close_owned(engines, owned_flags)
 
@@ -361,8 +410,14 @@ def family(
             f"{type(task_overrides).__name__}"
         )
 
-    probe_set = _coerce_to_probe_set(probes)
-    if n_probes is not None and len(probe_set) > n_probes:
+    probe_set, lm_eval_multitask, probe_info = _coerce_to_probe_set(
+        probes, n_probes=n_probes,
+    )
+    if (
+        not lm_eval_multitask
+        and n_probes is not None
+        and len(probe_set) > n_probes
+    ):
         probe_set = probe_set[:n_probes]
 
     base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
@@ -389,6 +444,8 @@ def family(
             prompts=probe_set,
         )
         result = cg.analyze(max_new_tokens=max_new_tokens)
+        if probe_info:
+            result.metadata.update(probe_info)
     finally:
         _close_owned(engines, owned_flags)
 

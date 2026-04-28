@@ -577,20 +577,20 @@ def _layer3_drift_table(
     variants: list[str],
     domains: list[str],
     drift: dict[str, dict[str, float]],
-    totals: dict[str, float],
+    norm_totals: dict[str, float],
     sty: _Styler,
 ) -> list[str]:
     if not variants or not domains or not drift:
         return []
     title = sty("bold", "How big is each move")
-    sub = sty("dim", "  per-domain drift magnitude")
+    sub = sty("dim", "  per-domain ‖δ‖ raw; rightmost col is per-√token (comparable)")
     out = [title, sub, ""]
 
     name_w = max(8, max(len(v) for v in variants) + 2)
     domain_w = 9
-    total_w = 9
+    total_w = 10
     header_cells = [" " * name_w] + [d[:domain_w].rjust(domain_w) for d in domains] + [
-        sty("dim", "total".rjust(total_w))
+        sty("dim", "‖δ‖/√tok".rjust(total_w))
     ]
     out.append("  " + " ".join(header_cells))
 
@@ -602,8 +602,14 @@ def _layer3_drift_table(
             text = _fmt_drift(val, width=domain_w)
             color = _drift_color(val)
             cells.append(sty(color, text) if color else text)
-        total = totals.get(v, float("nan"))
-        cells.append(sty("bold", _fmt_drift(total, width=total_w)))
+        nt = norm_totals.get(v, float("nan"))
+        # Normalized magnitudes are typically 0.01–0.30 — give them
+        # 4 decimal places so they don't all collapse to 0.0.
+        if isinstance(nt, (int, float)) and nt == nt:
+            nt_text = f"{nt:.4f}".rjust(total_w)
+        else:
+            nt_text = "n/a".rjust(total_w)
+        cells.append(sty("bold", nt_text))
         out.append("  " + " ".join(cells))
     return out
 
@@ -738,13 +744,15 @@ def _compact_per_variant(
     domains: list[str],
     share: dict[str, dict[str, float]],
     drift: dict[str, dict[str, float]],
-    totals: dict[str, float],
+    norm_totals: dict[str, float],
     sty: _Styler,
 ) -> list[str]:
     """Width-constrained alternative to Tables 1-3: per-variant blocks."""
     out = [sty("bold", "Per-variant breakdown"), ""]
     for v in variants:
-        out.append(f"  {sty('bold', v)}  total drift {sty('bold', _fmt_drift(totals.get(v, float('nan'))))}")
+        nt = norm_totals.get(v, float("nan"))
+        nt_text = f"{nt:.4f}" if isinstance(nt, (int, float)) and nt == nt else "n/a"
+        out.append(f"  {sty('bold', v)}  ‖δ‖/√tok {sty('bold', nt_text)}")
         sh = share.get(v, {})
         if sh:
             top = sorted(sh.items(), key=lambda kv: -kv[1])[:3]
@@ -811,7 +819,10 @@ def render(
     variants = sorted(list(result.variant_names))
 
     drift = _domain_drift_table(result, domains)
-    totals = _per_variant_total_drift(drift)
+    # Per-variant total: switch from RMS-of-per-domain (raw, not
+    # comparable across runs) to per-√token-normalized magnitude. Matches
+    # ``change_size_bars.png`` right pane and the markdown report.
+    norm_totals = dict(result.magnitudes_normalized or {})
     share = tables.get("share", {}) if tables else {}
     cosine = tables.get("cosine", {}) if tables else {}
     accuracy = tables.get("accuracy", {}) if tables else {}
@@ -839,11 +850,11 @@ def render(
     lines.append("")
 
     if width < 80 and variants:
-        lines.extend(_compact_per_variant(variants, domains, share, drift, totals, sty))
+        lines.extend(_compact_per_variant(variants, domains, share, drift, norm_totals, sty))
     else:
         lines.extend(_layer3_share_table(variants, domains, share, sty))
         lines.append("")
-        lines.extend(_layer3_drift_table(variants, domains, drift, totals, sty))
+        lines.extend(_layer3_drift_table(variants, domains, drift, norm_totals, sty))
         lines.append("")
         lines.extend(_layer3_cosine_table(variants, cosine, sty))
         if accuracy:
