@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.1] - 2026-05-01
+
+### Fixed
+- **`result.save("nested/dir/r.json")` no longer raises `FileNotFoundError`** — `lmdiff.report.json_report.write_json` and the module-level `render` function now `mkdir(parents=True, exist_ok=True)` before writing, matching the behavior of the HTML / markdown / figures channels. Reported during the v0.3.0 demo.
+- **`InferenceEngine.device` is now anchored to `model.get_input_embeddings().weight.device` after load**, fixing `RuntimeError: Expected all tensors to be on the same device, but got index is on cuda:0, different from other tensors on cpu` when running 4+ large variants in sequence. With `device_map="auto"` and memory pressure, accelerate would silently shard the embedding layer to CPU while `self.device` stayed `"cuda"`. Affects users of the deprecated `ModelDiff` and direct users of `InferenceEngine`. The v0.3.0 `compare()` / `family()` API path is also affected because v0.3.0 internals still wrap `InferenceEngine` (full backend cutover deferred to v0.4.0; see "Changed" below).
+
+### Changed
+- **`HFEngine.score()` tokenization now follows the lm-eval-harness convention** for byte-level equivalence with the v0.2.x `InferenceEngine.score()`:
+  ```
+  full_ids = tokenizer("", add_special_tokens=True)
+             + tokenize(prompt, add_special_tokens=False)
+             + tokenize(continuation, add_special_tokens=False)
+  ```
+  Previously HFEngine tokenized `prompt` and `prompt + continuation` jointly and took the diff for continuation tokens. SentencePiece tokenizers (Llama family) merge across the prompt/continuation boundary, producing different per-token logprob breakdowns. The new convention asks the tokenizer for its empty-prefix special tokens (Llama → `[BOS]`, GPT-2 → `[]`) and concatenates separately-tokenized prompt and continuation. **This is a behaviour change for direct users of `HFEngine.score()`** — per-token logprobs may shift slightly compared to v0.3.0.
+- **`HFEngine.score()` signature gains `continuation_ids: list[int] | None = None`** — pre-tokenized continuation IDs are used as-is, skipping retokenization. Recommended for self-scoring (when the same engine that generated the continuation is now scoring it), avoiding decode→retokenize round-trip drift. Mirrors `InferenceEngine.score(continuation_ids=...)`. `continuation` and `continuation_ids` are mutually exclusive; both / neither raise `ValueError`.
+
+### Notes
+- API surface unchanged from v0.3.0; the `HFEngine.score()` signature gain is additive (the prior positional `score(prompt, continuation)` call shape is preserved).
+- New equivalence test (`tests/integration/test_engine_equivalence.py`, marked `slow`) pins HFEngine ↔ InferenceEngine equivalence on CPU using `hf-internal-testing/tiny-random-gpt2`. Runs in ~7s. After this, the v0.4.0 backend cutover (route `compare()` / `family()` through `HFEngine` directly, deprecate `run_family_experiment`) can land with byte-identity against the v0.3.0 calibration baseline.
+- Tests: 798 fast passed (was 794 in v0.3.0 → +4 fast); +6 slow tests for the defensive fixes and the equivalence pins. No regressions.
+
 ## [0.3.0] - 2026-04-30
 
 ### Added

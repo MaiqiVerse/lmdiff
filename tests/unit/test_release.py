@@ -1,4 +1,4 @@
-"""Release-metadata smoke tests for the v0.3.0 release (commit 1.12)."""
+"""Release-metadata smoke tests for the v0.3.1 release (commit 1.12)."""
 from __future__ import annotations
 
 import re
@@ -10,19 +10,19 @@ import lmdiff
 _ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_lmdiff_dunder_version_is_0_3_0():
-    assert lmdiff.__version__ == "0.3.0"
+def test_lmdiff_dunder_version_is_0_3_1():
+    assert lmdiff.__version__ == "0.3.1"
 
 
-def test_pyproject_version_is_0_3_0():
+def test_pyproject_version_is_0_3_1():
     text = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert re.search(r'^version\s*=\s*"0\.3\.0"\s*$', text, re.MULTILINE), text
+    assert re.search(r'^version\s*=\s*"0\.3\.1"\s*$', text, re.MULTILINE), text
 
 
-def test_changelog_has_v0_3_0_section():
+def test_changelog_has_v0_3_1_section():
     text = (_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert re.search(r"^## \[0\.3\.0\]", text, re.MULTILINE), (
-        "CHANGELOG.md missing [0.3.0] heading"
+    assert re.search(r"^## \[0\.3\.1\]", text, re.MULTILINE), (
+        "CHANGELOG.md missing [0.3.1] heading"
     )
 
 

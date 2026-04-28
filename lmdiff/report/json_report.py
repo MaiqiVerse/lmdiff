@@ -312,9 +312,10 @@ def to_json(obj: Any, indent: int = 2) -> str:
 
 
 def write_json(obj: Any, path: str | Path, indent: int = 2) -> None:
-    """Serialize and write to disk."""
+    """Serialize and write to disk. Auto-creates parent directories."""
     path = Path(path)
     text = to_json(obj, indent=indent)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 
 
@@ -338,7 +339,9 @@ def render(
     payload = to_json_dict(result)
     if path is not None:
         text = json.dumps(payload, indent=indent, sort_keys=True, ensure_ascii=False)
-        Path(path).write_text(text, encoding="utf-8")
+        out_path = Path(path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
     return payload
 
 
