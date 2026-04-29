@@ -349,15 +349,27 @@ def compare(
     ):
         probe_set = probe_set[:n_probes]
 
-    base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
-    engines: list[Engine] = [base_engine]
-    owned_flags: list[bool] = [base_owned]
+    # Engine preflight: when an explicit engine template was provided we
+    # build HFEngines here so that capability checks run before any heavy
+    # lifting. With ``engine=None`` (default) the geometry path uses the
+    # v0.2.x ``InferenceEngine`` directly and the HFEngine instances we'd
+    # build here are never used for inference — they were only kept around
+    # to feed ``_check_capabilities``. Skip the eager build in that case
+    # to avoid loading every model TWICE (once as zombie HFEngine, once as
+    # the real InferenceEngine inside ChangeGeometry). Capability checks
+    # are deferred to the engine that actually runs inference.
+    engines: list[Engine] = []
+    owned_flags: list[bool] = []
+    if engine is not None:
+        base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
+        engines.append(base_engine)
+        owned_flags.append(base_owned)
     try:
-        variant_engine, var_owned = _build_engine_for_config(variant_cfg, engine)
-        engines.append(variant_engine)
-        owned_flags.append(var_owned)
-
-        _check_capabilities(metric_names, base_engine, variant_engine)
+        if engine is not None:
+            variant_engine, var_owned = _build_engine_for_config(variant_cfg, engine)
+            engines.append(variant_engine)
+            owned_flags.append(var_owned)
+            _check_capabilities(metric_names, *engines)
 
         # v0.3.0 routes through the existing ChangeGeometry pipeline. The
         # variant Engine is not yet plugged in — ChangeGeometry currently
@@ -428,16 +440,25 @@ def family(
     ):
         probe_set = probe_set[:n_probes]
 
-    base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
-    engines: list[Engine] = [base_engine]
-    owned_flags: list[bool] = [base_owned]
+    # See ``compare()`` — only build HFEngine instances when an explicit
+    # engine template was passed. With the default ``engine=None`` path,
+    # ChangeGeometry loads its own InferenceEngine and the HFEngines we
+    # built here would be dead weight (one full model load per variant).
+    # On a 7-variant Llama-2 demo this halves peak VRAM at minimum and
+    # is the difference between completing and OOMing.
+    engines: list[Engine] = []
+    owned_flags: list[bool] = []
+    if engine is not None:
+        base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
+        engines.append(base_engine)
+        owned_flags.append(base_owned)
     try:
-        for name, vcfg in variant_cfgs.items():
-            ve, owned = _build_engine_for_config(vcfg, engine)
-            engines.append(ve)
-            owned_flags.append(owned)
-
-        _check_capabilities(metric_names, *engines)
+        if engine is not None:
+            for name, vcfg in variant_cfgs.items():
+                ve, owned = _build_engine_for_config(vcfg, engine)
+                engines.append(ve)
+                owned_flags.append(owned)
+            _check_capabilities(metric_names, *engines)
 
         from lmdiff.geometry import ChangeGeometry
         v02_base = _to_v02_config(base_cfg)

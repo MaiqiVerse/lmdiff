@@ -50,8 +50,15 @@ class InferenceEngine:
     """The ONLY layer that loads models and runs inference."""
 
     def __init__(self, config: Config, device: str | None = None) -> None:
+        from lmdiff._progress import lifecycle_log
+
         self.config = config
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        lifecycle_log(
+            "InferenceEngine.init",
+            model=config.model if isinstance(config.model, str) else type(config.model).__name__,
+            name=config.display_name,
+        )
         self._model, self._tokenizer = self._load(config)
         # device_map="auto" can shard layers across cuda + cpu when GPU
         # memory is tight (notably after several sequential 7B loads).
@@ -68,6 +75,13 @@ class InferenceEngine:
         self, config: Config
     ) -> tuple[transformers.PreTrainedModel, transformers.PreTrainedTokenizerBase]:
         if isinstance(config.model, str):
+            # Visibility: the transformers ``Loading checkpoint shards``
+            # progress bar shows percent but not which model. In a
+            # multi-variant family run that means a flat sequence of
+            # identical-looking bars — impossible to tell which variant
+            # is currently loading. Print the model id up front. Always
+            # on (cheap, single line) — not gated behind tqdm/progress.
+            print(f"[lmdiff] loading weights: {config.model}", flush=True)
             tokenizer = transformers.AutoTokenizer.from_pretrained(config.model)
             load_kwargs: dict[str, Any] = {}
             if config.dtype:

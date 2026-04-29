@@ -169,4 +169,39 @@ def device_map_summary(model) -> str | None:
     return f"hf_device_map sharded across devices: {parts}"
 
 
-__all__ = ["iterate", "phase", "device_map_summary"]
+_LMDIFF_DEBUG_ENGINE_LIFECYCLE_ENV = "LMDIFF_DEBUG_ENGINE_LIFECYCLE"
+
+
+def engine_lifecycle_enabled() -> bool:
+    """True if engine-lifecycle debug logging has been opted into.
+
+    Off by default. Turn on by exporting
+    ``LMDIFF_DEBUG_ENGINE_LIFECYCLE=1`` for runs where you want to see
+    every InferenceEngine init / cache hit / release event — useful for
+    diagnosing OOMs and wasted-load patterns in multi-variant family runs.
+    """
+    val = os.environ.get(_LMDIFF_DEBUG_ENGINE_LIFECYCLE_ENV)
+    if val is None:
+        return False
+    return val.strip() not in ("", "0", "false", "False", "no")
+
+
+def lifecycle_log(event: str, **fields: object) -> None:
+    """Emit one ``[lmdiff lifecycle]`` line when the env var is set.
+
+    No-op otherwise. ``fields`` formats as ``key=value`` (repr) pairs.
+    """
+    if not engine_lifecycle_enabled():
+        return
+    parts = " ".join(f"{k}={v!r}" for k, v in fields.items())
+    sys.stdout.write(f"[lmdiff lifecycle] {event} {parts}\n")
+    sys.stdout.flush()
+
+
+__all__ = [
+    "iterate",
+    "phase",
+    "device_map_summary",
+    "engine_lifecycle_enabled",
+    "lifecycle_log",
+]
