@@ -115,29 +115,73 @@ class InferenceEngine:
     def model_name(self) -> str:
         return self.config.display_name
 
-    def _build_prompt(self, text: str) -> str:
+    # ── Runtime-param resolution helpers ────────────────────────────────
+    #
+    # These resolve runtime-only Config fields (system_prompt, context,
+    # decode) from either an explicit per-call override or self.config.
+    # Centralised so the engine can be SHARED across Configs that differ
+    # only in these fields — a single loaded engine serves both, and
+    # callers pass the per-config runtime params at score()/generate()
+    # time. See ``_config.RUNTIME_ONLY_FIELDS`` and the v0.3.2
+    # engine-reuse work in ``ChangeGeometry.analyze``.
+
+    def _resolve_system_prompt(self, override: str | None) -> str | None:
+        return override if override is not None else self.config.system_prompt
+
+    def _resolve_context(
+        self, override: list[dict] | None
+    ) -> list[dict] | None:
+        return override if override is not None else self.config.context
+
+    def _resolve_decode(self, override: dict | None) -> dict:
+        return override if override is not None else self.config.decode
+
+    def _build_prompt(
+        self,
+        text: str,
+        *,
+        system_prompt: str | None = None,
+        context: list[dict] | None = None,
+    ) -> str:
+        # ``None`` falls back to self.config so legacy callers
+        # (e.g. forward_with_hidden) keep working unchanged.
+        sp = self._resolve_system_prompt(system_prompt)
+        ctx = self._resolve_context(context)
         parts: list[str] = []
-        if self.config.system_prompt:
-            parts.append(self.config.system_prompt)
-        if self.config.context:
-            for msg in self.config.context:
+        if sp:
+            parts.append(sp)
+        if ctx:
+            for msg in ctx:
                 parts.append(msg.get("content", ""))
         parts.append(text)
         return "\n".join(parts)
 
-    def _prefix_text(self) -> str:
+    def _prefix_text(
+        self,
+        *,
+        system_prompt: str | None = None,
+        context: list[dict] | None = None,
+    ) -> str:
         """Text before the probe, or '' if no system_prompt/context."""
+        sp = self._resolve_system_prompt(system_prompt)
+        ctx = self._resolve_context(context)
         parts: list[str] = []
-        if self.config.system_prompt:
-            parts.append(self.config.system_prompt)
-        if self.config.context:
-            for msg in self.config.context:
+        if sp:
+            parts.append(sp)
+        if ctx:
+            for msg in ctx:
                 parts.append(msg.get("content", ""))
         if not parts:
             return ""
         return "\n".join(parts) + "\n"
 
-    def _encode_for_model(self, probe_text: str) -> tuple[list[int], slice]:
+    def _encode_for_model(
+        self,
+        probe_text: str,
+        *,
+        system_prompt: str | None = None,
+        context: list[dict] | None = None,
+    ) -> tuple[list[int], slice]:
         """Segment-tokenize prefix and probe separately, concat ids.
 
         Ensures the probe occupies exactly len(probe_ids) positions regardless
@@ -145,18 +189,23 @@ class InferenceEngine:
         can compare the probe span across configs with different prefixes
         without BPE-boundary drift.
 
+        ``system_prompt`` / ``context`` default to this engine's stored
+        config; pass explicit values to override per call (engine reuse).
+
         Returns (full_ids, probe_slice) where full_ids = prefix_ids + probe_ids
         and input_ids[probe_slice] == probe_ids.
         """
-        prefix_text = self._prefix_text()
+        prefix_text = self._prefix_text(
+            system_prompt=system_prompt, context=context,
+        )
         prefix_ids = self._tokenizer(prefix_text, add_special_tokens=True)["input_ids"]
         probe_ids = self._tokenizer(probe_text, add_special_tokens=False)["input_ids"]
         full_ids = list(prefix_ids) + list(probe_ids)
         probe_slice = slice(len(prefix_ids), len(full_ids))
         return full_ids, probe_slice
 
-    def _decode_params(self) -> dict[str, Any]:
-        d = self.config.decode
+    def _decode_params(self, decode: dict | None = None) -> dict[str, Any]:
+        d = decode if decode is not None else self.config.decode
         strategy = d.get("strategy", "greedy")
         params: dict[str, Any] = {}
         if strategy == "greedy":
@@ -175,10 +224,20 @@ class InferenceEngine:
         n_samples: int = 1,
         max_new_tokens: int = 64,
         *,
+        system_prompt: str | None = None,
+        context: list[dict] | None = None,
+        decode: dict | None = None,
         progress: bool | None = None,
         progress_desc: str = "generate",
     ) -> GenerationResult:
         """Generate completions for a list of prompts.
+
+        Runtime-only Config fields can be passed as kwargs to override
+        the engine's stored config for this call — required when the
+        same engine is shared across configs that differ only in
+        runtime params (the v0.3.2 engine-reuse pathway in
+        ``ChangeGeometry.analyze``). When ``None``, the engine's stored
+        ``self.config`` value is used (the v0.3.0 / v0.3.1 behaviour).
 
         Set ``progress=True`` to render a per-probe progress bar with
         elapsed time and ETA — useful for long ``family()`` runs where
@@ -189,7 +248,7 @@ class InferenceEngine:
         """
         from lmdiff._progress import iterate as _progress_iter
 
-        decode_params = self._decode_params()
+        decode_params = self._decode_params(decode)
 
         if n_samples > 1 and not decode_params.get("do_sample", False):
             raise ValueError(
@@ -203,7 +262,9 @@ class InferenceEngine:
         for probe in _progress_iter(
             prompts, desc=progress_desc, total=len(prompts), enable=progress,
         ):
-            full_ids, _ = self._encode_for_model(probe)
+            full_ids, _ = self._encode_for_model(
+                probe, system_prompt=system_prompt, context=context,
+            )
             input_ids = torch.tensor([full_ids], device=self.device)
             attention_mask = torch.ones_like(input_ids)
             prompt_len = input_ids.shape[1]
@@ -239,6 +300,8 @@ class InferenceEngine:
         continuations: list[str] | None = None,
         continuation_ids: list[list[int]] | None = None,
         *,
+        system_prompt: str | None = None,
+        context: list[dict] | None = None,
         progress: bool | None = None,
         progress_desc: str = "score",
     ) -> ForwardResult:
@@ -247,6 +310,11 @@ class InferenceEngine:
         Pass exactly one of continuations (strings) or continuation_ids (token id lists).
         For self-scoring (same engine that generated), prefer continuation_ids to avoid
         decode→retokenize round-trip errors.
+
+        ``system_prompt`` / ``context`` override this engine's stored
+        config for the current call — required for engine reuse where
+        one engine is shared across configs that differ only in runtime
+        params. When ``None``, ``self.config`` values are used.
 
         Pass ``progress=True`` to render a per-probe progress bar; see
         :meth:`InferenceEngine.generate` for the auto-detect rules.
@@ -266,7 +334,9 @@ class InferenceEngine:
         for idx in _progress_iter(
             range(n), desc=progress_desc, total=n, enable=progress,
         ):
-            prompt_ids, _ = self._encode_for_model(prompts[idx])
+            prompt_ids, _ = self._encode_for_model(
+                prompts[idx], system_prompt=system_prompt, context=context,
+            )
 
             if continuation_ids is not None:
                 cont_ids = continuation_ids[idx]

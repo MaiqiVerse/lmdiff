@@ -829,10 +829,26 @@ class ChangeGeometry:
         progress: bool | None = None,
         progress_label: str = "",
     ) -> tuple[list[float], bool]:
-        """Compute the raw δ vector (possibly containing NaN) for one variant."""
+        """Compute the raw δ vector (possibly containing NaN) for one variant.
+
+        Passes ``v_config.system_prompt`` / ``decode`` etc. explicitly to
+        the variant engine — this is what makes engine reuse safe. When
+        the variant engine is shared with base (because the variant is a
+        runtime-only modification of base), the engine's ``self.config``
+        holds base's runtime params; we override them per call. When the
+        variant has its own engine (different model / weight transform),
+        the override values match ``self.config`` so this is a no-op.
+
+        For the ``base_engine.score(continuations=v_outputs)`` call, we
+        keep base's own runtime params — that scoring uses base's
+        configuration, not the variant's, by design.
+        """
         prefix = f"{progress_label} " if progress_label else ""
         gen_v = v_engine.generate(
             self.prompts, n_samples=1, max_new_tokens=max_new_tokens,
+            system_prompt=v_config.system_prompt,
+            context=v_config.context,
+            decode=v_config.decode,
             progress=progress, progress_desc=f"{prefix}generate",
         )
         v_outputs = [comps[0] for comps in gen_v.completions]
@@ -844,6 +860,8 @@ class ChangeGeometry:
         )
         score_v_self = v_engine.score(
             self.prompts, continuation_ids=v_ids,
+            system_prompt=v_config.system_prompt,
+            context=v_config.context,
             progress=progress, progress_desc=f"{prefix}score v|v",
         )
 
