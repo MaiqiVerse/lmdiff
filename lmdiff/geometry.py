@@ -672,6 +672,7 @@ class ChangeGeometry:
         max_new_tokens: int = 16,
         *,
         progress: bool | None = None,
+        engine_groups: dict[str, str] | None = None,
     ) -> GeoResult:
         """Run generate + score for every (base, variant) pair and assemble a GeoResult.
 
@@ -680,8 +681,21 @@ class ChangeGeometry:
         a single ``.generate(500_prompts)`` call can take 30+ minutes.
         Auto-enables on a tty and stays silent in pipelines; set
         ``LMDIFF_PROGRESS=1`` (or ``=0``) to override.
+
+        ``engine_groups`` maps each variant name to an "anchor name"
+        from the same dict (or the literal ``"__base__"`` for variants
+        that should reuse the base engine). Variants sharing an anchor
+        share one loaded engine — pre-computed by ``_api.family`` /
+        ``_api.compare`` from ``Config.is_runtime_only_modification_of``.
+        When ``None``, every variant gets its own engine (legacy
+        behaviour). The base engine is always retained for the full
+        ``analyze()`` lifetime.
         """
-        from lmdiff._progress import phase as _phase, device_map_summary
+        from lmdiff._progress import (
+            phase as _phase,
+            device_map_summary,
+            lifecycle_log,
+        )
 
         n_total = len(self.prompts)
         if n_total == 0:
@@ -709,19 +723,56 @@ class ChangeGeometry:
         raw_deltas: dict[str, list[float]] = {}
         bpb_flags: dict[str, bool] = {}
 
+        # Engine cache: anchor_name → InferenceEngine. Base seeded; other
+        # entries lazy-loaded the first time a variant references them.
+        # Released aggressively in the look-ahead-by-one rule below.
+        BASE_ANCHOR = "__base__"
+        engine_cache: dict[str, InferenceEngine] = {BASE_ANCHOR: base_engine}
+
+        # Default groups (legacy): every variant is its own anchor — no
+        # reuse. Equivalent to v0.3.0 / v0.3.1 behaviour.
+        if engine_groups is None:
+            engine_groups = {n: n for n in variant_names}
+
+        def _anchor_of(variant_name: str) -> str:
+            return engine_groups.get(variant_name, variant_name)
+
         n_v = len(variant_names)
-        for v_idx, name in enumerate(variant_names, 1):
-            v_config = self.variants[name]
-            with _phase(
-                f"variant {v_idx}/{n_v} ({name}): load+generate+score",
-                enable=progress,
-            ):
-                v_engine = InferenceEngine(v_config)
-                # Same warning for variant: surface CPU-shard early.
-                vwarn = device_map_summary(getattr(v_engine, "_model", None))
-                if vwarn:
-                    print(f"[lmdiff WARNING] variant {name}: {vwarn}", flush=True)
-                try:
+        try:
+            for v_idx, name in enumerate(variant_names, 1):
+                v_config = self.variants[name]
+                anchor = _anchor_of(name)
+                with _phase(
+                    f"variant {v_idx}/{n_v} ({name}): "
+                    f"{'reuse '+anchor if anchor in engine_cache else 'load'}"
+                    f"+generate+score",
+                    enable=progress,
+                ):
+                    if anchor in engine_cache:
+                        v_engine = engine_cache[anchor]
+                        lifecycle_log(
+                            "engine_reuse",
+                            variant=name,
+                            anchor=anchor,
+                        )
+                    else:
+                        # Anchor cfg is either this variant (anchor == name)
+                        # or some earlier variant whose engine got released.
+                        # In both cases the v0.2 config to load is in
+                        # ``self.variants``.
+                        anchor_cfg = self.variants[anchor]
+                        v_engine = InferenceEngine(anchor_cfg)
+                        engine_cache[anchor] = v_engine
+                        # Surface CPU-shard early for every newly-loaded
+                        # variant engine, just like the base check above.
+                        vwarn = device_map_summary(
+                            getattr(v_engine, "_model", None),
+                        )
+                        if vwarn:
+                            print(
+                                f"[lmdiff WARNING] variant {name}: {vwarn}",
+                                flush=True,
+                            )
                     raw_deltas[name], bpb_flags[name] = self._delta_for_variant(
                         base_engine=base_engine,
                         v_engine=v_engine,
@@ -730,14 +781,37 @@ class ChangeGeometry:
                         progress=progress,
                         progress_label=f"v{v_idx}/{n_v} {name}",
                     )
-                finally:
-                    # Order matters: drop Python refs first so empty_cache has
-                    # something to actually reclaim. Doing empty_cache before
-                    # gc.collect() leaves CUDA blocks still owned by live
-                    # tensors and effectively does nothing.
-                    del v_engine
-                    gc.collect()
-                    release_cuda_cache()
+                    # Look-ahead-by-one release. After this iteration:
+                    #   - if anchor is base, never release
+                    #   - else if next variant uses the SAME anchor, keep
+                    #   - else release this engine (memory > reload time)
+                    if anchor != BASE_ANCHOR:
+                        next_idx = v_idx  # 0-based next position
+                        keep = (
+                            next_idx < n_v
+                            and _anchor_of(variant_names[next_idx]) == anchor
+                        )
+                        if not keep:
+                            engine_cache.pop(anchor, None)
+                            del v_engine
+                            gc.collect()
+                            release_cuda_cache()
+                            lifecycle_log(
+                                "engine_release",
+                                anchor=anchor,
+                                after_variant=name,
+                            )
+        finally:
+            # Drop every cached variant engine on the way out — base
+            # belongs to ``self._base_engine`` and is the caller's to
+            # close, so we leave it in the cache for whoever owns this
+            # ChangeGeometry instance.
+            for cached_anchor in list(engine_cache):
+                if cached_anchor == BASE_ANCHOR:
+                    continue
+                engine_cache.pop(cached_anchor, None)
+            gc.collect()
+            release_cuda_cache()
 
         valid_indices = _universally_valid_indices(raw_deltas, n_total)
         n_valid = len(valid_indices)

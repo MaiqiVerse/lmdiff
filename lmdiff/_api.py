@@ -239,6 +239,36 @@ def _build_engine_for_config(
     return template.with_config(config), False
 
 
+_BASE_ANCHOR = "__base__"
+
+
+def _compute_anchor_map(
+    items: list[tuple[str, Config]],
+) -> dict[str, str]:
+    """For each (name, config) in ``items`` (iteration order), pick the
+    earliest preceding name whose config is runtime-compatible — that's
+    this name's "anchor". A name that's its own anchor starts a new
+    group (forces a fresh engine load); two names with the same anchor
+    share a single loaded engine.
+
+    The first item's name is conventionally ``"__base__"``. If a variant
+    is runtime-compatible with base, its anchor is ``"__base__"`` and
+    the base engine serves it for free.
+    """
+    anchor: dict[str, str] = {}
+    representatives: list[tuple[str, Config]] = []
+    for name, cfg in items:
+        chosen = name
+        for rep_name, rep_cfg in representatives:
+            if cfg.is_runtime_only_modification_of(rep_cfg):
+                chosen = rep_name
+                break
+        anchor[name] = chosen
+        if chosen == name:
+            representatives.append((name, cfg))
+    return anchor
+
+
 def _close_owned(engines: list[Engine], owned_flags: list[bool]) -> None:
     """Best-effort close every owned engine, swallowing exceptions so a
     cleanup failure doesn't mask the original error."""
@@ -378,13 +408,30 @@ def compare(
         from lmdiff.geometry import ChangeGeometry
         v02_base = _to_v02_config(base_cfg)
         v02_variant = _to_v02_config(variant_cfg, fallback_name="variant")
+        v02_variant_name = v02_variant.display_name
+        if v02_variant_name == _BASE_ANCHOR:
+            raise ValueError(
+                f"variant name {_BASE_ANCHOR!r} is reserved by lmdiff "
+                f"for the base-engine sentinel; rename your variant"
+            )
+
+        # When the single variant is runtime-compatible with base it
+        # reuses base's engine — otherwise it loads its own. Either way
+        # the anchor map records the decision for analyze().
+        anchor_map = _compute_anchor_map(
+            [(_BASE_ANCHOR, base_cfg), (v02_variant_name, variant_cfg)],
+        )
 
         cg = ChangeGeometry(
             base=v02_base,
-            variants={v02_variant.display_name: v02_variant},
+            variants={v02_variant_name: v02_variant},
             prompts=probe_set,
         )
-        result = cg.analyze(max_new_tokens=max_new_tokens, progress=progress)
+        result = cg.analyze(
+            max_new_tokens=max_new_tokens,
+            progress=progress,
+            engine_groups=anchor_map,
+        )
         if probe_info:
             result.metadata.update(probe_info)
     finally:
@@ -460,6 +507,19 @@ def family(
                 owned_flags.append(owned)
             _check_capabilities(metric_names, *engines)
 
+        # Engine reuse: walk the (base + variants) sequence and find
+        # which variants are runtime-compatible with an earlier config.
+        # Same-anchor variants will share one loaded engine in
+        # ``ChangeGeometry.analyze`` (saves a full model load each).
+        if any(name == _BASE_ANCHOR for name in variant_cfgs):
+            raise ValueError(
+                f"variant name {_BASE_ANCHOR!r} is reserved by lmdiff "
+                f"for the base-engine sentinel; rename your variant"
+            )
+        anchor_map = _compute_anchor_map(
+            [(_BASE_ANCHOR, base_cfg), *variant_cfgs.items()],
+        )
+
         from lmdiff.geometry import ChangeGeometry
         v02_base = _to_v02_config(base_cfg)
         v02_variants = {
@@ -472,7 +532,11 @@ def family(
             variants=v02_variants,
             prompts=probe_set,
         )
-        result = cg.analyze(max_new_tokens=max_new_tokens, progress=progress)
+        result = cg.analyze(
+            max_new_tokens=max_new_tokens,
+            progress=progress,
+            engine_groups=anchor_map,
+        )
         if probe_info:
             result.metadata.update(probe_info)
     finally:
