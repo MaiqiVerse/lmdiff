@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 # numpy is NOT imported at module level. soft_prompts and SteeringSpec.vectors
 # are typed as ``Any`` and validated lazily (at Engine load time, Phase 5).
@@ -36,7 +36,73 @@ __all__ = [
     "KVCacheSpec",
     "DecodeSpec",
     "SteeringSpec",
+    "RUNTIME_ONLY_FIELDS",
+    "MODEL_SPECIFIC_COMPARATORS",
 ]
+
+
+# ── Engine-reuse classification (v0.3.2 — see CHANGELOG) ───────────────
+#
+# A field is in ``RUNTIME_ONLY_FIELDS`` iff changing its value can be
+# applied at score()/generate() call time without re-loading weights.
+# Two Configs that share ``model`` and differ only in fields from this
+# set can share a single loaded engine — see
+# ``Config.is_runtime_only_modification_of``.
+#
+# Classification (audit performed once; revisit when adding new fields):
+#
+#   RUNTIME-ONLY (reuse engine OK):
+#     name                       — pure label, never read at inference
+#     system_prompt              — concatenated into the prompt
+#     icl_examples               — concatenated into the prompt
+#     context                    — concatenated into the prompt
+#     decode                     — passed as ``model.generate`` kwargs
+#     tokenizer_id_override      — metadata id only; tokenizer object
+#                                  is determined by ``model``
+#     capabilities_required      — caller-side contract assertion;
+#                                  doesn't change how the engine loads
+#     training_recipe_summary    — pure documentation
+#
+#   WEIGHT-AFFECTING (force separate engine):
+#     model                      — the model identity itself
+#     adapter                    — load-time weight transform (LoRA etc.)
+#     quantization               — load-time weight transform
+#     pruning                    — load-time weight transform
+#     soft_prompts               — needs an embedding tensor bound to
+#                                  the model; not safe to swap per-call
+#     kv_cache_compression       — installs hooks on attention layers
+#     steering                   — installs hooks on forward path
+#
+# Default-to-strict policy: if you're unsure about a future field,
+# leave it OUT of this set. Being too strict only costs reload time;
+# being too lax causes silent correctness bugs (an engine running
+# under the wrong weight transform).
+RUNTIME_ONLY_FIELDS: frozenset[str] = frozenset({
+    "name",
+    "system_prompt",
+    "icl_examples",
+    "context",
+    "decode",
+    "tokenizer_id_override",
+    "capabilities_required",
+    "training_recipe_summary",
+})
+
+
+# Model-specific override hook. Empty by default. Register a comparator
+# under a model id when a downstream user has added a Config field that
+# needs custom reuse semantics, without touching the base classification.
+#
+# Example::
+#
+#     def my_model_compatible(self_cfg, other_cfg):
+#         # both must use the same custom scaffold
+#         return self_cfg.training_recipe_summary == other_cfg.training_recipe_summary
+#
+#     MODEL_SPECIFIC_COMPARATORS["my-org/my-model"] = my_model_compatible
+MODEL_SPECIFIC_COMPARATORS: dict[
+    str, Callable[["Config", "Config"], bool]
+] = {}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -91,6 +157,43 @@ def _dict_to_np(d: dict[str, Any]) -> Any:
 
 def _looks_like_numpy_dict(value: Any) -> bool:
     return isinstance(value, dict) and value.get("__numpy__") is True
+
+
+def _values_equal(a: Any, b: Any) -> bool:
+    """Equality check that handles numpy arrays and dict-of-arrays.
+
+    Plain ``a == b`` raises ``ValueError`` on numpy arrays with more
+    than one element ("The truth value of an array with more than one
+    element is ambiguous"). The reuse predicate must compare every
+    Config field including ones that may hold numpy arrays
+    (``soft_prompts``, ``SteeringSpec.vectors``), so this helper
+    encodes the safe comparison rules.
+    """
+    if a is b:
+        return True
+    if a is None or b is None:
+        return a is b
+    a_np = _is_numpy_array(a)
+    b_np = _is_numpy_array(b)
+    if a_np or b_np:
+        if not (a_np and b_np):
+            return False
+        if a.shape != b.shape or a.dtype != b.dtype:
+            return False
+        import numpy as np
+        return bool(np.array_equal(a, b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        if a.keys() != b.keys():
+            return False
+        return all(_values_equal(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        if len(a) != len(b) or type(a) is not type(b):
+            return False
+        return all(_values_equal(x, y) for x, y in zip(a, b))
+    try:
+        return a == b
+    except (ValueError, TypeError):
+        return False
 
 
 def _serialize_value(value: Any) -> Any:
@@ -410,6 +513,42 @@ class Config:
             if getattr(self, f.name) != getattr(other, f.name):
                 diffs.append(f.name)
         return tuple(diffs)
+
+    def is_runtime_only_modification_of(self, other: "Config") -> bool:
+        """True iff one loaded engine can serve both ``self`` and ``other``.
+
+        Two Configs are runtime-compatible — i.e., share-an-engine safe —
+        when (a) they reference the same ``model``, and (b) every
+        weight-affecting field has the same value in both. The
+        weight-affecting set is the complement of
+        :data:`RUNTIME_ONLY_FIELDS`. See the audit at the top of
+        ``lmdiff/_config.py`` for the per-field rationale.
+
+        For downstream models with custom Config fields requiring
+        non-default reuse semantics, register a comparator in
+        :data:`MODEL_SPECIFIC_COMPARATORS` keyed by model id; it bypasses
+        the default check.
+
+        Reflexive (a Config is always runtime-compatible with itself)
+        and symmetric. Not transitive in the presence of model-specific
+        comparators that don't satisfy transitivity.
+        """
+        if self.model != other.model:
+            return False
+        comparator = MODEL_SPECIFIC_COMPARATORS.get(self.model)
+        if comparator is not None:
+            return bool(comparator(self, other))
+        # Check every weight-affecting field individually. We can't use
+        # ``differs_in`` because some fields (``soft_prompts``,
+        # ``SteeringSpec.vectors``) hold numpy arrays whose ``!=`` is
+        # ambiguous — that's exactly the reason we keep them out of
+        # RUNTIME_ONLY_FIELDS, and we need to *check* them here.
+        for f in fields(self):
+            if f.name in RUNTIME_ONLY_FIELDS or f.name == "model":
+                continue
+            if not _values_equal(getattr(self, f.name), getattr(other, f.name)):
+                return False
+        return True
 
     # ── Serialization ──────────────────────────────────────────────────
 
