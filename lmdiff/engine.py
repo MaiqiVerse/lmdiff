@@ -155,8 +155,26 @@ class InferenceEngine:
         return params
 
     @torch.no_grad()
-    def generate(self, prompts: list[str], n_samples: int = 1, max_new_tokens: int = 64) -> GenerationResult:
-        """Generate completions for a list of prompts."""
+    def generate(
+        self,
+        prompts: list[str],
+        n_samples: int = 1,
+        max_new_tokens: int = 64,
+        *,
+        progress: bool | None = None,
+        progress_desc: str = "generate",
+    ) -> GenerationResult:
+        """Generate completions for a list of prompts.
+
+        Set ``progress=True`` to render a per-probe progress bar with
+        elapsed time and ETA — useful for long ``family()`` runs where
+        a single ``.generate(500_prompts)`` call can take 30+ minutes
+        with no output. Default behaviour is to auto-enable on a tty
+        and stay silent in pipelines / when stdout is redirected.
+        See :func:`lmdiff._progress.iterate` for env-var override.
+        """
+        from lmdiff._progress import iterate as _progress_iter
+
         decode_params = self._decode_params()
 
         if n_samples > 1 and not decode_params.get("do_sample", False):
@@ -168,7 +186,9 @@ class InferenceEngine:
         all_completions: list[list[str]] = []
         all_token_ids: list[list[list[int]]] = []
 
-        for probe in prompts:
+        for probe in _progress_iter(
+            prompts, desc=progress_desc, total=len(prompts), enable=progress,
+        ):
             full_ids, _ = self._encode_for_model(probe)
             input_ids = torch.tensor([full_ids], device=self.device)
             attention_mask = torch.ones_like(input_ids)
@@ -204,13 +224,21 @@ class InferenceEngine:
         prompts: list[str],
         continuations: list[str] | None = None,
         continuation_ids: list[list[int]] | None = None,
+        *,
+        progress: bool | None = None,
+        progress_desc: str = "score",
     ) -> ForwardResult:
         """Score continuations given prompts. Returns per-token log-probs and cross-entropy.
 
         Pass exactly one of continuations (strings) or continuation_ids (token id lists).
         For self-scoring (same engine that generated), prefer continuation_ids to avoid
         decode→retokenize round-trip errors.
+
+        Pass ``progress=True`` to render a per-probe progress bar; see
+        :meth:`InferenceEngine.generate` for the auto-detect rules.
         """
+        from lmdiff._progress import iterate as _progress_iter
+
         if (continuations is None) == (continuation_ids is None):
             raise ValueError("pass exactly one of continuations or continuation_ids")
         n = len(continuations or continuation_ids)
@@ -221,7 +249,9 @@ class InferenceEngine:
         all_cross_entropies: list[float] = []
         all_token_ids: list[list[int]] = []
 
-        for idx in range(n):
+        for idx in _progress_iter(
+            range(n), desc=progress_desc, total=n, enable=progress,
+        ):
             prompt_ids, _ = self._encode_for_model(prompts[idx])
 
             if continuation_ids is not None:

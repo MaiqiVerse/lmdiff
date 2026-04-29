@@ -38,7 +38,7 @@ def _make_mock_engine(name: str, correct_answers: dict[str, list[str]] | None = 
     engine = MagicMock()
     engine.model_name = name
 
-    def generate_side_effect(texts, n_samples=1, max_new_tokens=16):
+    def generate_side_effect(texts, n_samples=1, max_new_tokens=16, **kwargs):
         gen = MagicMock()
         completions = []
         for t in texts:
@@ -214,7 +214,7 @@ class TestRunPairMock:
         engine_b.tokenizer = MagicMock()
 
         # Mock score results
-        def score_side_effect(prompts, continuations=None, continuation_ids=None):
+        def score_side_effect(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             sr.cross_entropies = [1.0] * len(prompts)
             sr.token_ids = [[[42]]] * len(prompts)
@@ -260,7 +260,7 @@ class TestSingleGenerationReused:
             gen.token_ids = [[[7]] for _ in texts]
             return gen
 
-        def score_side_effect(prompts, continuations=None, continuation_ids=None):
+        def score_side_effect(prompts, continuations=None, continuation_ids=None, **kwargs):
             sr = MagicMock()
             sr.cross_entropies = [1.0] * len(prompts)
             sr.token_ids = [[[7]]] * len(prompts)
