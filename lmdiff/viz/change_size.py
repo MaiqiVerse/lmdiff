@@ -90,20 +90,31 @@ def render_change_size(
     # Order the bars by per-token-normalized magnitude (descending).
     order = sorted(variants, key=lambda v: -norm[v])
 
-    fig = plt.figure(figsize=(14, 6.2))
+    fig = plt.figure(figsize=(15.5, 7.0))
     gs = fig.add_gridspec(
         2, 3,
-        width_ratios=[2.7, 2.7, 1.0],
-        height_ratios=[5.5, 0.5],
-        hspace=0.35, wspace=0.20,
-        left=0.07, right=0.98, top=0.83, bottom=0.10,
+        width_ratios=[2.7, 2.7, 1.2],
+        height_ratios=[5.5, 1.4],
+        # wspace was 0.20 — too tight: the right pane's y-tick labels
+        # ran into the left pane's right-edge bar-value labels (e.g.
+        # "83.3" abutting "long").
+        # height_ratios bottom row bumped 0.5 → 1.4 so the new
+        # ``Domain ← dataset`` panel at gs[1, 2] has room for several
+        # task-name lines without truncation.
+        hspace=0.35, wspace=0.34,
+        left=0.07, right=0.985, top=0.83, bottom=0.08,
     )
     ax_raw = fig.add_subplot(gs[0, 0])
     ax_norm = fig.add_subplot(gs[0, 1])
     ax_takeaway = fig.add_subplot(gs[0, 2])
     ax_legend = fig.add_subplot(gs[1, 0:2])
+    # Bottom-right corner: domain ↔ dataset note. Empty for legacy /
+    # single-domain runs (the helper returns {}); the panel just stays
+    # visually empty in that case.
+    ax_domain_legend = fig.add_subplot(gs[1, 2])
     ax_takeaway.axis("off")
     ax_legend.axis("off")
+    ax_domain_legend.axis("off")
 
     y_pos = np.arange(len(order))
     raw_max = max(raw.values()) if raw else 1.0
@@ -235,6 +246,40 @@ def render_change_size(
                          fontsize=9.5, color="#222",
                          transform=ax_takeaway.transAxes, va="top",
                          family="DejaVu Sans Mono", linespacing=1.3)
+
+    # Domain ↔ dataset relation in the bottom-right legend cell. See
+    # the matching block in ``viz/drift_share.py`` for the rationale.
+    from lmdiff.viz._style import domain_to_tasks_map
+
+    dom_tasks = domain_to_tasks_map(result.metadata)
+    if dom_tasks:
+        # Order by the metadata's ``tasks`` list when available so the
+        # note matches the user's original task ordering.
+        task_order = (result.metadata or {}).get("tasks") or []
+        ordered_domains = []
+        seen: set[str] = set()
+        for t in task_order:
+            for d, ts in dom_tasks.items():
+                if t in ts and d not in seen:
+                    ordered_domains.append(d)
+                    seen.add(d)
+        for d in dom_tasks:  # any leftovers
+            if d not in seen:
+                ordered_domains.append(d)
+        ax_domain_legend.text(
+            0.0, 0.95, "Domain ← dataset",
+            fontsize=9.5, fontweight="bold", color="#333",
+            transform=ax_domain_legend.transAxes, va="top",
+        )
+        line_h = 0.13
+        for i, d in enumerate(ordered_domains):
+            ax_domain_legend.text(
+                0.0, 0.75 - i * line_h,
+                f"{d}: {', '.join(dom_tasks[d])}",
+                fontsize=7.5, color="#555",
+                transform=ax_domain_legend.transAxes, va="top",
+                family="DejaVu Sans Mono",
+            )
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
