@@ -126,22 +126,32 @@ def render_drift_share(
     row_sums[row_sums == 0] = 1.0
     share = norm_sq / row_sums
 
-    fig = plt.figure(figsize=(15, 7.4))
+    fig = plt.figure(figsize=(16.5, 7.8))
     gs = fig.add_gridspec(
         3, 3,
-        width_ratios=[2.7, 2.7, 1.0],
+        width_ratios=[2.7, 2.7, 1.2],
         height_ratios=[5.5, 0.55, 0.7],
-        hspace=0.30, wspace=0.18,
-        left=0.05, right=0.98, top=0.83, bottom=0.05,
+        # wspace was 0.18 — too tight: the right pane's y-tick labels
+        # ran into the left pane's right-edge cell numbers. Bumped to
+        # 0.40 to give long names like ``system_prompt`` clearance.
+        # Takeaway-column ratio bumped 1.0 → 1.2 so the bottom-line
+        # text and the new domain↔dataset map don't crowd.
+        hspace=0.30, wspace=0.40,
+        left=0.05, right=0.985, top=0.83, bottom=0.05,
     )
     ax_abs = fig.add_subplot(gs[0, 0])
     ax_z = fig.add_subplot(gs[0, 1])
-    ax_takeaway = fig.add_subplot(gs[0:2, 2])
+    ax_takeaway = fig.add_subplot(gs[0, 2])
     ax_legend_abs = fig.add_subplot(gs[2, 0])
     ax_legend_z = fig.add_subplot(gs[2, 1])
+    # Bottom-right corner: domain ↔ dataset relation. Spans the legend
+    # row + the small spacer row so it has room for several domains
+    # without crowding the takeaway bullets above it.
+    ax_domain_legend = fig.add_subplot(gs[1:, 2])
     ax_takeaway.axis("off")
     ax_legend_abs.axis("off")
     ax_legend_z.axis("off")
+    ax_domain_legend.axis("off")
 
     # Left: drift magnitude (sequential blue)
     abs_max = float(norm.max()) if norm.size else 0.21
@@ -218,17 +228,22 @@ def render_drift_share(
              "acts on most.",
              fontsize=11.5, color="#555", style="italic")
 
-    # Legends
-    strip_w = 0.165
+    # Legends — strip width and label text both kept short so the
+    # end-cell labels stay inside their own rectangle (was overflowing
+    # into the next box at the previous "biggest action" / "barely
+    # acted" length, ~14 chars).
+    strip_w = 0.175
+    strip_left = 0.010
+    strip_gap = 0.006
     abs_legend_items = [
-        ("#f0f0f0", "< 0.025\nbarely moved", "#222"),
-        ("#c6dbef", "0.025–0.05\nsmall move", "#222"),
+        ("#f0f0f0", "< 0.025\nbarely",    "#222"),
+        ("#c6dbef", "0.025–0.05\nsmall", "#222"),
         ("#6baed6", "0.05–0.10\nmoderate", "#222"),
-        ("#2171b5", "0.10–0.20\nbig move", "white"),
-        ("#08306b", "> 0.20\nhuge move", "white"),
+        ("#2171b5", "0.10–0.20\nbig",     "white"),
+        ("#08306b", "> 0.20\nhuge",       "white"),
     ]
     for k, (color, lbl, txt_color) in enumerate(abs_legend_items):
-        cx = k * (strip_w + 0.005)
+        cx = strip_left + k * (strip_w + strip_gap)
         ax_legend_abs.add_patch(plt.Rectangle(
             (cx, 0.0), strip_w, 0.65,
             facecolor=color, edgecolor="#888", linewidth=0.6,
@@ -236,7 +251,8 @@ def render_drift_share(
         ax_legend_abs.text(cx + strip_w / 2, 0.32, lbl,
                            ha="center", va="center",
                            fontsize=8.5, color=txt_color, fontweight="bold",
-                           transform=ax_legend_abs.transAxes, linespacing=1.2)
+                           transform=ax_legend_abs.transAxes, linespacing=1.2,
+                           clip_on=False)
     ax_legend_abs.text(
         0.0, 1.05,
         "Smaller value = variant behaves more like base on this domain.",
@@ -245,14 +261,14 @@ def render_drift_share(
     )
 
     share_legend_items = [
-        ("#542788", "< 10%\nbarely acted", "white"),
-        ("#b2abd2", "10–18%\nsmall action", "#3d2855"),
+        ("#542788", "< 10%\nbarely",   "white"),
+        ("#b2abd2", "10–18%\nsmall",   "#3d2855"),
         ("#f2f2f2", "18–22%\nbalanced", "#444"),
-        ("#fdb863", "22–30%\nbig action", "#3d2855"),
-        ("#b35806", "> 30%\nbiggest action", "white"),
+        ("#fdb863", "22–30%\nbig",     "#3d2855"),
+        ("#b35806", "> 30%\nbiggest",  "white"),
     ]
     for k, (color, lbl, txt_color) in enumerate(share_legend_items):
-        cx = k * (strip_w + 0.005)
+        cx = strip_left + k * (strip_w + strip_gap)
         ax_legend_z.add_patch(plt.Rectangle(
             (cx, 0.0), strip_w, 0.65,
             facecolor=color, edgecolor="#888", linewidth=0.6,
@@ -260,7 +276,8 @@ def render_drift_share(
         ax_legend_z.text(cx + strip_w / 2, 0.32, lbl,
                          ha="center", va="center",
                          fontsize=8.5, color=txt_color, fontweight="bold",
-                         transform=ax_legend_z.transAxes, linespacing=1.2)
+                         transform=ax_legend_z.transAxes, linespacing=1.2,
+                         clip_on=False)
     ax_legend_z.text(
         0.0, 1.05,
         f"Each row sums to 100%.   Even split would be "
@@ -305,6 +322,35 @@ def render_drift_share(
                          fontsize=9, color="#222",
                          transform=ax_takeaway.transAxes, va="top",
                          family="DejaVu Sans Mono", linespacing=1.3)
+
+    # Domain ↔ dataset relation in the bottom-right corner. Surfaces
+    # which lm-eval task(s) each domain came from so a reader of
+    # "commonsense" / "code" / "reasoning" knows the actual source
+    # dataset (hellaswag / mmlu_… / arc_challenge / …). Pulled from
+    # ``result.metadata['tasks']`` (populated by the v0.3.2 lm_eval
+    # multi-task probe loader); empty dict for legacy / non-lm_eval runs.
+    from lmdiff.viz._style import domain_to_tasks_map
+
+    dom_tasks = domain_to_tasks_map(result.metadata)
+    displayed = (
+        [(d, dom_tasks[d]) for d in domains if d in dom_tasks]
+        if dom_tasks else []
+    )
+    if displayed:
+        ax_domain_legend.text(
+            0.0, 0.95, "Domain ← dataset",
+            fontsize=9.5, fontweight="bold", color="#333",
+            transform=ax_domain_legend.transAxes, va="top",
+        )
+        line_h = 0.10
+        for i, (d, tasks_for_d) in enumerate(displayed):
+            ax_domain_legend.text(
+                0.0, 0.78 - i * line_h,
+                f"{d}: {', '.join(tasks_for_d)}",
+                fontsize=7.5, color="#555",
+                transform=ax_domain_legend.transAxes, va="top",
+                family="DejaVu Sans Mono",
+            )
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

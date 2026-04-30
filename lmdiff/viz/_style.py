@@ -50,6 +50,39 @@ def variant_marker(name: str, idx: int = 0) -> str:
     return fallback[idx % len(fallback)]
 
 
+def domain_to_tasks_map(metadata: dict | None) -> dict[str, list[str]]:
+    """Build a {domain: [task_name, ...]} mapping from a result's metadata.
+
+    Used by figure renderers to surface the domain↔dataset relationship
+    in a small note (so a viewer reading "commonsense" knows it came
+    from ``hellaswag``, not some generic synonym). Reads
+    ``metadata['tasks']`` (the list populated by the v0.3.2 lm_eval
+    multi-task probe loader) and groups by ``KNOWN_TASK_DOMAINS[t].domain``.
+
+    Returns an empty dict when ``tasks`` is missing or empty (legacy
+    runs, single-domain runs, non-lm_eval probe sources). Renderers
+    should treat the empty dict as "no note to render".
+    """
+    if not metadata:
+        return {}
+    tasks = metadata.get("tasks") or []
+    if not tasks:
+        return {}
+    # Lazy import — keeps the viz layer torch-free in the import path.
+    from lmdiff.probes.adapters import KNOWN_TASK_DOMAINS
+
+    out: dict[str, list[str]] = {}
+    for t in tasks:
+        info = KNOWN_TASK_DOMAINS.get(t)
+        if info is None:
+            # Unknown task — bucket it under a placeholder so the user
+            # still sees the task name in the legend.
+            out.setdefault("unknown", []).append(t)
+            continue
+        out.setdefault(info.domain, []).append(t)
+    return out
+
+
 __all__ = [
     "VARIANT_COLORS",
     "VARIANT_MARKERS",
@@ -58,4 +91,5 @@ __all__ = [
     "BASE_MARKER",
     "variant_color",
     "variant_marker",
+    "domain_to_tasks_map",
 ]
