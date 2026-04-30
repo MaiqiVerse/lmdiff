@@ -1,8 +1,14 @@
 # Changelog
 
-## [0.3.2] - 2026-04-29
+## [0.3.2] - 2026-04-30
 
 ### Fixed
+- **`share_per_domain` and overall `magnitudes_normalized` recomputed using per-domain per-token normalization** — the v0.3.0–v0.3.2 (pre-fix) formulas were length-weighted: `share_per_domain[v][d] = ‖δ_{v|d}‖² / Σ_d' ‖δ_{v|d'}‖²` and `magnitudes_normalized[v] = ‖δ_v‖ / sqrt(n_probes·mean_T)`. On a 5-domain run including longbench (~9000 tokens vs ~30 for MCQ), the long-context domain dominated 90–99 % of every variant's share even when its per-token drift was modest, and the overall normalized magnitude was biased toward the long-prompt domain. The corrected formulas match what the figure renderers already compute per-domain (and what the v6 §13 calibration mockup documents):
+    - `magnitudes_per_domain_normalized[v][d] = sqrt( Σ_{i∈d} δ[v][i]² / Σ_{i∈d} T[i] )` — per-token RMS within each domain (new top-level field).
+    - `share_per_domain[v][d] = pdn[v][d]² / Σ_d' pdn[v][d']²` — relative per-token energy across domains.
+    - `magnitudes_normalized[v] = sqrt( mean over d of pdn[v][d]² )` — per-domain RMS, each domain weighted equally.
+
+  v0.3.0–v0.3.2 GeoResult JSONs (which lack the new `magnitudes_per_domain_normalized` field) **auto-recompute on load** via `lmdiff.load_result` / `geo_result_from_json_dict`, emitting a single `DeprecationWarning` per file. Re-save with `result.save(path)` to upgrade. Long-context-heavy probe sets see substantially different shares — this is the corrected behavior, matching the v6 §13 documented calibration. Raw `magnitudes` (untouched name, untouched semantics) remains the unmodified L2 norm for users who want the length-weighted view.
 - **OOM in multi-variant `family()` runs from duplicate model loads** — the same 7-variant Llama-2 demo that surfaced the per-task `n_probes` bug also OOMed on 2 × 48 GiB A6000s. Two compounding causes:
     1. ``_api.compare()`` / ``_api.family()`` eagerly built one ``HFEngine`` per Config (1 base + N variants) for capability checking, but the geometry path immediately threw them away and re-loaded each model as ``InferenceEngine``. Every weights file went through the GPU twice. Fix: skip the eager HFEngine preflight when ``engine=None`` (the default path); the real engine that runs inference does its own contract enforcement.
     2. Variants whose Config differed from base only in runtime-only fields (e.g. ``temp_1.5`` with a different ``decode``, ``system_prompt`` with a different prompt) loaded a full extra copy of the same weights instead of sharing base's loaded engine. Fix: variants sharing ``model`` and differing only in fields from ``RUNTIME_ONLY_FIELDS`` (``name``, ``system_prompt``, ``icl_examples``, ``context``, ``decode``, ``tokenizer_id_override``, ``capabilities_required``, ``training_recipe_summary``) now share a single loaded ``InferenceEngine``. Variants with weight-affecting differences (``adapter`` / ``quantization`` / ``pruning`` / ``soft_prompts`` / ``kv_cache_compression`` / ``steering``) still get their own engine. See the audit comment at the top of ``lmdiff/_config.py``.
@@ -20,6 +26,7 @@
 - ``lmdiff._config.RUNTIME_ONLY_FIELDS`` — frozenset of Config field names that are safe to differ across two configs sharing one engine.
 - ``lmdiff._config.MODEL_SPECIFIC_COMPARATORS`` — extension hook (``dict[str, Callable]`` keyed by model id) for downstream models that need custom reuse semantics. Empty by default; pure default behaviour unless explicitly populated.
 - ``ChangeGeometry.analyze(engine_groups=...)`` — optional ``dict[str, str]`` mapping variant name to anchor name. Variants sharing an anchor share a loaded engine; the look-ahead-by-one release rule fires when an anchor is no longer needed. Built automatically by ``_api.compare()`` / ``_api.family()``; set to ``None`` (default) for legacy per-variant loading.
+- ``GeoResult.magnitudes_per_domain_normalized`` — per-variant per-domain per-token RMS magnitude (`pdn`). Surfaces the value figure renderers were already computing as a top-level field; the corrected basis for `share_per_domain` and overall `magnitudes_normalized`. Empty when `probe_domains` or `avg_tokens_per_probe` is empty. Auto-recomputed on load when missing from the JSON. Additive — no schema bump (still v5).
 - ``[lmdiff] loading weights: <model_id>`` line printed before each model load — visible in run logs alongside the transformers ``Loading checkpoint shards`` progress bar. Lets you count actual loads in a multi-variant run at a glance.
 - ``LMDIFF_DEBUG_ENGINE_LIFECYCLE=1`` env var — emits structured ``[lmdiff lifecycle] InferenceEngine.init`` / ``engine_reuse`` / ``engine_release`` lines for diagnosing memory patterns in family runs. Off by default.
 

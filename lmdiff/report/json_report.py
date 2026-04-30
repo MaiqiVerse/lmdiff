@@ -39,7 +39,12 @@ from lmdiff.metrics.base import MetricLevel, MetricResult
 from lmdiff.tasks.base import EvalResult, TaskResult
 from lmdiff.tasks.capability_radar import DomainRadarResult, RadarResult
 from lmdiff.diff import DiffReport, FullReport, PairTaskResult
-from lmdiff.geometry import GeoResult, _compute_share_per_domain
+from lmdiff.geometry import (
+    GeoResult,
+    _compute_overall_normalized_from_pdn,
+    _compute_per_domain_normalized,
+    _compute_share_per_domain,
+)
 
 SCHEMA_VERSION = "5"
 """Current GeoResult on-disk schema. Reader accepts v1-v5; writer emits v5
@@ -198,6 +203,9 @@ def _geo_result(r: GeoResult) -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "magnitudes": _clean_value(r.magnitudes),
         "magnitudes_normalized": _clean_value(r.magnitudes_normalized),
+        "magnitudes_per_domain_normalized": _clean_value(
+            r.magnitudes_per_domain_normalized,
+        ),
         "metadata": _clean_value(r.metadata),
         "n_probes": r.n_probes,
         "per_probe": _clean_value(r.per_probe),
@@ -273,22 +281,91 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
             v: {dom: float(val) for dom, val in row.items()}
             for v, row in raw_share.items()
         }
+        # v0.3.2 additive field — present in saves from v0.3.2-post-fix
+        # onward, absent in v0.3.0 / v0.3.1 / pre-fix v0.3.2.
+        raw_pdn = d.get("magnitudes_per_domain_normalized") or {}
+        if raw_pdn:
+            kwargs["magnitudes_per_domain_normalized"] = {
+                v: {dom: float(val) for dom, val in row.items()}
+                for v, row in raw_pdn.items()
+            }
 
     result = GeoResult(**kwargs)
 
-    if sv == "4":
-        warnings.warn(
-            "GeoResult JSON schema v4 is deprecated since v0.3.0; the v5 "
-            "share_per_domain field is being synthesised on the fly. "
-            "Re-save with `result.save(path)` (or write_json) to upgrade. "
-            "v4 load support will be removed in v0.4.0.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        # Synthesise v5 share_per_domain from the v4 per-domain magnitudes.
-        result.share_per_domain = _compute_share_per_domain(result)
+    # v4 → v5: synthesise share_per_domain (legacy path).
+    # v0.3.2 share/overall-normalized correction:
+    #   Whether sv is "4" (no share at all) or "5" with old length-biased
+    #   share, we recompute share + overall + pdn from the raw inputs
+    #   when those inputs are available. The old saved values get
+    #   overwritten because the v0.3.0–v0.3.2 formulas are corrected.
+    _ensure_per_domain_normalized_views(
+        result,
+        loaded_pdn_was_present=bool(
+            sv == "5" and d.get("magnitudes_per_domain_normalized"),
+        ),
+        from_schema_version=sv,
+    )
 
     return result
+
+
+def _ensure_per_domain_normalized_views(
+    result: GeoResult,
+    *,
+    loaded_pdn_was_present: bool,
+    from_schema_version: str,
+) -> None:
+    """Recompute pdn / share / overall when the load preceded the
+    v0.3.2 formula correction.
+
+    Pre-correction (v0.3.0–v0.3.2) saves used:
+      - ``share_per_domain[v][d] = ‖δ_{v|d}‖² / Σ ‖δ_{v|d'}‖²`` (raw,
+        length-weighted — long-context domains dominate)
+      - ``magnitudes_normalized[v] = raw / sqrt(n_probes·mean_T)``
+        (single per-token RMS; under-weights short-prompt domains)
+
+    Post-correction (v0.3.2 fix forward):
+      - ``magnitudes_per_domain_normalized[v][d]`` = per-token RMS in d
+      - ``share_per_domain[v][d]`` = pdn[v][d]² / Σ pdn²
+      - ``magnitudes_normalized[v]`` = sqrt(mean over d of pdn²)
+
+    If the new ``magnitudes_per_domain_normalized`` field was present in
+    the JSON, we trust the on-disk values and skip recomputation. If
+    it's absent but the inputs (probe_domains + avg_tokens_per_probe)
+    are available, recompute and emit a single ``DeprecationWarning``.
+    Without inputs, leave the loaded values alone (the bulk overall is
+    still meaningful for single-domain experiments).
+    """
+    if loaded_pdn_was_present:
+        return
+    if not result.probe_domains or not result.avg_tokens_per_probe:
+        return
+    pdn = _compute_per_domain_normalized(
+        result.variant_names,
+        result.change_vectors,
+        result.probe_domains,
+        result.avg_tokens_per_probe,
+    )
+    if not pdn:
+        return
+    result.magnitudes_per_domain_normalized = pdn
+    result.share_per_domain = _compute_share_per_domain(result)
+    result.magnitudes_normalized = _compute_overall_normalized_from_pdn(pdn)
+    extra = (
+        " v4 load support will be removed in v0.4.0."
+        if from_schema_version == "4" else ""
+    )
+    warnings.warn(
+        f"loaded GeoResult (schema v{from_schema_version}) was saved before "
+        "the v0.3.2 share_per_domain / overall-normalized formula correction. "
+        "Recomputed magnitudes_per_domain_normalized + share_per_domain + "
+        "magnitudes_normalized using per-domain per-token formulas — "
+        "long-context-heavy probe sets see substantially different shares "
+        "(this is the corrected behavior, matching v6 §13). "
+        f"Re-save with result.save(path) to upgrade the on-disk file.{extra}",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 @to_json_dict.register(FullReport)

@@ -14,7 +14,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from lmdiff.geometry import GeoResult, _compute_share_per_domain
+from lmdiff.geometry import (
+    GeoResult,
+    _compute_overall_normalized_from_pdn,
+    _compute_per_domain_normalized,
+    _compute_share_per_domain,
+)
 from lmdiff.report import json_report as json_mod
 from lmdiff.report.json_report import (
     SCHEMA_VERSION,
@@ -31,6 +36,12 @@ def _make_geo() -> GeoResult:
         "yarn": [3.0, 4.0, 0.0, 0.0],
         "long": [0.0, 0.0, 6.0, 8.0],
     }
+    probe_domains = ("a", "a", "b", "b")
+    avg_tokens = tuple([8.0] * n)
+    pdn = _compute_per_domain_normalized(
+        list(cv), cv, probe_domains, avg_tokens,
+    )
+    mags_norm = _compute_overall_normalized_from_pdn(pdn)
     geo = GeoResult(
         base_name="base-mock",
         variant_names=list(cv),
@@ -43,9 +54,10 @@ def _make_geo() -> GeoResult:
         change_vectors=cv,
         per_probe={v: {f"p{i}": cv[v][i] for i in range(n)} for v in cv},
         metadata={"max_new_tokens": 16, "n_skipped": 0},
-        probe_domains=("a", "a", "b", "b"),
-        avg_tokens_per_probe=tuple([8.0] * n),
-        magnitudes_normalized={v: float(np.linalg.norm(cv[v]) / 2.0) for v in cv},
+        probe_domains=probe_domains,
+        avg_tokens_per_probe=avg_tokens,
+        magnitudes_normalized=mags_norm,
+        magnitudes_per_domain_normalized=pdn,
     )
     geo.share_per_domain = _compute_share_per_domain(geo)
     return geo
