@@ -15,12 +15,12 @@ A **Configuration** is `model + context + decoding + adapter + agent scaffold`, 
 ## Install
 
 ```bash
-pip install lmdiff-kit
+pip install lmdiff-kit==0.3.2
 
 # With lm-eval-harness task loader (hellaswag, arc, gsm8k, mmlu, ...)
 pip install "lmdiff-kit[lm-eval]"
 
-# With matplotlib radar plots
+# With matplotlib figures + radar plots
 pip install "lmdiff-kit[viz]"
 
 # Both
@@ -39,161 +39,150 @@ pip install -e .
 
 `cu130` is for RTX 5090 / Blackwell. Pick the CUDA version that matches your GPU.
 
-## Command line
+## Quick start
+
+### Python
+
+```python
+import lmdiff
+
+result = lmdiff.compare("gpt2", "distilgpt2")
+
+result.print()                    # 5-layer ANSI report in the terminal
+result.figures(out_dir="figs/")   # 3 application-tier PNGs
+result.to_html("report.html")     # self-contained HTML (base64-embedded figures)
+result.to_markdown("report.md")   # GitHub-flavored markdown
+result.save("result.json")        # round-trippable JSON, schema v5
+```
+
+`compare()` is pairwise. For one-base / many-variant studies use `family()`:
+
+```python
+from lmdiff import Config, DecodeSpec
+
+result = lmdiff.family(
+    base="meta-llama/Llama-2-7b-hf",
+    variants={
+        "yarn":          "NousResearch/Yarn-Llama-2-7b-128k",
+        "code":          "codellama/CodeLlama-7b-hf",
+        "system_prompt": Config(
+            model="meta-llama/Llama-2-7b-hf",
+            system_prompt="You are concise.",
+        ),
+        "temp_1.5": Config(
+            model="meta-llama/Llama-2-7b-hf",
+            decode=DecodeSpec(strategy="sample", temperature=1.5),
+        ),
+    },
+    probes="lm_eval:hellaswag+arc_challenge+gsm8k+mmlu_college_computer_science+longbench_2wikimqa",
+    n_probes=100,           # per-task on multi-task lm_eval strings → 5×100 = 500 probes
+    progress=True,          # rich-based per-probe bars + early CPU-spillover warnings
+)
+```
+
+### Command line
 
 ```bash
-# Metric-level comparison (BD, token entropy, token KL)
+# Pairwise metric comparison
 lmdiff compare gpt2 distilgpt2 --probes v01
 
-# Same, but JSON output to file
-lmdiff compare gpt2 distilgpt2 --probes v01 --json --output result.json
+# Family experiment with figures + reports
+lmdiff family-experiment \
+    --base meta-llama/Llama-2-7b-hf \
+    --variant yarn=NousResearch/Yarn-Llama-2-7b-128k \
+    --variant code=codellama/CodeLlama-7b-hf \
+    --tasks hellaswag,arc_challenge,gsm8k,mmlu_college_computer_science,longbench_2wikimqa \
+    --task-max-new-tokens gsm8k=256,longbench_2wikimqa=128 \
+    --output-dir runs/llama2-family
 
-# Per-domain capability radar (accuracy + BD per domain)
-lmdiff radar gpt2 distilgpt2 --probes v01
-
-# Single-model task evaluation
-lmdiff run-task gpt2 --probes v01 --evaluator contains_answer
+# Re-render the application-tier figure suite from a saved GeoResult
+lmdiff plot-geometry runs/llama2-family/family_geometry.json \
+    --output-dir runs/llama2-family/figs
 
 # List available metrics
 lmdiff list-metrics
 ```
 
-### Quick start: family experiment
+`--variant` is repeatable. `--task-max-new-tokens` lets generative tasks (gsm8k, longbench) emit enough tokens to score correctly — without it MCQ-default 16 tokens silently clamps generative accuracy to 0.0.
 
-End-to-end ChangeGeometry + per-task accuracy + radar PNGs over an
-lm-eval task mix (requires `pip install "lmdiff-kit[lm-eval,viz]"`):
+> **Migrating from v0.2.x?** `lmdiff.ModelDiff` and `lmdiff.config.Config` still work but emit `DeprecationWarning` and will be removed in v0.4.0. See [`docs/migration/v02-to-v03.md`](docs/migration/v02-to-v03.md) for the field-by-field mapping.
 
-```bash
-lmdiff family-experiment \
-    --base meta-llama/Llama-2-7b-hf \
-    --variant yarn=NousResearch/Yarn-Llama-2-7b-128k \
-    --variant code=codellama/CodeLlama-7b-hf \
-    --tasks hellaswag,arc_challenge,gsm8k \
-    --task-max-new-tokens gsm8k=256,longbench_2wikimqa=128 \
-    --output-dir runs/llama2-family
+## Showcase: configuration is the unit
 
-# Render the 7-figure paper-grade set from a GeoResult JSON
-lmdiff plot-geometry runs/llama2-family/family_geometry_lm_eval_georesult.json \
-    --output-dir runs/llama2-family/figures \
-    --variant-order yarn,long,code,math
-```
+Compare seven Llama-2-7B variants — five weight-modified, two **inference-time-only** — on the same axes:
 
-`--variant` is repeatable; defaults to the 5-task mix used in the
-Llama-2 example below when `--tasks` is omitted. `plot-geometry` produces
-7 numbered PNGs by default — cosine heatmaps (raw + selective), per-task
-normalized magnitude, **specialization z-score (the paper main figure)**,
-PCA scatter (raw + normalized), and a raw-vs-normalized bar comparison.
-Use `--figures specialization,cosine_selective` to render a subset.
+![drift / share dual heatmap](docs/assets/showcase_drift_share.png)
 
-Both subcommands wrap `lmdiff.experiments.family.run_family_experiment`
-and `lmdiff.viz.plot_family_figures`, also callable directly from Python.
+The figure renders two views per (variant, domain) cell. **Left**: per-domain per-token drift magnitude — comparable across domains regardless of probe length. **Right**: relative share of each variant's behavioral budget across domains, rows summing to 100 %. Numbers come from a `family()` run over 5 × 100 lm-eval probes (hellaswag, arc_challenge, gsm8k, mmlu_college_computer_science, longbench_2wikimqa).
 
-> **Note on accuracy clamping (v0.2.2 artifact, fixed in v0.2.3):**
-> generative tasks like `gsm8k` (chain-of-thought) and `longbench_2wikimqa`
-> need 128–256 tokens of generation, not the MCQ default of 16. Pass
-> `--task-max-new-tokens gsm8k=256,longbench_2wikimqa=128` (or rely on
-> `TASK_MAX_NEW_TOKENS` defaults) or accuracy will silently clamp to 0.0.
-> See `LESSONS.md` L-024.
+| Variant | Type of change | Biggest move on | Share |
+|---|---|---|---|
+| `yarn` | long-context fine-tune | commonsense | 51 % |
+| `long` | long-context fine-tune | reasoning | 66 % |
+| `code` | code fine-tune | code | 32 % |
+| `math` | math fine-tune | math | 35 % |
+| `chat` | RLHF | reasoning | 30 % |
+| `system_prompt` | **pure prompt change** | commonsense | 60 % |
+| `temp_1.5` | **pure decoding change** | reasoning | 34 % |
 
-## Python API
+What the same plot tells you, on the same axes:
 
-```python
-import lmdiff
-from lmdiff import Config, DecodeSpec
-from lmdiff.report.terminal import print_geometry
-
-# Pairwise comparison (v0.3.0)
-result = lmdiff.compare(
-    "gpt2",            # str → Config(model="gpt2")
-    "distilgpt2",
-    probes="v01",      # bundled 90-probe set; pass a ProbeSet for custom
-    n_probes=90,
-    max_new_tokens=16,
-)
-print_geometry(result)
-
-# One-vs-N family comparison
-family = lmdiff.family(
-    Config(model="meta-llama/Llama-2-7b-hf"),
-    {
-        "yarn": "NousResearch/Yarn-Llama-2-7b-128k",
-        "sampled": Config(
-            model="meta-llama/Llama-2-7b-hf",
-            decode=DecodeSpec(strategy="sample", temperature=0.7),
-        ),
-    },
-    probes="v01",
-    n_probes=100,
-)
-```
-
-> **Migrating from v0.2.x?** `lmdiff.ModelDiff` and `lmdiff.config.Config`
-> still work but emit `DeprecationWarning` and will be removed in v0.4.0.
-> See [`docs/migration/v02-to-v03.md`](docs/migration/v02-to-v03.md) for
-> the mapping table.
+- **`system_prompt`** — same weights, no fine-tuning, just `system_prompt="You are concise."` — concentrates 60 % of its behavioral budget on commonsense. That's larger than `chat`'s biggest move (30 % on reasoning), without changing a single weight.
+- **`temp_1.5`** — same weights, same prompt, only the decoding temperature changes — still has a measurable signature concentrated on reasoning (34 %). A "pure sampling effect" is not behaviorally invisible.
+- **Weight modifications** (`yarn`, `long`, `code`, `math`, `chat`) and **non-weight modifications** (`system_prompt`, `temp_1.5`) appear in the same plot, comparable on the same axes. This is what "configuration is the unit" means in practice.
 
 ## Metrics: what each one means
 
-lmdiff reports several metrics at three levels. The rule of thumb:
+Three levels, three different questions:
 
-- **Output-level** metrics (`BD`, `KL`, `ΔEntropy`) answer: *how different is variant A from base on a single probe set?*
-- **Capability-level** metrics (`CapabilityRadar`) answer: *which skills improved or degraded?*
-- **Geometry-level** metrics (`ChangeGeometry`) answer: *do two or more variants drift from base in the same direction, and on which domains?*
+- **Geometry-level** (`ChangeGeometry`): *do variants drift from base in the same direction, and on which domains?* Cross-variant.
+- **Output-level** (`BehavioralDistance`, `TokenKL`, `ΔEntropy`): *how different is variant A from base on a single probe set?* Pairwise.
+- **Capability-level** (`CapabilityRadar`): *which skills improved or degraded?* Per-domain accuracy + BD.
 
-### Output-level metrics (pairwise: base vs one variant)
+### Geometry-level: `ChangeGeometry`
+
+For each variant *v*, the **change vector** **δ_v** has one entry per probe — how much more natural the variant's preferred continuation is to itself than to base. Geometry metrics compare these vectors across variants and domains.
+
+| Field | Range | What it answers |
+|---|---|---|
+| `magnitudes_per_domain_normalized[v][d]` | ≥ 0 | Per-token RMS drift of variant *v* on domain *d*: `sqrt( Σ_{i∈d} δ_v[i]² / Σ_{i∈d} T[i] )`. Comparable across domains regardless of how many probes each domain has or how long their prompts are. |
+| `share_per_domain[v][d]` | [0, 1], rows sum to 1 | Relative per-token energy of variant *v* across domains: `pdn[v][d]² / Σ_d' pdn[v][d']²`. The "where did variant *v* act biggest" view shown in the right pane of the showcase figure. |
+| `magnitudes_normalized[v]` | ≥ 0 | Per-domain RMS of `pdn[v][·]`. Each domain weighted equally, so a single long-prompt domain doesn't dominate. |
+| `cosine_matrix[v][w]` | [−1, +1] | Do variants *v* and *w* push base in the same probe-by-probe direction? +1 = perfect agreement, 0 = independent, −1 = opposed. |
+| `selective_cosine_matrix[v][w]` | [−1, +1] | Same as cosine, after subtracting each variant's mean δ. Strips out uniform-offset agreement; keeps probe-specific direction. If raw cosine is high but selective is low, agreement was offset-driven. |
+| `magnitudes[v]` | ≥ 0 | Raw L2 norm `‖δ_v‖`. Length-weighted (a long-prompt domain inflates this). Use `magnitudes_normalized` for cross-run comparisons; raw is reported for completeness. |
+
+**Why per-token per-domain normalization matters.** In a heterogeneous probe mix (short MCQ ~30 tokens + long extractive QA ~9000 tokens), raw `‖δ‖²` is dominated by the longest probes. Per-token normalization strips length bias so specialization signatures become visible.
+
+**Why the two cosines.** Raw cosine tells you whether variants agree on probe-level direction at all. Selective cosine separates "they have the same offset" from "they prefer the same probes." If `yarn` and `long` both have raw cosine 0.95 with `code`, but selective is 0.94 vs 0.85, then `yarn-code` share probe-specific preferences while `long-code` agreement was more offset-driven.
+
+```python
+import lmdiff
+result = lmdiff.family(
+    base="meta-llama/Llama-2-7b-hf",
+    variants={
+        "yarn": "NousResearch/Yarn-Llama-2-7b-128k",
+        "code": "codellama/CodeLlama-7b-hf",
+    },
+    probes="lm_eval:hellaswag+arc_challenge",
+    n_probes=100,
+)
+result.share_per_domain["yarn"]    # → {'commonsense': 0.51, 'reasoning': 0.49}
+result.cosine_matrix["yarn"]["code"]
+result.figures(out_dir="figs/")    # drift_share_dual + direction_agreement + change_size_bars
+```
+
+### Output-level: pairwise BD / KL / ΔEntropy
 
 | Metric | Units | What it measures |
 |---|---|---|
 | **BehavioralDistance (BD)** | nats or bits-per-byte | How surprised each model is by the other's output, symmetrically. `BD = 0` means behaviorally identical; `BD > 1` means one model finds the other's text roughly as surprising as a different language. BPB-normalized when tokenizers differ. |
 | **TokenKL** | nats | Symmetric KL divergence over the full next-token vocabulary, averaged over positions. `KL = 0` means the models agree on every token's distribution. Requires matching tokenizers. |
-| **ΔEntropy** | nats | Mean per-token entropy of variant minus base. Positive = variant is more uncertain (often: more creative, or less confident). Negative = variant is more confident (often: RLHF'd, distilled, or narrow fine-tune). |
+| **ΔEntropy** | nats | Mean per-token entropy of variant minus base. Positive = variant more uncertain (often: more creative, or less confident). Negative = variant more confident (often: RLHF'd, distilled, or narrow fine-tune). |
 
-**Reading them together:** `BD` high + `KL` zero means behavior differs but weights don't (e.g. temperature change). `BD` high + `KL` high + `ΔEntropy` ≈ 0 means weights shifted but confidence didn't (e.g. scale-up). `BD` high + `KL` high + `ΔEntropy` large means the model's whole confidence profile changed (e.g. RLHF).
+**Reading them together.** `BD` high + `KL` zero means behavior differs but weights don't (e.g. temperature change). `BD` high + `KL` high + `ΔEntropy` ≈ 0 means weights shifted but confidence didn't (e.g. scale-up). `BD` high + `KL` high + `ΔEntropy` large means the whole confidence profile changed (e.g. RLHF).
 
-### Capability-level: CapabilityRadar
-
-Breaks BD and accuracy down by domain (math, code, commonsense, ...). Surfaces "variant is better overall but worse on math" patterns that a single BD scalar hides.
-
-### Geometry-level: ChangeGeometry (multi-variant)
-
-For each variant *v*, the **change vector** **δ_v** has one entry per probe, measuring how much the variant's preferred continuation is more natural to itself than to base. Geometry metrics compare these vectors across variants.
-
-| Metric | Range | What it answers |
-|---|---|---|
-| **Magnitude** `‖δ_v‖` | ≥ 0 | How much variant *v* deviates from base overall. Largest magnitude = most globally changed variant. |
-| **Per-task normalized magnitude** `‖δ_{v,d}‖ / √(n_d · T̄_d)` | ≥ 0 | How much of that deviation lives on domain *d*, after correcting for the fact that long-context probes accumulate larger raw `‖δ‖` even when the underlying per-token behavior is stable. |
-| **Specialization z-score** `z_{v,d}` | ~[−2.5, +2.5] | Relative to this variant's *own* row mean, which domain is its signature? `z ≥ +1` = this variant is notably more active on this domain than its average across domains. Recovers "what was this variant trained for." |
-| **Cosine similarity** `cos(δ_u, δ_v)` | [−1, +1] | Do variants *u* and *v* push base in the same probe-by-probe direction? `+1` = perfect agreement, `0` = independent, `−1` = opposed. |
-| **Selective cosine / Pearson r** | [−1, +1] | Same, after subtracting each variant's mean δ. Strips out any uniform "variant is X nats harder on every probe" offset and keeps only probe-specific agreement. If raw cosine is high but selective is low, variants agreed because of a shared offset, not because they favor the same probes. |
-
-**Why per-task normalization matters.** In a heterogeneous probe mix (short MCQ + long extractive QA), raw `‖δ‖²` is dominated by the longest probes: in our 4-variant Llama-2 experiment, longbench contributed **88–99%** of each variant's raw `‖δ‖²`. Per-task normalization makes magnitudes comparable across domains so that specialization signatures become visible.
-
-**Why specialization z-score matters.** Per-domain magnitudes already remove length bias, but variants still differ in *overall* activity level. A globally-active variant ranks highest on every domain; to see "which domain is this variant's peak," subtract each variant's own row mean. That's the z-score. Direct absolute comparison answers *"in domain d, who's most active?"*; z-score answers *"for variant v, which domain is its signature?"* — different questions, both tables produced.
-
-**Why the two cosines.** Raw cosine tells you whether variants agree on probe-level direction at all. Selective cosine separates "they have the same offset" from "they prefer the same probes." If `yarn` and `long` both have raw cosine 0.95 with `code`, but `yarn-code` selective is 0.94 and `long-code` is 0.85, then `yarn` and `code` share probe-specific preferences while `long-code` agreement was more offset-driven.
-
-```python
-from lmdiff import ChangeGeometry, Config, ProbeSet
-geo = ChangeGeometry(
-    base=Config(model="meta-llama/Llama-2-7b-hf"),
-    variants={
-        "yarn": Config(model="NousResearch/Yarn-Llama-2-7b-128k", name="yarn"),
-        "code": Config(model="codellama/CodeLlama-7b-hf", name="code"),
-    },
-    prompts=probes,
-).analyze(max_new_tokens=16)
-```
-
-**lm-eval-harness tasks** (`[lm-eval]` extra) load directly into ProbeSets:
-
-```python
-from lmdiff.probes.adapters import from_lm_eval
-probes = from_lm_eval("hellaswag", limit=100, seed=42)  # or arc_challenge, gsm8k, ...
-```
-
-## Example: Llama-2-7B family comparison
-
-One base model, seven variants, 90 completion-style probes across math/knowledge/code:
+#### Llama-2-7B pairwise table (single 90-probe set, output-level)
 
 | Variant | Modification | BD | KL | ΔEntropy | Reading |
 |---|---|---|---|---|---|
@@ -205,54 +194,65 @@ One base model, seven variants, 90 completion-style probes across math/knowledge
 | 7B + system prompt | Prefix context | 1.09 | 1.62 | −0.11 | Largest KL of the set. A single prompt reshapes next-token distributions more than 13B scaling does. |
 | Llama-2-7B-chat | RLHF | 1.15 | 1.14 | **−0.41** | Most confident (lowest entropy) and most behaviorally distant — RLHF sharpens the distribution. |
 
-BD = Behavioral Distance (nats). KL = symmetric TokenKL. ΔEntropy = entropy(variant) − entropy(base). CodeLlama has a different vocabulary; KL/Entropy require matching tokenizers.
+This pairwise table and the multi-domain showcase above are different views of the same kind of question. Pairwise output-level metrics on a single probe set tell you *how much* one variant differs from base in aggregate. Geometry-level metrics on a multi-domain family tell you *where* and whether different variants share a direction.
 
-**What this table surfaces that accuracy benchmarks don't:**
+### Capability-level: `CapabilityRadar`
 
-- A system prompt moves behavior more (KL 1.62) than adding 6B parameters does (KL 0.17).
-- Temperature 1.5 has `KL = 0` — it changes what gets sampled, not what the model believes.
-- YaRN and 32K both extend context, but differently: YaRN shifts without adding uncertainty (ΔEntropy ≈ 0), while 32K's continued pretraining loosens the distribution (ΔEntropy = +0.41).
-- RLHF is the only modification here with **negative** ΔEntropy — it makes the model more certain, not less.
+Breaks BD and accuracy down by domain (math, code, commonsense, ...). Surfaces "variant is better overall but worse on math" patterns that a single BD scalar hides.
 
 ## Configuration abstraction
 
 A `Config` is more than a model name:
 
 ```python
+from lmdiff import Config, AdapterSpec, DecodeSpec
+
 Config(
-    model="gpt2",
+    model="meta-llama/Llama-2-7b-hf",
     system_prompt="You are concise.",
-    context=[{"role": "user", "content": "..."}],
-    decode={"strategy": "sample", "temperature": 0.7},
-    name="gpt2-concise",
+    decode=DecodeSpec(strategy="sample", temperature=0.7),
+    adapter=AdapterSpec(type="lora", path="path/to/lora", rank=16),
+    name="my-variant",
 )
 ```
 
-Same weights + different context/decoding = different config = measurable behavioral difference.
+`family()` and `compare()` automatically share one loaded engine across configs that differ only in **runtime-only** fields (`system_prompt`, `context`, `icl_examples`, `decode`, `name`, …) — so a sweep over four system prompts on the same model loads the weights **once**, not five times. Variants with weight-affecting modifications (different `model`, `adapter`, `quantization`, `pruning`) get their own engine, and variant engines are released aggressively after each iteration to keep peak VRAM at *base + 1 active variant*. See `Config.is_runtime_only_modification_of` for the predicate, `lmdiff/_config.py::RUNTIME_ONLY_FIELDS` for the audit.
 
 ## JSON output
 
 All results serialize to deterministic JSON with `schema_version` for forward compatibility:
 
 ```python
-from lmdiff.report.json_report import to_json, write_json
-write_json(report, "output.json")
+result.save("output.json")              # writes schema v5
+loaded = lmdiff.load_result("output.json")  # round-trips
 ```
 
-## Status
+Loading a JSON saved before v0.3.2 auto-recomputes `share_per_domain` + `magnitudes_normalized` + `magnitudes_per_domain_normalized` using the corrected per-domain per-token formulas (matching the v6 §13 calibration), and emits one `DeprecationWarning`. Re-save with `result.save(path)` to upgrade the file in place. Raw `magnitudes` (length-weighted L2 norm) is unchanged for users who want that view.
 
-Phase 2 shipped — published to PyPI as `lmdiff-kit` v0.2.3. Now working: everything from v0.1.x plus **ChangeGeometry** (N-variant δ-vector geometry with PCA / domain heatmap / complementarity / hierarchical clustering, plus per-token normalized magnitudes and **specialization z-score fingerprints** for recovering training-objective signatures), **lm-eval-harness adapter** (30+ task registry), `loglikelihood_accuracy` (acc_norm-style MCQ scoring), `F1` and `Gsm8kNumberMatch` evaluators, the `lmdiff family-experiment` / `lmdiff plot-geometry` CLIs (and matching `lmdiff.experiments.family` library API), per-task generation-length overrides via `TASK_MAX_NEW_TOKENS`, and a paper-grade 7-figure suite under the `[viz]` extra (cosine heatmaps, normalized magnitude, specialization, PCA scatter, normalization effect).
+## What v0.3.2 ships
 
-Not yet: representation / trajectory / causal metrics, HTML / LaTeX reports, HumanEval-style executional tasks (sandboxing deferred — δ-magnitude-only usage is already available). See `CLAUDE.md` for the full roadmap.
+- **`compare()` / `family()`** as the public API, replacing v0.2.x `ModelDiff`.
+- **`Config`** as the unit of comparison: model + adapter + quantization + pruning + system_prompt + context + ICL + decode + steering, validated at construction, frozen, hashable, JSON-serializable.
+- **Engine layer** — `Engine` Protocol with `HFEngine` (Hugging Face Transformers, default), `MinimalEngine` (copy-paste template for custom backends), `MockEngine` (test fixture). Capability registry forward-compatible with v0.7+ representation metrics.
+- **5-channel reporting** — every result supports `.print()` (5-layer ANSI terminal), `.figures(out_dir)` (3 application-tier PNGs), `.to_html()` (self-contained ~1 MB HTML, theme-toggleable, base64 figures), `.to_markdown()` (GitHub-flavored), `.save()` (schema v5 JSON).
+- **3 application-tier figures** — `drift_share_dual` (per-domain drift + share heatmaps with corrected per-token normalization, signature visual), `direction_agreement` (raw + selective cosine matrices, scales for N variants), `change_size_bars` (raw vs per-token-normalized magnitude bars).
+- **8 finding types frozen at v0.3.0** — `MostLikeBaseFinding`, `BiggestMoveFinding`, `DirectionClusterFinding`, `DirectionOutlierFinding`, `SpecializationPeakFinding`, `AccuracyArtifactFinding`, `TokenizerMismatchFinding`, `BaseAccuracyMissingFinding`. Single source of truth across renderers.
+- **lm-eval-harness multi-task probe loader** — `probes="lm_eval:hellaswag+arc_challenge+gsm8k+..."` with **per-task `n_probes`** (5-task spec at `n_probes=100` loads 500 probes — 100 per task), task → domain mapping (commonsense / reasoning / math / code / long-context / …) for downstream domain-aware figures and reports.
+- **Engine reuse** — multiple Configs that share `model` and differ only in runtime-only fields share a single loaded engine. Combined with **look-ahead-by-one variant release**, peak VRAM in a 7-variant Llama-2 family stays at base + 1 active variant instead of accumulating all 7.
+- **Per-token per-domain normalization** — `share_per_domain` and overall `magnitudes_normalized` use the corrected formulas, fixing a v0.3.0–v0.3.1 length-bias bug where long-context domains dominated 90–99 % of every variant's share. Old JSON auto-recomputes on load.
+- **Progress visibility** — `progress=True` (or `LMDIFF_PROGRESS=1`) renders rich-based per-probe progress bars in `engine.generate` / `engine.score`, and `[lmdiff WARNING] hf_device_map sharded across devices: cpu=N, cuda:0=M` fires at variant load time when accelerate spills layers to CPU under VRAM pressure.
+
+Planned for v0.4.0+ (not in v0.3.2): representation metrics (cosine of hidden states, CKA, effective rank), trajectory metrics (logit lens, tuned lens), causal metrics (activation patching, model stitching, steering vectors), HumanEval-style executional tasks, the parked HFEngine cutover for the geometry path. See `CLAUDE.md` for the full roadmap and architecture rules.
 
 ## Development
 
 ```bash
-pytest                                    # fast tests (mocks only)
-pytest -m slow -o "addopts="              # includes gpt2/distilgpt2 E2E
+pytest                          # fast tests (mocks only) — ~860 tests
+pytest -m slow                  # adds gpt2 / distilgpt2 / tiny-gpt2 E2E
+pytest tests/integration        # opt-in cross-engine equivalence (requires torch + transformers)
 ```
 
-Architecture rules, implementation order, and coding conventions live in `CLAUDE.md`.
+Architecture rules (single-file enforcement of "engine.py is the only module that touches transformers", zero-coupling between metrics, etc.), implementation order, and coding conventions live in `CLAUDE.md`.
 
 ## License
 
