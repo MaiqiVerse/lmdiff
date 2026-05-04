@@ -28,6 +28,13 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-020: lm-eval tasks can sys.exit() instead of raising
 - L-021: tests of optional-dep features need skipif, or CI breaks silently
 - L-022: per-task ‖δ‖ is dominated by prompt length; normalize per token to compare across heterogeneous task mixes
+- L-023: per-token normalized δ magnitude, z-scored within each variant, recovers training-objective specialization signatures
+- L-024: lm-eval default `max_new_tokens` must be set per task type, or generative tasks clamp to artifactual zeros
+- L-025: new Engine implementations require a cross-engine equivalence test before becoming the default backend
+- L-026: schema specifications must include the computation formula for derived fields, not just field names
+- L-027: pre-flight code audit consistently catches more issues than spec-author memory
+- L-028: hotfix release scope should stay minimal even when a broader fix is architecturally cleaner
+- L-029: for multi-variant runs of large models, immediate engine release beats caching even at the cost of reload time
 
 ---
 
@@ -679,3 +686,112 @@ At `max_new_tokens=16`, every variant (including base) produced 0.0 accuracy on 
 **Diagnostic signature:** all variants get accuracy ≈ 0 on the same generative task while MCQ accuracies look reasonable; the generated outputs visibly stop mid-sentence in `result.details` per-probe rows.
 
 **Related code:** `lmdiff/experiments/family.py::TASK_MAX_NEW_TOKENS`, `resolve_max_new_tokens(task, default, overrides)`, CLI flag `--task-max-new-tokens`.
+
+## L-025: new Engine implementations require a cross-engine equivalence test before becoming the default backend
+
+**Date:** 2026-04-26
+**Phase:** 3 (v0.3.1 backend cutover planning)
+**Severity:** Would have silently changed numeric outputs of every `compare()` / `family()` user.
+
+**Symptom:** PR #2 (commit 1.3) shipped `HFEngine` with self-consistency tests + a smoke test on a real model. Six weeks later, v0.3.1 attempted to cut the geometry path over from the v0.2.x `InferenceEngine` to `HFEngine`, expecting byte-identical scoring. The cutover would have changed CE values for every Llama-family scoring call.
+
+**Root cause:** `HFEngine.score()` and `InferenceEngine.score()` were not equivalent on the same input. `HFEngine` joint-tokenized `prompt + continuation`, while `InferenceEngine` (matching the lm-eval-harness convention) used split tokenization: `tokenizer("", add_special_tokens=True) + tokenize(prompt, add_special_tokens=False) + tokenize(continuation, add_special_tokens=False)`. For SentencePiece tokenizers (Llama family), the two paths merge across the prompt-continuation boundary differently, producing different per-token logprob breakdowns. lmdiff's calibration baseline depends on the lm-eval convention.
+
+PR #2's tests verified `HFEngine` was self-consistent — same input always yields same output — but never checked it against the existing `InferenceEngine` baseline. Self-consistency is a within-engine property; semantic equivalence across engines is a separate property that requires explicit cross-test.
+
+**Rule:** Any new `Engine` implementation that may become the default backend (or replace one in the geometry / metric pipeline) must ship an integration test asserting byte-level equivalence to the existing default within float-math tolerance, on the same probe set used for calibration. Without this test, the implementation is acceptable as an *alternative* engine (user opts in) but cannot be promoted to default.
+
+This applies to all future backends — `vLLMEngine`, `APIEngine`, sharded-inference engines, etc.
+
+**Where applied:** v0.3.1 PR #7 added `tests/integration/test_engine_equivalence.py` (slow-marked, runs on `hf-internal-testing/tiny-random-gpt2`) and shipped the lm-eval-convention fix in `HFEngine.score()` *before* any cutover attempt. The full backend cutover for the geometry path is now parked for v0.4.0 commit 4.0, gated on this test passing.
+
+## L-026: schema specifications must include the computation formula for derived fields, not just field names
+
+**Date:** 2026-04-29
+**Phase:** 3 (v0.3.2 share_per_domain bug fix)
+**Severity:** Would have shipped — and did ship in v0.3.0 / v0.3.1 / pre-fix v0.3.2 — incorrect per-domain shares on every multi-domain `family()` run.
+
+**Symptom:** PR #4 (commit 1.4) added `share_per_domain` to `GeoResult` schema v5. The v6 plan §4.5 described the field as "share of total drift, rows sum to 1.0." CC implemented it as `‖δ_{v|d}‖² / Σ_d' ‖δ_{v|d'}‖²` — semantically reads as "share of total" and rows do sum to 1.0. The implementation passed schema tests, round-trip tests, renderer tests, and shipped through three releases.
+
+The bug: on the user's 5-domain Llama-2 demo (`hellaswag` / `arc_challenge` / `gsm8k` / `mmlu_college_computer_science` / `longbench_2wikimqa`), `longbench_2wikimqa` (~9000 tokens/probe vs ~30 for the MCQ tasks) dominated **89–99 %** of every variant's share regardless of variant character. The corrected v6 §13 formula uses per-domain per-token RMS:
+
+```
+pdn[v][d] = sqrt( Σ_{i∈d} δ[v][i]² / Σ_{i∈d} T[i] )
+share_per_domain[v][d] = pdn[v][d]² / Σ_d' pdn[v][d']²
+```
+
+On the same data, the corrected `share[long][reasoning]` is 66 % (vs 8 % under the raw formula).
+
+**Root cause:** The spec specified the field's *semantic intent* ("share of total, rows sum to 1.0") but not the *computation*. CC chose the most obvious implementation. Both implementations satisfy the stated semantics; only one matches the v6 §13 calibration. The mismatch isn't visible at field-name or schema level — only at numeric-output level on heterogeneous probe sets.
+
+**Rule:** Schema specifications for derived fields must include the exact computation formula, not just field names and prose semantics. "X is the share of Y" is ambiguous on heterogeneous data; "X = pdn² / Σ pdn² where pdn = sqrt(Σδ²/ΣT)" is unambiguous. Same applies to any derived metric in future schema versions — magnitudes, normalized variants, projections, embeddings.
+
+**Where applied:** v6 plan §4.5 updated to include the corrected formulas. `lmdiff/_compute_per_domain_normalized` / `_compute_overall_normalized_from_pdn` / `_compute_share_per_domain` carry the formulas in docstrings. `tests/unit/test_normalization_formulas.py` locks in the computation against hand-engineered fixtures (including the v6 §13 mockup numbers `(long, reasoning) ≈ 66 %`, `(yarn, commonsense) ≈ 51 %`). Pre-v0.3.2 GeoResult JSONs auto-recompute on load — see `lmdiff/report/json_report.py::_ensure_per_domain_normalized_views`.
+
+## L-027: pre-flight code audit consistently catches more issues than spec-author memory
+
+**Date:** 2026-05-03 (Phase 1 retrospective, after PR #12)
+**Phase:** 3 (v0.3.0 → v0.3.2 cumulative)
+**Severity:** Process — affects spec quality, not runtime correctness directly.
+
+**Observation:** Across PR #1 through PR #12, the human spec-author repeatedly stated class names, field names, file paths, or function signatures from memory that didn't match current code:
+
+- "v0.2.x `ModelDiff` with `n_prompts` kwarg" — actual kwarg was `n_samples`.
+- "FamilyResult class" — class did not exist; only `FamilyExperimentResult`.
+- "`lmdiff.geometry/`" — single file, not a package.
+- "`_LAZY = dict[name, (module, attr) tuple]`" — actual implementation was `dict[name, "module.attr"]` string.
+- "`InferenceEngine.config` / `InferenceEngine.dtype` are kwargs" — actually positional / from `Config` field.
+- Multiple per-PR corrections of similar quality.
+
+In every case, CC's pre-flight code audit caught the divergence and surfaced the right structure before implementing. The PR shipped correctly.
+
+**Mechanism:** Spec authored from memory and intent rather than from reading current code. Code drifts faster than memory — past ~1 month of churn, relying on memory for class / field / file / signature specifics is unreliable.
+
+**Rule:** For PRs touching existing code (not pure greenfield), the spec should explicitly delegate structural specifics to a pre-flight audit step, not prescribe them. Spec-author refers to existing components generically ("the `Config` class has fields like `model`, `decode`, …"); CC reads current code and confirms or corrects in the audit. Examples in the spec should be illustrative, not prescriptive — "Config has *fields like* `{model, decode, adapter, …}`" not "Config has *fields* `{model: str, decode: DecodeSpec, adapter: AdapterSpec}`".
+
+This applies to spec-author behavior; the CC half is to *always* do the audit before implementing, even when the spec looks confident. From PR #5 onwards, instructions explicitly invited audit-and-decide rather than prescribing field names. Phase 4 commit 4.0 instruction makes pre-cutover audit a required first task.
+
+**Where applied:** Spec format guidance for v0.3.x and forward. The v0.3.x retrospective is the artifact.
+
+## L-028: hotfix release scope should stay minimal even when a broader fix is architecturally cleaner
+
+**Date:** 2026-04-26
+**Phase:** 3 (v0.3.1 release planning)
+**Severity:** Would have introduced silent numeric regression in a release whose explicit purpose was to *unblock* users.
+
+**Symptom:** A user reported `RuntimeError: Expected all tensors to be on the same device` during multi-7B-variant `family()` runs. Root cause was localized: `InferenceEngine.device` hardcoded to `"cuda"` while `device_map="auto"` had spilled the embedding layer to CPU under VRAM pressure, so `score()` placed input ids on cuda while the embedding weights lived on cpu.
+
+The fix needed in v0.3.1 was: anchor `self.device` to `model.get_input_embeddings().weight.device` after load. ~1 line + 1 test.
+
+**What I (the spec-author) initially wrote:** v0.3.1 instruction framed the bug as motivation to *also* cut the geometry path over from `InferenceEngine` to `HFEngine` — using the bug to consolidate technical debt the team had been wanting to address. Scope expanded from 1-line fix → ~400 LoC rewrite + new `_pipeline.py` + new calibration regression infrastructure.
+
+CC's audit caught that `HFEngine.score()` was not byte-equivalent to `InferenceEngine.score()` (see L-025), which would have silently changed numeric outputs of the very release whose job was to fix a runtime crash. The cutover was unsafe at hotfix scope.
+
+**Root cause:** Confusing "what is right architecturally" with "what should ship in this release." Hotfix purpose is to unblock users with minimal new risk, not to consolidate technical debt. The architectural fix benefits from its own design space (full PR review, calibration baseline, equivalence harness) which a hotfix release schedule doesn't allow for.
+
+**Rule:** When a bug surfaces architectural debt, fix the bug minimally in the hotfix; track the architectural fix as a separate planned commit in the next minor release. Don't expand hotfix scope to "do it right" — that risks regression at exactly the moment users need a working release. Keep the hotfix to a single, mechanically obvious change with a regression test pinning the bug.
+
+**Where applied:** v0.3.1 shipped as "device-anchor fix + `HFEngine.score` lm-eval-convention prep + cross-engine equivalence test" only. The full backend cutover for the geometry path was deferred to v0.4.0 commit 4.0. v0.3.1's CHANGELOG explicitly framed the prep work: "completes the prerequisites for backend cutover; cutover itself in v0.4.0."
+
+## L-029: for multi-variant runs of large models, immediate engine release beats caching even at the cost of reload time
+
+**Date:** 2026-04-28
+**Phase:** 3 (v0.3.2 OOM root cause analysis)
+**Severity:** ~3-4 orders of magnitude on the wrong trade — reload cost in seconds vs spillover cost in hours.
+
+**Symptom:** A 7-variant Llama-2 family (each variant ~14 GB at bf16) on a single 48 GB A6000. Initial implementation kept all variant engines resident through `analyze()` to allow potential reuse on later iterations. By variant 4–5, accelerate's `device_map="auto"` started spilling layers to CPU under VRAM pressure. Once layers spill, `score()` forward becomes ~100× slower (CPU↔GPU memory transfers per token). The user reported 8-hour CPU-bound runs at ~0 % GPU utilization that visually looked "stuck" but were technically progressing.
+
+**Quantification of the trade.** Caching variant engines saves ~2 sec per reload on subsequent use (disk → VRAM). Spilling to CPU costs hours per variant. The trade is asymmetric by ~3–4 orders of magnitude. In aggregate, on a 7-variant run:
+
+| Strategy | Peak engines | Total reloads | Wall-clock |
+|---|---|---|---|
+| Cache everything | 7 (accumulated) | 7 | OOM by variant 4–5 |
+| Cache + 1 active variant + look-ahead release | 2 (base + active) | 6–10 | finishes in expected time |
+
+**Mechanism:** Disk → VRAM weight load is a one-shot cost paid in linear time. CPU spillover is paid *per token of every subsequent forward pass*, with a constant factor that's enormous (~100×). Crossing the spillover threshold once tilts the cost calculation in favor of *immediate release*, even when the same engine is reloaded shortly after.
+
+**Rule:** For Engine implementations holding large models (≥7B at bf16, or anything that fills more than ~⅓ of available VRAM), the default policy is *aggressive immediate release*: hold an engine only as long as the next iteration step needs it. "Look-ahead by one" — release if the next variant doesn't reuse this engine, even if a later variant might. The ~2 sec reload cost is tolerable; the OOM / CPU-spillover cost is not.
+
+This is a *default*, not a universal. For small models, slow-disk environments, or scenarios where variant order is known to repeat the same anchor many times, caching pays off — but it should be opt-in, not default.
+
+**Where applied:** v0.3.2 PR #10 implements look-ahead-by-one release in `ChangeGeometry.analyze`. Peak active engines capped at 2 (base + 1 active variant) regardless of variant count. Engine reuse (sharing one engine across runtime-only Config differences) sits *on top of* the release rule — runtime-only siblings reuse the cached engine within the same iteration, but the cache itself is bounded by look-ahead release. PR #9's `device_map_summary()` warning surfaces the spillover failure mode at variant load time so the user can kill an OOM-bound run at minute one instead of hour eight.
