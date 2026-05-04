@@ -105,6 +105,18 @@ class MockEngine:
         same model agree."""
         return hashlib.sha256(self._config.model.encode("utf-8")).hexdigest()[:16]
 
+    # ── v0.4.0 commit 4.0 — Engine Protocol additions ─────────────────
+
+    def token_count(self, text: str) -> int:
+        """Mock: word-split tokenization (matches the synthetic logprobs
+        in ``score`` / ``generate``)."""
+        return max(len(text.split()), 1)
+
+    def tokenizers_equivalent_to(self, other: Any) -> bool:
+        """Default Protocol behaviour — compare ``tokenizer_id``. Two
+        MockEngines built from the same ``Config.model`` agree."""
+        return self.tokenizer_id == other.tokenizer_id
+
     # ── Required methods ──────────────────────────────────────────────
 
     def score(self, prompt: str, continuation: str) -> ScoreResult:

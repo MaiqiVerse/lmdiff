@@ -268,6 +268,32 @@ class Engine(Protocol):
         """Release model resources. Idempotent."""
         ...
 
+    def token_count(self, text: str) -> int:
+        """Number of tokens this engine's tokenizer would assign to ``text``.
+
+        Used by the family pipeline to compute per-probe token counts
+        for ``magnitudes_per_domain_normalized`` without exposing the
+        tokenizer object through the Protocol. Add-special-tokens off:
+        we count the raw tokens the text occupies, not BOS/EOS framing.
+        v0.4.0 (commit 4.0).
+        """
+        ...
+
+    def tokenizers_equivalent_to(self, other: "Engine") -> bool:
+        """True if this engine's tokenizer is substantively equivalent to
+        ``other``'s — i.e. comparing token-level outputs across the two
+        engines is meaningful without BPB normalization.
+
+        Default implementation compares ``tokenizer_id`` (the fast path,
+        suitable when both engines compute the same hash from vocab +
+        special tokens). Subclasses owning a tokenizer object should
+        override to additionally do a canary-string equivalence check
+        (handles slow/fast tokenizer L-011 case where vocab_size differs
+        but produces identical token ids on real text).
+        v0.4.0 (commit 4.0).
+        """
+        return self.tokenizer_id == other.tokenizer_id
+
     # Optional methods (gated by `capabilities`)
 
     def hidden_states(
@@ -387,6 +413,21 @@ class HFEngine:
 
         self._model = self._load_model(config)
         self._model.eval()
+
+        # v0.4.0: surface accelerate's silent CPU-spillover failure mode
+        # at the engine layer (was previously in ChangeGeometry.analyze
+        # for v0.3.2; the audit moved it down here to match abstraction
+        # layering — the engine knows about device_map, the pipeline
+        # doesn't need to introspect). Format identical to v0.3.2 so
+        # log-grep workflows on ``[lmdiff WARNING] hf_device_map sharded
+        # across devices: …`` keep working unchanged.
+        from lmdiff._progress import device_map_summary
+        warn = device_map_summary(self._model)
+        if warn:
+            print(
+                f"[lmdiff WARNING] {self._config.display_name}: {warn}",
+                flush=True,
+            )
 
         self._n_layers = self._model.config.num_hidden_layers
         self._hidden_dim = self._model.config.hidden_size
@@ -777,6 +818,39 @@ class HFEngine:
                 torch.cuda.empty_cache()
         except ImportError:
             pass
+
+    # ── v0.4.0 commit 4.0 — Engine Protocol additions ────────────────
+
+    def token_count(self, text: str) -> int:
+        """Tokens this engine's tokenizer would assign to ``text``.
+
+        Used by the family pipeline for per-probe token counts that
+        feed ``magnitudes_per_domain_normalized`` (schema v4 onward).
+        ``add_special_tokens=False`` so we count the raw tokens that
+        the text occupies, not BOS / EOS framing.
+        """
+        return len(self._tokenizer(text, add_special_tokens=False)["input_ids"])
+
+    def tokenizers_equivalent_to(self, other: "Engine") -> bool:
+        """True if this engine and ``other`` share substantively the
+        same tokenizer.
+
+        Fast path: ``tokenizer_id`` (Protocol-level hash) match. For two
+        HFEngines whose hashes disagree we additionally run the canary-
+        string check from ``lmdiff.tokenizer_utils.tokenizers_equivalent``
+        — that handles the slow/fast Llama tokenizer L-011 case where
+        ``vocab_size`` disagrees but real-text tokenization is identical.
+
+        For a non-HFEngine ``other``, we fall back to the Protocol's
+        default ``tokenizer_id`` comparison.
+        """
+        if self.tokenizer_id == other.tokenizer_id:
+            return True
+        other_tok = getattr(other, "_tokenizer", None)
+        if other_tok is None:
+            return False
+        from lmdiff.tokenizer_utils import tokenizers_equivalent
+        return tokenizers_equivalent(self._tokenizer, other_tok)
 
     def __del__(self) -> None:  # pragma: no cover - finalizer best-effort
         try:
