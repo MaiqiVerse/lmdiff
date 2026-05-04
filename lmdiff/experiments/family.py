@@ -374,7 +374,24 @@ def run_family_experiment(
     Returns:
         A ``FamilyExperimentResult`` with the GeoResult, per-task aggregates,
         accuracies, and (when written) output file paths + per-phase timings.
+
+    .. deprecated:: 0.4.0
+       ``run_family_experiment`` is deprecated and will be removed in
+       v0.5.0. Use :func:`lmdiff.compare` or :func:`lmdiff.family`
+       instead — they produce equivalent geometry output via the public
+       Engine Protocol path (verified byte-identical to v0.3.2 on the
+       calibration baseline).
     """
+    import warnings
+    warnings.warn(
+        "lmdiff.experiments.family.run_family_experiment is deprecated "
+        "since v0.4.0 and will be removed in v0.5.0. Use lmdiff.compare() "
+        "or lmdiff.family() instead — they produce equivalent geometry "
+        "output via the Engine Protocol path.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     task_names = [t for t in tasks if t]
     if not task_names:
         raise ValueError("tasks must be a non-empty sequence")

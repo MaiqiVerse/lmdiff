@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.0] - 2026-XX-XX
+
+### Changed
+- **Backend cutover**: ``lmdiff.compare()`` and ``lmdiff.family()`` now route through ``HFEngine`` (introduced in v0.3.0 PR #2) and the new ``lmdiff/_pipeline.py`` instead of the v0.2.x ``InferenceEngine`` / ``ChangeGeometry`` path. Completes the architectural migration that v0.3.0 started but did not finish. The two paths shared the same Llama-2 calibration baseline; the new path produces byte-identical numeric output to v0.3.2 (within 1e-6 per element) — verified against the 4-variant ``yarn`` / ``long`` / ``code`` / ``math`` × 5-task baseline at ``tests/fixtures/calibration_v032_baseline.json`` by ``tests/integration/test_calibration_regression.py`` (gpu-marked). API surface unchanged from v0.3.x; no migration steps required for users of ``compare()`` / ``family()``.
+- ``HFEngine.__init__`` now emits the ``[lmdiff WARNING] hf_device_map sharded across devices: …`` line (previously emitted by ``ChangeGeometry.analyze``). Matches abstraction layering — the engine knows about ``device_map``, the pipeline doesn't need to introspect. Format unchanged so existing v0.3.2 log-grep workflows keep working.
+
+### Added
+- ``lmdiff/_pipeline.py::run_family_pipeline`` — Engine-Protocol-only family pipeline. Owns the per-probe loop (``Engine.score(prompt, continuation)`` per probe), prompt assembly (system_prompt / context applied here, not via Engine kwargs), engine cache + look-ahead-by-one release. Private API; pipeline structure may evolve.
+- ``Engine.token_count(text) -> int`` — Protocol-level per-text token count. Replaces direct ``engine._tokenizer`` access from the geometry layer. Implementations: ``HFEngine`` uses ``self._tokenizer(text, add_special_tokens=False)``; ``MinimalEngine`` exposes ``_token_count_impl`` hook; ``MockEngine`` uses word-split count.
+- ``Engine.tokenizers_equivalent_to(other) -> bool`` — Protocol-level cross-engine tokenizer equivalence check. Default implementation compares ``tokenizer_id``; ``HFEngine`` overrides to additionally do the canary-string equivalence check from ``lmdiff.tokenizer_utils.tokenizers_equivalent`` for the slow/fast Llama tokenizer L-011 case.
+
+### Deprecated
+- ``lmdiff.experiments.family.run_family_experiment`` — emits ``DeprecationWarning`` on call. Use ``lmdiff.compare()`` / ``lmdiff.family()`` instead. Will be removed in v0.5.0. Internal v0.2.x ``InferenceEngine`` path is unchanged so external callers and the ``lmdiff family-experiment`` CLI subcommand keep producing identical numeric output.
+
+### Notes
+- ``lmdiff.engine.InferenceEngine`` and ``lmdiff.geometry.ChangeGeometry`` are NOT deprecated this release — both are still consumed internally by ``run_family_experiment`` and external scripts may import them. Removal is scheduled for v0.5.0 alongside ``run_family_experiment`` itself.
+- All existing v0.3.x GeoResult JSONs (schema 4 or 5) load and re-render correctly with v0.4.0; the v0.3.2 share / overall-normalized auto-recompute path is unchanged.
+- Tests: 874 passed on ``not slow and not gpu`` (was 861 in v0.3.2; +13 new pipeline unit tests). The calibration regression test runs only on GPU and is the hard contract for cutover safety.
+
 ## [0.3.2] - 2026-04-30
 
 ### Fixed
