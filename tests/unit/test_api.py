@@ -15,7 +15,7 @@ the tests here focus on the *new* behavior:
 from __future__ import annotations
 
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -155,16 +155,15 @@ class TestCompareWiring:
 
     def test_string_args_coerced_and_capabilities_checked(self):
         engine = MockEngine()
-        with patch("lmdiff.geometry.ChangeGeometry") as MockCG:
-            MockCG.return_value.analyze.return_value = "FAKE_GEORESULT"
+        with patch("lmdiff._pipeline.run_family_pipeline") as MockPipe:
+            MockPipe.return_value = MagicMock(metadata={})
             result = compare("gpt2", "distilgpt2", n_probes=5, engine=engine)
-        assert result == "FAKE_GEORESULT"
-        # ChangeGeometry called with v0.2.x configs whose .model match
-        kwargs = MockCG.call_args.kwargs
-        assert kwargs["base"].model == "gpt2"
-        # variants is {"variant": v02_cfg} when no name given
-        assert "variant" in kwargs["variants"]
-        assert kwargs["variants"]["variant"].model == "distilgpt2"
+        assert result is MockPipe.return_value
+        # Pipeline called with v0.3 configs whose .model match.
+        kwargs = MockPipe.call_args.kwargs
+        assert kwargs["base_config"].model == "gpt2"
+        assert "distilgpt2" in kwargs["variant_configs"]
+        assert kwargs["variant_configs"]["distilgpt2"].model == "distilgpt2"
 
     def test_capability_mismatch_raises_before_changegeometry_runs(self):
         engine = MockEngine(capabilities=frozenset({"score"}))
@@ -195,12 +194,12 @@ class TestCompareWiring:
 
     def test_n_probes_truncates(self):
         engine = MockEngine()
-        with patch("lmdiff.geometry.ChangeGeometry") as MockCG:
-            MockCG.return_value.analyze.return_value = "OK"
+        with patch("lmdiff._pipeline.run_family_pipeline") as MockPipe:
+            MockPipe.return_value = MagicMock(metadata={})
             compare("a", "b", n_probes=3, engine=engine)
-        # The probe set passed to ChangeGeometry has at most 3 entries.
-        prompts = MockCG.call_args.kwargs["prompts"]
-        assert len(prompts) <= 3
+        # The probe set passed to the pipeline has at most 3 entries.
+        probe_set = MockPipe.call_args.kwargs["probe_set"]
+        assert len(probe_set) <= 3
 
 
 class TestCompareEngineOwnership:
@@ -245,18 +244,18 @@ class TestCompareEngineOwnership:
 class TestFamilyWiring:
     def test_dict_variants_coerced(self):
         engine = MockEngine()
-        with patch("lmdiff.geometry.ChangeGeometry") as MockCG:
-            MockCG.return_value.analyze.return_value = "FAKE"
+        with patch("lmdiff._pipeline.run_family_pipeline") as MockPipe:
+            MockPipe.return_value = MagicMock(metadata={})
             family(
                 "base_model",
                 {"yarn": "yarn_path", "code": "code_path"},
                 n_probes=3,
                 engine=engine,
             )
-        variants = MockCG.call_args.kwargs["variants"]
-        assert set(variants.keys()) == {"yarn", "code"}
-        assert variants["yarn"].model == "yarn_path"
-        assert variants["code"].model == "code_path"
+        variant_configs = MockPipe.call_args.kwargs["variant_configs"]
+        assert set(variant_configs.keys()) == {"yarn", "code"}
+        assert variant_configs["yarn"].model == "yarn_path"
+        assert variant_configs["code"].model == "code_path"
 
     def test_empty_variants_raises(self):
         with pytest.raises(ValueError, match="non-empty"):
@@ -375,9 +374,8 @@ class TestNProbesLmEvalSemantics:
 
         from unittest.mock import patch
         engine = MockEngine()
-        with patch("lmdiff.geometry.ChangeGeometry") as MockCG:
-            MockCG.return_value.analyze.return_value = MockEngine()  # placeholder
-            MockCG.return_value.analyze.return_value.metadata = {}
+        with patch("lmdiff._pipeline.run_family_pipeline") as MockPipe:
+            MockPipe.return_value = MagicMock(metadata={})
             from lmdiff import compare
             compare(
                 "a", "b",
@@ -385,10 +383,10 @@ class TestNProbesLmEvalSemantics:
                 n_probes=4,
                 engine=engine,
             )
-        # ChangeGeometry was given the full merged set (3 × 4 = 12 probes),
+        # The pipeline received the full merged set (3 × 4 = 12 probes),
         # NOT a truncated-to-4 slice.
-        kwargs = MockCG.call_args.kwargs
-        assert len(kwargs["prompts"]) == 12
+        kwargs = MockPipe.call_args.kwargs
+        assert len(kwargs["probe_set"]) == 12
 
     def test_flat_probe_set_total_semantics_unchanged(self):
         """Flat probe sets (bundled v01) keep "total" semantics — no

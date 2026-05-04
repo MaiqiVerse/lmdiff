@@ -379,55 +379,47 @@ def compare(
     ):
         probe_set = probe_set[:n_probes]
 
-    # Engine preflight: when an explicit engine template was provided we
-    # build HFEngines here so that capability checks run before any heavy
-    # lifting. With ``engine=None`` (default) the geometry path uses the
-    # v0.2.x ``InferenceEngine`` directly and the HFEngine instances we'd
-    # build here are never used for inference — they were only kept around
-    # to feed ``_check_capabilities``. Skip the eager build in that case
-    # to avoid loading every model TWICE (once as zombie HFEngine, once as
-    # the real InferenceEngine inside ChangeGeometry). Capability checks
-    # are deferred to the engine that actually runs inference.
-    engines: list[Engine] = []
-    owned_flags: list[bool] = []
-    if engine is not None:
-        base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
-        engines.append(base_engine)
-        owned_flags.append(base_owned)
+    # v0.4.0 backend cutover (PR #15): always build engines via the
+    # public Engine Protocol and route through ``_pipeline``. The
+    # v0.2.x ``ChangeGeometry`` / ``InferenceEngine`` path is no longer
+    # the default — it remains as the implementation behind the
+    # deprecated ``run_family_experiment``.
+    variant_name = (variant_cfg.name or variant_cfg.model)
+    if variant_name == _BASE_ANCHOR:
+        raise ValueError(
+            f"variant name {_BASE_ANCHOR!r} is reserved by lmdiff "
+            f"for the base-engine sentinel; rename your variant"
+        )
+
+    anchor_map = _compute_anchor_map(
+        [(_BASE_ANCHOR, base_cfg), (variant_name, variant_cfg)],
+    )
+
+    base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
+    engines: list[Engine] = [base_engine]
+    owned_flags: list[bool] = [base_owned]
     try:
-        if engine is not None:
-            variant_engine, var_owned = _build_engine_for_config(variant_cfg, engine)
+        # If the single variant reuses base under the anchor map, its
+        # "engine" is the base engine — no extra construction. Otherwise
+        # build a fresh one.
+        if anchor_map[variant_name] == _BASE_ANCHOR:
+            variant_engine = base_engine
+        else:
+            variant_engine, var_owned = _build_engine_for_config(
+                variant_cfg, engine,
+            )
             engines.append(variant_engine)
             owned_flags.append(var_owned)
-            _check_capabilities(metric_names, *engines)
 
-        # v0.3.0 routes through the existing ChangeGeometry pipeline. The
-        # variant Engine is not yet plugged in — ChangeGeometry currently
-        # builds its own InferenceEngine from the v0.2.x Config. Phase 4
-        # rewires this to consume the new Engine instances directly.
-        from lmdiff.geometry import ChangeGeometry
-        v02_base = _to_v02_config(base_cfg)
-        v02_variant = _to_v02_config(variant_cfg, fallback_name="variant")
-        v02_variant_name = v02_variant.display_name
-        if v02_variant_name == _BASE_ANCHOR:
-            raise ValueError(
-                f"variant name {_BASE_ANCHOR!r} is reserved by lmdiff "
-                f"for the base-engine sentinel; rename your variant"
-            )
+        _check_capabilities(metric_names, base_engine, variant_engine)
 
-        # When the single variant is runtime-compatible with base it
-        # reuses base's engine — otherwise it loads its own. Either way
-        # the anchor map records the decision for analyze().
-        anchor_map = _compute_anchor_map(
-            [(_BASE_ANCHOR, base_cfg), (v02_variant_name, variant_cfg)],
-        )
-
-        cg = ChangeGeometry(
-            base=v02_base,
-            variants={v02_variant_name: v02_variant},
-            prompts=probe_set,
-        )
-        result = cg.analyze(
+        from lmdiff._pipeline import run_family_pipeline
+        result = run_family_pipeline(
+            base_engine=base_engine,
+            base_config=base_cfg,
+            variant_engines={variant_name: variant_engine},
+            variant_configs={variant_name: variant_cfg},
+            probe_set=probe_set,
             max_new_tokens=max_new_tokens,
             progress=progress,
             engine_groups=anchor_map,
@@ -487,52 +479,53 @@ def family(
     ):
         probe_set = probe_set[:n_probes]
 
-    # See ``compare()`` — only build HFEngine instances when an explicit
-    # engine template was passed. With the default ``engine=None`` path,
-    # ChangeGeometry loads its own InferenceEngine and the HFEngines we
-    # built here would be dead weight (one full model load per variant).
-    # On a 7-variant Llama-2 demo this halves peak VRAM at minimum and
-    # is the difference between completing and OOMing.
-    engines: list[Engine] = []
-    owned_flags: list[bool] = []
-    if engine is not None:
-        base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
-        engines.append(base_engine)
-        owned_flags.append(base_owned)
+    # v0.4.0 backend cutover (PR #15): full Engine Protocol path.
+    # Variant engines are built lazily inside the loop below to match
+    # the engine-reuse pattern — variants whose Config is runtime-
+    # compatible with an earlier one share a loaded engine instead of
+    # loading a fresh copy. The look-ahead-by-one release rule lives
+    # in ``_pipeline.run_family_pipeline``.
+    if any(name == _BASE_ANCHOR for name in variant_cfgs):
+        raise ValueError(
+            f"variant name {_BASE_ANCHOR!r} is reserved by lmdiff "
+            f"for the base-engine sentinel; rename your variant"
+        )
+    anchor_map = _compute_anchor_map(
+        [(_BASE_ANCHOR, base_cfg), *variant_cfgs.items()],
+    )
+
+    base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
+    engines: list[Engine] = [base_engine]
+    owned_flags: list[bool] = [base_owned]
     try:
-        if engine is not None:
-            for name, vcfg in variant_cfgs.items():
+        # Build per-variant engines. Variants whose anchor is base or
+        # an earlier variant reuse that engine — no fresh load. Variants
+        # that are their own anchor get a fresh engine.
+        variant_engines: dict[str, Engine] = {}
+        for name, vcfg in variant_cfgs.items():
+            anchor = anchor_map[name]
+            if anchor == _BASE_ANCHOR:
+                variant_engines[name] = base_engine
+            elif anchor == name:
                 ve, owned = _build_engine_for_config(vcfg, engine)
                 engines.append(ve)
                 owned_flags.append(owned)
-            _check_capabilities(metric_names, *engines)
+                variant_engines[name] = ve
+            else:
+                # Variant reuses an earlier variant's engine — that
+                # variant is already in variant_engines (anchor map is
+                # walked left-to-right by _compute_anchor_map).
+                variant_engines[name] = variant_engines[anchor]
 
-        # Engine reuse: walk the (base + variants) sequence and find
-        # which variants are runtime-compatible with an earlier config.
-        # Same-anchor variants will share one loaded engine in
-        # ``ChangeGeometry.analyze`` (saves a full model load each).
-        if any(name == _BASE_ANCHOR for name in variant_cfgs):
-            raise ValueError(
-                f"variant name {_BASE_ANCHOR!r} is reserved by lmdiff "
-                f"for the base-engine sentinel; rename your variant"
-            )
-        anchor_map = _compute_anchor_map(
-            [(_BASE_ANCHOR, base_cfg), *variant_cfgs.items()],
-        )
+        _check_capabilities(metric_names, base_engine, *engines[1:])
 
-        from lmdiff.geometry import ChangeGeometry
-        v02_base = _to_v02_config(base_cfg)
-        v02_variants = {
-            name: _to_v02_config(vcfg, fallback_name=name)
-            for name, vcfg in variant_cfgs.items()
-        }
-
-        cg = ChangeGeometry(
-            base=v02_base,
-            variants=v02_variants,
-            prompts=probe_set,
-        )
-        result = cg.analyze(
+        from lmdiff._pipeline import run_family_pipeline
+        result = run_family_pipeline(
+            base_engine=base_engine,
+            base_config=base_cfg,
+            variant_engines=variant_engines,
+            variant_configs=variant_cfgs,
+            probe_set=probe_set,
             max_new_tokens=max_new_tokens,
             progress=progress,
             engine_groups=anchor_map,
