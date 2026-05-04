@@ -314,6 +314,26 @@ path).
 share the pipeline; splitting buys nothing. If the calibration
 regression test fails for either, the whole commit doesn't ship.
 
+## Decisions (recorded 2026-05-04 after audit review)
+
+The five open questions below were resolved as follows. Implementation
+phase begins with these as binding.
+
+| # | Question | Decision | Notes |
+|---|---|---|---|
+| 1 | Add `Engine.token_count` and `Engine.tokenizers_equivalent_to`? | **Approved** | Both are genuinely useful for any backend (vLLM, hosted APIs), not HFEngine-specific workarounds. |
+| 2 | Move `device_map_summary` warning into `HFEngine.__init__`? | **Approved** | Matches abstraction layering. **Constraint**: keep the `LMDIFF_DEBUG_ENGINE_LIFECYCLE=1` and `LMDIFF_PROGRESS=0` log output format unchanged so existing v0.3.2 log-grep workflows aren't broken. |
+| 3 | Mention `_pipeline.run_family_pipeline` in `run_family_experiment`'s deprecation message? | **Not approved** | `_pipeline.*` is private API; advertising it locks us into the name. The deprecation message points only to `lmdiff.compare()` / `lmdiff.family()`. |
+| 4 | Leave `ChangeGeometry` un-deprecated this commit? | **Confirmed** | Deprecate in v0.5.0 alongside `run_family_experiment` removal. Users importing `ChangeGeometry` directly aren't affected by `run_family_experiment` deprecation, so don't add unnecessary friction in v0.4.0. |
+| 5 | Full cutover (`compare()` + `family()`) in one commit? | **Confirmed** | Same PR. They share `ChangeGeometry.analyze`; splitting buys nothing. If during implementation a specific difficulty isolating one path surfaces, splitting into multiple commits within the same PR is acceptable; do not split into separate releases. |
+
+Calibration baseline `tests/fixtures/calibration_v032_baseline.json`
+generated and committed before implementation begins (commit `6703970`,
+13.4 MB, 4 variants × 5 domains × 100 probes). Verified against v6 §13:
+all four reference percentages match within rounding (`long`→`reasoning`
+65.59 % ≈ 66, `yarn`→`commonsense` 50.93 % ≈ 51, `math`→`math` 35.08 %
+≈ 35, `code`→`code` 31.96 % ≈ 32).
+
 ## Open questions for review
 
 1. **Protocol extension philosophy**: I'm proposing two new Protocol
