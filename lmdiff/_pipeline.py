@@ -197,11 +197,19 @@ def _delta_for_variant(
             ntok_v_self[i] = 0
             continue
         try:
+            # Self-score with pre-tokenized continuation_ids when the
+            # engine supports it (HFEngine does, since v0.3.1 PR #7).
+            # Avoids decode→retokenize round-trip drift for the lm-eval
+            # convention. Don't pass ``continuation`` at all — HFEngine's
+            # validator requires *exactly one* of (continuation,
+            # continuation_ids), so passing both — even an empty string —
+            # raises ValueError.
             sr = v_engine.score(
-                v_prompts[i], "", continuation_ids=v_ids_per_probe[i],
+                v_prompts[i], continuation_ids=v_ids_per_probe[i],
             )
         except TypeError:
-            # Engine without continuation_ids support — fall back.
+            # Engine without continuation_ids support — fall back to
+            # text-based scoring. (e.g. MockEngine in unit tests.)
             sr = v_engine.score(v_prompts[i], v_outputs[i])
         if len(sr.tokens) == 0:
             ce_v_self[i] = float("nan")

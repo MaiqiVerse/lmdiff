@@ -233,6 +233,77 @@ class TestProtocolOnlyAccess:
         assert result.n_probes == 3
 
 
+class TestHFEngineSelfScoreSignature:
+    """The pipeline calls ``v_engine.score(prompt, continuation_ids=…)``
+    on the self-score path. HFEngine's validator requires *exactly one*
+    of (continuation, continuation_ids) and raises ``ValueError`` if
+    both are passed. This test simulates HFEngine's strict signature
+    against MockEngine to catch the regression where ``continuation=""``
+    was being passed alongside ``continuation_ids``.
+
+    Without this test, the bug only surfaced on the GPU-only calibration
+    test (where MockEngine isn't used)."""
+
+    def test_pipeline_uses_continuation_ids_only_on_self_score(self):
+        """Mirror HFEngine.score's strict signature: exactly one of
+        (continuation, continuation_ids) must be non-None. If the
+        pipeline regresses to passing both — even with continuation=""
+        — this engine raises ValueError and the test fails loudly.
+
+        Also asserts the self-score call shape: at least one call uses
+        continuation_ids with continuation=None (HFEngine's preferred
+        path; avoids decode→retokenize round-trip drift)."""
+        from lmdiff._engine import ScoreResult
+
+        recorded_calls: list[dict] = []
+
+        class StrictScoreEngine(MockEngine):
+            def score(
+                self,
+                prompt: str,
+                continuation=None,
+                *,
+                continuation_ids=None,
+            ) -> ScoreResult:
+                recorded_calls.append({
+                    "prompt": prompt,
+                    "continuation": continuation,
+                    "continuation_ids": continuation_ids,
+                })
+                if (continuation is None) == (continuation_ids is None):
+                    raise ValueError(
+                        "pass exactly one of `continuation` or `continuation_ids`",
+                    )
+                # Delegate to the parent's text-based score for the math.
+                if continuation is None:
+                    return super().score(prompt, "self_score_stub")
+                return super().score(prompt, continuation)
+
+        base_cfg = Config(model="mock_base")
+        v_cfg = Config(model="mock_variant")
+        base_eng = StrictScoreEngine(config=base_cfg, seed=1)
+        v_eng = StrictScoreEngine(config=v_cfg, seed=2)
+
+        result = run_family_pipeline(
+            base_engine=base_eng,
+            base_config=base_cfg,
+            variant_engines={"v": v_eng},
+            variant_configs={"v": v_cfg},
+            probe_set=_probes(2),
+            max_new_tokens=2,
+        )
+        assert result.n_probes == 2
+
+        ids_only_calls = [
+            c for c in recorded_calls
+            if c["continuation"] is None and c["continuation_ids"] is not None
+        ]
+        assert len(ids_only_calls) > 0, (
+            "expected at least one score(continuation_ids=…) call from the "
+            "self-score path; recorded calls: " + repr(recorded_calls)
+        )
+
+
 class TestCrossTokenizerBpb:
     """When base and variant engines have different tokenizers, the
     pipeline applies BPB normalization to δ values."""
