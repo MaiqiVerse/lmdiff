@@ -248,8 +248,21 @@ class Engine(Protocol):
 
     # Required methods
 
-    def score(self, prompt: str, continuation: str) -> ScoreResult:
-        """Compute log-probability of ``continuation`` given ``prompt``."""
+    def score(
+        self,
+        prompt: str,
+        continuation: str,
+        *,
+        prefix_text: str = "",
+    ) -> ScoreResult:
+        """Compute log-probability of ``continuation`` given ``prompt``.
+
+        ``prefix_text`` (default ``""``) is tokenized with special
+        tokens and concatenated before the prompt — used by the
+        family pipeline to apply ``system_prompt`` / ``context``
+        runtime overrides without polluting the prompt with
+        single-tokenize boundary effects (see L-030).
+        """
         ...
 
     def generate(
@@ -259,9 +272,17 @@ class Engine(Protocol):
         max_new_tokens: int = 16,
         temperature: float = 1.0,
         top_p: float = 1.0,
+        top_k: int = 0,
         seed: Optional[int] = None,
     ) -> GenerateResult:
-        """Generate text continuing from ``prompt``."""
+        """Generate text continuing from ``prompt``.
+
+        ``top_k=0`` disables top-k filtering (samples from the full
+        vocabulary). HF's ``model.generate`` defaults to top_k=50 when
+        the kwarg is omitted, which silently truncates the sampling
+        distribution — implementations must respect ``top_k=0`` here
+        for v0.4.0 byte-equivalence with v0.2.x ``InferenceEngine``.
+        """
         ...
 
     def close(self) -> None:
@@ -560,6 +581,7 @@ class HFEngine:
         continuation: Optional[str] = None,
         *,
         continuation_ids: Optional[list[int]] = None,
+        prefix_text: str = "",
     ) -> ScoreResult:
         """Compute log-probability of a continuation given ``prompt``.
 
@@ -568,23 +590,23 @@ class HFEngine:
         :class:`InferenceEngine` backend and with lm-eval scoring
         semantics):
 
-          full_ids = tokenizer("", add_special_tokens=True)
+          full_ids = tokenizer(prefix_text, add_special_tokens=True)
                      + tokenize(prompt, add_special_tokens=False)
                      + tokenize(continuation, add_special_tokens=False)
 
-        — i.e. prompt and continuation are tokenized *separately* and
-        concatenated. This matters for SentencePiece-style tokenizers
-        (Llama, etc.) where joint tokenization can merge the
-        prompt/continuation boundary into a single token, producing a
-        different per-token logprob breakdown. The empty-prefix call
-        sets the BOS-or-not policy per the tokenizer's own convention
-        (Llama → ``[BOS]``, GPT-2 → ``[]``).
+        — i.e. prefix, prompt, and continuation are tokenized
+        *separately* and concatenated. This matters for SentencePiece-
+        style tokenizers (Llama, etc.) where joint tokenization can
+        merge boundaries into different tokens, producing a different
+        per-token logprob breakdown. The prefix call (with special
+        tokens) sets the BOS-or-not policy per the tokenizer's own
+        convention (Llama → ``[BOS]``, GPT-2 → ``[]``).
 
         Parameters
         ----------
         prompt : str
-            The prompt text. Tokenized with ``add_special_tokens=False``
-            and concatenated to the tokenizer's empty-prefix special tokens.
+            The probe text. Tokenized with ``add_special_tokens=False``
+            and concatenated after the prefix tokens.
         continuation : str, optional
             The continuation text. Tokenized with
             ``add_special_tokens=False``. Pass exactly one of
@@ -594,6 +616,16 @@ class HFEngine:
             re-tokenizing. Recommended for self-scoring (when the same
             engine that generated the continuation is now scoring it):
             avoids decode→retokenize round-trip drift.
+        prefix_text : str, optional
+            Prefix material (system_prompt + context) to tokenize with
+            special tokens. Defaults to ``""`` — the empty-prefix path
+            byte-identical to v0.4.0-pre-fix HFEngine.score (so the
+            Llama-2 4-variant calibration regression keeps passing).
+            When non-empty (e.g. ``"You are concise.\\n"``), the
+            prefix-and-prompt split-tokenize path matches v0.2.x
+            ``InferenceEngine._encode_for_model`` byte-for-byte so
+            ``system_prompt`` / ``context`` variants reproduce v0.3.2
+            results — see L-030.
 
         Returns
         -------
@@ -609,18 +641,19 @@ class HFEngine:
                 "pass exactly one of `continuation` or `continuation_ids`"
             )
 
-        # Mirrors v0.2.x InferenceEngine._encode_for_model exactly: ask
-        # the tokenizer for its "empty prefix with special tokens" — for
-        # Llama-family this is ``[BOS]``, for GPT-2 it's ``[]`` — then
-        # append the prompt with ``add_special_tokens=False``. Asking the
-        # tokenizer (rather than reading ``bos_token_id`` directly) is
-        # what makes this byte-identical across architectures whose
-        # special-token policies differ.
-        empty_prefix = self._tokenizer("", add_special_tokens=True)["input_ids"]
+        # Mirrors v0.2.x InferenceEngine._encode_for_model exactly: the
+        # prefix gets special tokens (BOS for Llama, none for GPT-2),
+        # the probe and the continuation are tokenized without special
+        # tokens. When ``prefix_text=""`` this is byte-identical to the
+        # v0.4.0-pre-fix path (``tokenize("", add_special=True)`` =
+        # ``[BOS]`` alone) — calibration regression unchanged.
+        prefix_ids_t = self._tokenizer(
+            prefix_text, add_special_tokens=True,
+        )["input_ids"]
         prompt_token_ids = self._tokenizer(
             prompt, add_special_tokens=False,
         )["input_ids"]
-        prefix_ids: list[int] = list(empty_prefix) + list(prompt_token_ids)
+        prefix_ids: list[int] = list(prefix_ids_t) + list(prompt_token_ids)
 
         if continuation_ids is not None:
             cont_token_ids = list(continuation_ids)
@@ -668,18 +701,49 @@ class HFEngine:
         max_new_tokens: int = 16,
         temperature: float = 1.0,
         top_p: float = 1.0,
+        top_k: int = 0,
         seed: Optional[int] = None,
+        prefix_text: str = "",
     ) -> GenerateResult:
-        """Generate text continuing from ``prompt``."""
+        """Generate text continuing from ``prompt``.
+
+        ``top_k=0`` disables top-k filtering — must pass explicitly
+        because HF's ``model.generate`` defaults to top_k=50 when the
+        kwarg is omitted, which silently truncates sample-decode
+        distributions and breaks byte-equivalence with v0.2.x
+        ``InferenceEngine.generate``.
+
+        ``prefix_text`` (default ``""``) is tokenized with
+        ``add_special_tokens=True`` and the result is concatenated
+        with ``tokenize(prompt, add_special_tokens=False)``. When
+        empty, the result is byte-identical to the v0.4.0-pre-fix
+        single-tokenize path: ``tokenize("", add_special=True) +
+        tokenize(prompt, add_special=False)``. When non-empty (e.g.
+        ``"You are concise.\\n"``), the split-tokenize path matches
+        v0.2.x ``InferenceEngine._encode_for_model`` exactly so that
+        ``system_prompt`` / ``context`` variants reproduce v0.3.2
+        results — see L-030.
+        """
         import numpy as np
         import torch
 
         if seed is not None:
             torch.manual_seed(seed)
 
-        input_ids = self._tokenizer(prompt, return_tensors="pt").input_ids
+        # Split tokenization (matches v0.2.x InferenceEngine
+        # _encode_for_model byte-for-byte). When prefix_text="" this
+        # collapses to [BOS] + tokenize(prompt) — same output as the
+        # earlier single-tokenize path, so the calibration regression
+        # (which uses no prefix) stays byte-identical.
+        prefix_ids = self._tokenizer(
+            prefix_text, add_special_tokens=True,
+        )["input_ids"]
+        probe_ids = self._tokenizer(
+            prompt, add_special_tokens=False,
+        )["input_ids"]
+        full_input_ids = list(prefix_ids) + list(probe_ids)
         device = next(self._model.parameters()).device
-        input_ids = input_ids.to(device)
+        input_ids = torch.tensor([full_input_ids], device=device)
         prompt_len = input_ids.shape[1]
 
         # do_sample iff caller asked for non-greedy behavior.
@@ -691,6 +755,7 @@ class HFEngine:
                 max_new_tokens=max_new_tokens,
                 temperature=temperature if do_sample else 1.0,
                 top_p=top_p,
+                top_k=top_k,
                 do_sample=do_sample,
                 pad_token_id=self._tokenizer.pad_token_id,
                 return_dict_in_generate=True,

@@ -90,12 +90,16 @@ def _assemble_prompt(config: Config, probe_text: str) -> str:
 def _generate_kwargs(config: Config, max_new_tokens: int) -> dict[str, Any]:
     """Translate the v0.3 ``DecodeSpec`` into Engine.generate kwargs.
 
-    The Engine Protocol's ``generate`` signature is:
-        generate(prompt, *, max_new_tokens, temperature, top_p, seed)
+    The Engine Protocol's ``generate`` signature (v0.4.0) is:
+        generate(prompt, *, max_new_tokens, temperature, top_p,
+                 top_k, seed, prefix_text)
 
-    No ``top_k``, no ``do_sample`` — those are HFEngine-internal
-    derivations from temperature/top_p (matching v0.2.x's
-    ``_decode_params`` rule).
+    Mirrors v0.2.x ``InferenceEngine._decode_params`` — temperature,
+    top_p, top_k all flow through. ``top_k`` defaults to 0 (no
+    filtering); HF's ``model.generate`` defaults to top_k=50 when the
+    kwarg is omitted, which silently truncates sample-decode
+    distributions. Passing top_k=0 explicitly is what makes ``temp_1.5``
+    variants byte-equivalent to v0.3.2.
     """
     decode = config.decode
     out: dict[str, Any] = {"max_new_tokens": max_new_tokens}
@@ -105,6 +109,7 @@ def _generate_kwargs(config: Config, max_new_tokens: int) -> dict[str, Any]:
     if decode.strategy == "sample":
         out["temperature"] = decode.temperature
         out["top_p"] = decode.top_p
+        out["top_k"] = decode.top_k
         if decode.seed is not None:
             out["seed"] = decode.seed
         return out
@@ -140,14 +145,18 @@ def _delta_for_variant(
     n = len(prompts)
     prefix = f"{progress_label} " if progress_label else ""
 
-    # Pre-assembled per-probe prompts under base's and variant's
-    # respective runtime-only Config fields. The base scoring uses
-    # base's prefix; the variant generation/scoring uses variant's
-    # prefix. (Matches v0.2.x ChangeGeometry where engines kept their
-    # own self.config and the runtime-override kwargs only entered the
-    # picture for v0.3.2 engine reuse.)
-    base_prompts = [_assemble_prompt(base_config, p) for p in prompts]
-    v_prompts = [_assemble_prompt(v_config, p) for p in prompts]
+    # Per-Config prefix (system_prompt + context). Passed to the engine
+    # via ``prefix_text=`` kwarg so the engine can split-tokenize
+    # prefix vs probe — matches v0.2.x ``InferenceEngine._encode_for_model``
+    # byte-for-byte. Pre-concatenating the prefix into the prompt and
+    # using single-tokenize would cause SentencePiece boundary effects
+    # (Llama in particular) that drift the variant's δ values away
+    # from v0.3.2 — see L-030. When prefix_text is empty (most common
+    # case: variants without ``system_prompt`` / ``context``), the
+    # split-tokenize path collapses to ``[BOS] + tokens(probe)``,
+    # byte-identical to the empty-prefix single-tokenize path.
+    base_prefix = _prefix_text(base_config)
+    v_prefix = _prefix_text(v_config)
 
     gen_kwargs = _generate_kwargs(v_config, max_new_tokens)
 
@@ -157,11 +166,23 @@ def _delta_for_variant(
     for i in _progress_iter(
         range(n), desc=f"{prefix}generate", total=n, enable=progress,
     ):
-        gen = v_engine.generate(v_prompts[i], **gen_kwargs)
+        try:
+            gen = v_engine.generate(
+                prompts[i], prefix_text=v_prefix, **gen_kwargs,
+            )
+        except TypeError:
+            # Engine without prefix_text kwarg — fall back to single-
+            # tokenize via concatenation. (e.g. MockEngine in unit
+            # tests.) For real backends the calibration test would catch
+            # any byte-level divergence.
+            gen = v_engine.generate(v_prefix + prompts[i], **gen_kwargs)
         v_outputs.append(gen.text)
         v_ids_per_probe.append(list(gen.tokens))
 
     # ── 2. Score base on variant's outputs (cross) ──
+    # base uses *its own* prefix (base_config.system_prompt etc.), not
+    # the variant's — that's what makes ce_b_of_v meaningful as
+    # "how surprised is base by what variant produced".
     ce_b_of_v: list[float] = [0.0] * n
     ntok_b_of_v: list[int] = [0] * n
     for i in _progress_iter(
@@ -171,7 +192,12 @@ def _delta_for_variant(
             ce_b_of_v[i] = float("nan")
             ntok_b_of_v[i] = 0
             continue
-        sr = base_engine.score(base_prompts[i], v_outputs[i])
+        try:
+            sr = base_engine.score(
+                prompts[i], v_outputs[i], prefix_text=base_prefix,
+            )
+        except TypeError:
+            sr = base_engine.score(base_prefix + prompts[i], v_outputs[i])
         if len(sr.tokens) == 0:
             ce_b_of_v[i] = float("nan")
             ntok_b_of_v[i] = 0
@@ -197,20 +223,20 @@ def _delta_for_variant(
             ntok_v_self[i] = 0
             continue
         try:
-            # Self-score with pre-tokenized continuation_ids when the
-            # engine supports it (HFEngine does, since v0.3.1 PR #7).
-            # Avoids decode→retokenize round-trip drift for the lm-eval
-            # convention. Don't pass ``continuation`` at all — HFEngine's
-            # validator requires *exactly one* of (continuation,
-            # continuation_ids), so passing both — even an empty string —
-            # raises ValueError.
+            # Self-score with pre-tokenized continuation_ids and
+            # variant-specific prefix. Don't pass ``continuation`` at
+            # all — HFEngine's validator requires *exactly one* of
+            # (continuation, continuation_ids).
             sr = v_engine.score(
-                v_prompts[i], continuation_ids=v_ids_per_probe[i],
+                prompts[i],
+                continuation_ids=v_ids_per_probe[i],
+                prefix_text=v_prefix,
             )
         except TypeError:
-            # Engine without continuation_ids support — fall back to
-            # text-based scoring. (e.g. MockEngine in unit tests.)
-            sr = v_engine.score(v_prompts[i], v_outputs[i])
+            # Engine without continuation_ids and/or prefix_text
+            # support — fall back to text-based scoring with
+            # concatenated prefix. (e.g. MockEngine in unit tests.)
+            sr = v_engine.score(v_prefix + prompts[i], v_outputs[i])
         if len(sr.tokens) == 0:
             ce_v_self[i] = float("nan")
             ntok_v_self[i] = 0

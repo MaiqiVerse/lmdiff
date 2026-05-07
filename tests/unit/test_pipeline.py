@@ -95,6 +95,41 @@ class TestGenerateKwargs:
         assert kw["top_p"] == 0.95
         assert kw["seed"] == 7
 
+    def test_sample_passes_top_k_explicitly(self):
+        """Fix 1 regression test — caught the temp_1.5 share collapse
+        from 34% → 5% on the GPU 7-variant demo. HF's model.generate
+        defaults top_k=50 when omitted, silently truncating the
+        sample distribution. _generate_kwargs MUST forward
+        DecodeSpec.top_k so the engine passes 0 (no filtering) for
+        configs that don't set top_k explicitly."""
+        cfg = Config(
+            model="gpt2",
+            decode=DecodeSpec(strategy="sample", temperature=1.5),  # top_k defaults to 0
+        )
+        kw = _generate_kwargs(cfg, max_new_tokens=16)
+        assert kw["top_k"] == 0, (
+            "top_k must be explicitly forwarded — without it, HF's "
+            "model.generate defaults to top_k=50 and sample-decode "
+            "outputs diverge from v0.3.2"
+        )
+
+    def test_sample_passes_user_specified_top_k(self):
+        cfg = Config(
+            model="gpt2",
+            decode=DecodeSpec(
+                strategy="sample", temperature=0.7, top_k=40,
+            ),
+        )
+        kw = _generate_kwargs(cfg, max_new_tokens=16)
+        assert kw["top_k"] == 40
+
+    def test_greedy_does_not_pass_top_k(self):
+        # Greedy decoding doesn't sample, top_k irrelevant. Don't
+        # pollute the kwargs dict with it.
+        cfg = Config(model="gpt2", decode=DecodeSpec(strategy="greedy"))
+        kw = _generate_kwargs(cfg, max_new_tokens=8)
+        assert "top_k" not in kw
+
 
 # ── Pipeline end-to-end (MockEngine) ─────────────────────────────────
 
@@ -264,11 +299,13 @@ class TestHFEngineSelfScoreSignature:
                 continuation=None,
                 *,
                 continuation_ids=None,
+                prefix_text: str = "",
             ) -> ScoreResult:
                 recorded_calls.append({
                     "prompt": prompt,
                     "continuation": continuation,
                     "continuation_ids": continuation_ids,
+                    "prefix_text": prefix_text,
                 })
                 if (continuation is None) == (continuation_ids is None):
                     raise ValueError(
@@ -302,6 +339,152 @@ class TestHFEngineSelfScoreSignature:
             "expected at least one score(continuation_ids=…) call from the "
             "self-score path; recorded calls: " + repr(recorded_calls)
         )
+
+
+class TestPrefixTextThreading:
+    """Fix 2 regression tests — verify _prefix_text(v_config) reaches
+    the engine via ``prefix_text=`` kwarg instead of being concatenated
+    into the prompt. The GPU-only system_prompt variant share collapse
+    (60% → 94%) was caused by single-tokenize boundary effects on
+    Llama SentencePiece; engine-side split-tokenize is the fix."""
+
+    def test_pipeline_passes_prefix_text_kwarg_to_engine(self):
+        from lmdiff._engine import ScoreResult
+
+        prefix_calls: list[str] = []
+
+        class PrefixRecordingEngine(MockEngine):
+            def score(
+                self,
+                prompt: str,
+                continuation=None,
+                *,
+                continuation_ids=None,
+                prefix_text: str = "",
+            ) -> ScoreResult:
+                prefix_calls.append(prefix_text)
+                if continuation is None:
+                    return super().score(prompt, "stub")
+                return super().score(prompt, continuation)
+
+            def generate(
+                self,
+                prompt: str,
+                *,
+                max_new_tokens: int = 16,
+                temperature: float = 1.0,
+                top_p: float = 1.0,
+                top_k: int = 0,
+                seed=None,
+                prefix_text: str = "",
+            ):
+                prefix_calls.append(prefix_text)
+                return super().generate(prompt, max_new_tokens=max_new_tokens)
+
+        base_cfg = Config(model="mock_base")
+        sp_cfg = Config(model="mock_sp",
+                        system_prompt="You are concise.")
+        base_eng = PrefixRecordingEngine(config=base_cfg, seed=1)
+        sp_eng = PrefixRecordingEngine(config=sp_cfg, seed=2)
+
+        run_family_pipeline(
+            base_engine=base_eng,
+            base_config=base_cfg,
+            variant_engines={"sp": sp_eng},
+            variant_configs={"sp": sp_cfg},
+            probe_set=_probes(2),
+            max_new_tokens=4,
+        )
+        # Variant engine receives "You are concise.\n" — never empty.
+        sp_prefixes = [p for p in prefix_calls if p == "You are concise.\n"]
+        assert len(sp_prefixes) > 0, (
+            f"variant engine never received system_prompt prefix; "
+            f"prefix_text values seen: {prefix_calls!r}"
+        )
+
+    def test_pipeline_passes_empty_prefix_when_config_has_none(self):
+        """Calibration variants (yarn/long/code/math/chat — no
+        system_prompt, no context) must receive empty prefix_text so
+        the engine's tokenization stays byte-identical to the v0.4.0-
+        pre-fix path. Otherwise the calibration regression breaks."""
+        from lmdiff._engine import ScoreResult
+
+        prefix_calls: list[str] = []
+
+        class PrefixRecordingEngine(MockEngine):
+            def score(
+                self,
+                prompt: str,
+                continuation=None,
+                *,
+                continuation_ids=None,
+                prefix_text: str = "",
+            ) -> ScoreResult:
+                prefix_calls.append(prefix_text)
+                if continuation is None:
+                    return super().score(prompt, "stub")
+                return super().score(prompt, continuation)
+
+        base_cfg = Config(model="mock_base")
+        v_cfg = Config(model="mock_v")  # no system_prompt, no context
+        base_eng = PrefixRecordingEngine(config=base_cfg, seed=1)
+        v_eng = PrefixRecordingEngine(config=v_cfg, seed=2)
+
+        run_family_pipeline(
+            base_engine=base_eng,
+            base_config=base_cfg,
+            variant_engines={"v": v_eng},
+            variant_configs={"v": v_cfg},
+            probe_set=_probes(2),
+            max_new_tokens=4,
+        )
+        # Every prefix_text passed must be "" — the calibration default.
+        non_empty = [p for p in prefix_calls if p != ""]
+        assert non_empty == [], (
+            f"engine received non-empty prefix_text for a config without "
+            f"system_prompt/context: {non_empty!r}"
+        )
+
+    def test_pipeline_falls_back_when_engine_lacks_prefix_text(self):
+        """Engines that don't accept ``prefix_text`` (legacy MockEngine
+        in test_geometry.py, custom user backends) get the
+        concatenated-prefix call as fallback. Pipeline doesn't crash."""
+        from lmdiff._engine import ScoreResult
+
+        class LegacyEngine(MockEngine):
+            def score(
+                self,
+                prompt: str,
+                continuation=None,
+                *,
+                continuation_ids=None,
+            ) -> ScoreResult:
+                # No prefix_text kwarg.
+                if continuation is None:
+                    return super().score(prompt, "stub")
+                return super().score(prompt, continuation)
+
+            def generate(self, prompt: str, *, max_new_tokens: int = 16,
+                         temperature: float = 1.0, top_p: float = 1.0,
+                         top_k: int = 0, seed=None):
+                return super().generate(prompt, max_new_tokens=max_new_tokens)
+
+        base_cfg = Config(model="mock_base")
+        sp_cfg = Config(model="mock_sp", system_prompt="hi.")
+        base_eng = LegacyEngine(config=base_cfg, seed=1)
+        sp_eng = LegacyEngine(config=sp_cfg, seed=2)
+
+        # Should not crash even though LegacyEngine has no prefix_text
+        # kwarg — the pipeline catches TypeError and falls back.
+        result = run_family_pipeline(
+            base_engine=base_eng,
+            base_config=base_cfg,
+            variant_engines={"sp": sp_eng},
+            variant_configs={"sp": sp_cfg},
+            probe_set=_probes(2),
+            max_new_tokens=4,
+        )
+        assert result.n_probes == 2
 
 
 class TestCrossTokenizerBpb:
