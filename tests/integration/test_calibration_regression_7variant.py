@@ -9,38 +9,54 @@ v0.4.0 features the 4-variant test missed:
     ``HFEngine.score(prefix_text=…)`` and the split-tokenize path
     that Fix 2 added (PR #15 fixup commits)
   - ``temp_1.5`` — sample decoding with explicit ``top_k=0``,
-    exercises Fix 1's top_k passthrough
+    exercises Fix 1's top_k passthrough; reproducible under Fix 3
+    via ``family(seed=42)`` (was unpinned in v0.3.2)
 
 Plus the 5 unique-model variants (yarn/long/code/math/chat) for
-spot-checking they still match v0.3.2.
+spot-checking against the v0.4.0 baseline.
+
+The exact ``family()`` kwargs the test runs against and the fixture
+path are defined in ``_v040_7variant_spec.py`` so
+``scripts/_regenerate_v040_7variant_fixture.py`` runs the *same*
+call — no "did the regen script match the test?" risk.
 
 Tolerance rationale:
   - ``change_vectors`` (per-probe δ): 1e-6 byte-equivalence for the
-    6 deterministic variants; SKIPPED for ``temp_1.5`` because sample
-    decoding consumes RNG state in ways that depend on prior call
-    order and aren't reproducible across code-path changes
-  - ``share_per_domain``: 2pp for ALL variants. This is the user-
-    visible headline metric (the showcase percentages); a 2pp
-    tolerance catches the 60→94% (system_prompt) and 34→5%
-    (temp_1.5) regressions that the GPU 7-variant demo surfaced
+    6 deterministic variants; SKIPPED for any variant in
+    ``SAMPLE_DECODE_VARIANTS_LEGACY`` (currently empty under Fix 3 —
+    ``temp_1.5`` is reproducible given a pinned seed; left as a
+    constant in the spec for future variants that genuinely can't
+    be byte-checked, e.g. best_of_n with hardware-non-deterministic
+    argmax ties)
+  - ``share_per_domain``: 2pp for ALL variants. The user-visible
+    headline metric; 2pp catches the 60→94% (system_prompt) and
+    34→5% (temp_1.5) regressions Fix 1 + Fix 2 address while staying
+    loose enough for any residual hardware float jitter
   - ``magnitudes_per_domain_normalized``: 1e-3 (slightly looser than
-    1e-6 because temp_1.5's pdn participates in the sum-of-squares
-    normalization for share, and a single sampled-variant value
-    shouldn't fail this metric for the 6 deterministic ones)
+    1e-6 because pdn participates in the share normalization)
 
-If any assertion fails, the cutover did not safely preserve v0.3.2
-behavior on the broader set of variants. v0.4.0 doesn't ship.
+If any assertion fails, the cutover did not safely preserve v0.4.0
+behavior. v0.4.0 doesn't ship.
+
+The fixture is the v0.4.0 baseline (``calibration_v040_…``), not the
+v0.3.2 fixture. v0.3.2's ``temp_1.5`` outputs were produced under
+unpinned RNG and are no longer the contract — see L-031.
 """
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.slow, pytest.mark.gpu]
+from tests.integration._v040_7variant_spec import (
+    ALL_VARIANTS,
+    BYTE_EQUIVALENT_VARIANTS,
+    FIXTURE_PATH,
+    SAMPLE_DECODE_VARIANTS_LEGACY,
+    build_run_kwargs,
+)
 
-SUMMARY_PATH = Path(__file__).parent.parent / "fixtures" / "calibration_v032_7variant_summary.json"
+pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
 # Tolerances per metric.
 TOL_CHANGE_VECTORS = 1e-6
@@ -48,58 +64,37 @@ TOL_SHARE_PCT_POINTS = 2.0       # 2pp, user-spec
 TOL_PDN = 1e-3
 TOL_OVERALL_NORM = 1e-3
 
-# Variants whose decode is sampling-based — these can't be byte-checked
-# across runs because torch RNG state depends on full call history.
-SAMPLE_DECODE_VARIANTS = {"temp_1.5"}
+# Re-export under the test's historical name so the parameterize
+# decorators below stay readable.
+SAMPLE_DECODE_VARIANTS = SAMPLE_DECODE_VARIANTS_LEGACY
 
 
 @pytest.fixture(scope="module")
 def baseline() -> dict:
-    if not SUMMARY_PATH.exists():
+    if not FIXTURE_PATH.exists():
         pytest.skip(
-            f"7-variant summary not present at {SUMMARY_PATH}. "
-            "Generate via _make_7variant_fixture.py from the "
-            "demo_032_rerendered tarball and commit before running."
+            f"7-variant fixture not present at {FIXTURE_PATH}. "
+            "Regenerate by running "
+            "``python scripts/_regenerate_v040_7variant_fixture.py`` "
+            "on a GPU box, then commit the produced JSON. The script "
+            "uses the same family() kwargs as this test."
         )
-    return json.loads(SUMMARY_PATH.read_text(encoding="utf-8"))
+    return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
 def cutover_result() -> dict:
     """Run the 7-variant family() through the new HFEngine pipeline
-    and return the to_json_dict payload for comparison."""
+    and return the to_json_dict payload for comparison.
+
+    Kwargs come from ``_v040_7variant_spec.build_run_kwargs()`` —
+    same source as the regeneration script, so test and fixture can't
+    drift.
+    """
     import lmdiff
-    from lmdiff import Config, DecodeSpec
     from lmdiff.report.json_report import to_json_dict
 
-    result = lmdiff.family(
-        base="meta-llama/Llama-2-7b-hf",
-        variants={
-            "yarn":          "NousResearch/Yarn-Llama-2-7b-128k",
-            "long":          "togethercomputer/LLaMA-2-7B-32K",
-            "code":          "codellama/CodeLlama-7b-hf",
-            "math":          "EleutherAI/llemma_7b",
-            "chat":          "meta-llama/Llama-2-7b-chat-hf",
-            "temp_1.5":      Config(
-                model="meta-llama/Llama-2-7b-hf",
-                decode=DecodeSpec(strategy="sample", temperature=1.5),
-                name="temp_1.5",
-            ),
-            "system_prompt": Config(
-                model="meta-llama/Llama-2-7b-hf",
-                system_prompt="You are concise.",
-                name="system_prompt",
-            ),
-        },
-        probes="lm_eval:hellaswag+arc_challenge+gsm8k+mmlu_college_computer_science+longbench_2wikimqa",
-        n_probes=100,
-        max_new_tokens=16,
-        task_overrides={
-            "gsm8k": {"max_new_tokens": 256},
-            "longbench_2wikimqa": {"max_new_tokens": 128},
-        },
-        seed=42,
-    )
+    result = lmdiff.family(**build_run_kwargs())
     payload = to_json_dict(result)
     payload.pop("generated_at", None)
     return payload
@@ -125,20 +120,19 @@ def test_probe_domain_distribution_match(baseline, cutover_result):
     )
 
 
-# ── Per-variant change_vectors (greedy variants only) ───────────────
+# ── Per-variant change_vectors (byte-equivalent variants) ───────────
 
 
-@pytest.mark.parametrize(
-    "variant",
-    ["yarn", "long", "code", "math", "chat", "system_prompt"],
-)
+@pytest.mark.parametrize("variant", BYTE_EQUIVALENT_VARIANTS)
 def test_change_vectors_match_for_deterministic_variants(
     baseline, cutover_result, variant,
 ):
-    """Greedy + system_prompt variants must reproduce per-probe δ
-    values exactly. system_prompt is the test that Fix 2's prefix_text
-    threading actually reaches the engine — without Fix 2, the GPU
-    demo showed 94% commonsense vs v0.3.2's 60%."""
+    """Every byte-equivalent variant (under Fix 3, all 7) must
+    reproduce per-probe δ values exactly. ``system_prompt`` exercises
+    Fix 2's ``prefix_text`` threading; ``temp_1.5`` exercises Fix 1's
+    ``top_k`` passthrough + Fix 3's seed plumbing. Without any of
+    those, the GPU 7-variant demo regressed 60→94% on commonsense
+    (system_prompt) and 34→5% on reasoning (temp_1.5)."""
     bvec = baseline["change_vectors"][variant]
     cvec = cutover_result["change_vectors"][variant]
     assert len(bvec) == len(cvec), variant
@@ -152,18 +146,16 @@ def test_change_vectors_match_for_deterministic_variants(
 # ── share_per_domain (ALL variants, 2pp tolerance) ──────────────────
 
 
-@pytest.mark.parametrize(
-    "variant", [
-        "yarn", "long", "code", "math", "chat",
-        "temp_1.5", "system_prompt",
-    ],
-)
+@pytest.mark.parametrize("variant", ALL_VARIANTS)
 def test_share_per_domain_within_2pp(baseline, cutover_result, variant):
-    """The headline showcase metric. 2pp tolerance is per the spec —
-    catches the 60→94% (system_prompt) and 34→5% (temp_1.5) regressions
-    that Fix 1 + Fix 2 address. Tighter than any natural cross-run
-    variation but loose enough to accommodate sampling jitter for
-    temp_1.5."""
+    """The headline showcase metric. 2pp tolerance catches the
+    60→94% (system_prompt) and 34→5% (temp_1.5) regressions that
+    Fix 1 + Fix 2 + Fix 3 address. Tighter than any natural cross-run
+    variation but loose enough to accommodate residual hardware float
+    jitter (BF16 attention reductions on Blackwell). Applied to every
+    variant — including the legacy-unstable ones in
+    ``SAMPLE_DECODE_VARIANTS_LEGACY`` (currently empty, but the test
+    surface for adding one in the future)."""
     b_row = baseline["share_per_domain"][variant]
     c_row = cutover_result["share_per_domain"][variant]
     assert set(b_row.keys()) == set(c_row.keys()), variant
@@ -178,13 +170,10 @@ def test_share_per_domain_within_2pp(baseline, cutover_result, variant):
         )
 
 
-# ── magnitudes_per_domain_normalized (deterministic variants) ───────
+# ── magnitudes_per_domain_normalized (byte-equivalent variants) ─────
 
 
-@pytest.mark.parametrize(
-    "variant",
-    ["yarn", "long", "code", "math", "chat", "system_prompt"],
-)
+@pytest.mark.parametrize("variant", BYTE_EQUIVALENT_VARIANTS)
 def test_pdn_match_for_deterministic_variants(
     baseline, cutover_result, variant,
 ):
@@ -199,13 +188,10 @@ def test_pdn_match_for_deterministic_variants(
         )
 
 
-# ── magnitudes_normalized (overall, deterministic variants) ─────────
+# ── magnitudes_normalized (overall, byte-equivalent variants) ───────
 
 
-@pytest.mark.parametrize(
-    "variant",
-    ["yarn", "long", "code", "math", "chat", "system_prompt"],
-)
+@pytest.mark.parametrize("variant", BYTE_EQUIVALENT_VARIANTS)
 def test_overall_normalized_for_deterministic_variants(
     baseline, cutover_result, variant,
 ):
