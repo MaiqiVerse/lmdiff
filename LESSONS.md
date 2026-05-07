@@ -35,6 +35,7 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-027: pre-flight code audit consistently catches more issues than spec-author memory
 - L-028: hotfix release scope should stay minimal even when a broader fix is architecturally cleaner
 - L-029: for multi-variant runs of large models, immediate engine release beats caching even at the cost of reload time
+- L-030: cross-engine equivalence tests must span every code path the new engine introduces, not only the production-canonical inputs
 
 ---
 
@@ -795,3 +796,41 @@ CC's audit caught that `HFEngine.score()` was not byte-equivalent to `InferenceE
 This is a *default*, not a universal. For small models, slow-disk environments, or scenarios where variant order is known to repeat the same anchor many times, caching pays off — but it should be opt-in, not default.
 
 **Where applied:** v0.3.2 PR #10 implements look-ahead-by-one release in `ChangeGeometry.analyze`. Peak active engines capped at 2 (base + 1 active variant) regardless of variant count. Engine reuse (sharing one engine across runtime-only Config differences) sits *on top of* the release rule — runtime-only siblings reuse the cached engine within the same iteration, but the cache itself is bounded by look-ahead release. PR #9's `device_map_summary()` warning surfaces the spillover failure mode at variant load time so the user can kill an OOM-bound run at minute one instead of hour eight.
+
+## L-030: cross-engine equivalence tests must span every code path the new engine introduces, not only the production-canonical inputs
+
+**Date:** 2026-05-07
+**Phase:** 4 (v0.4.0 backend cutover, post-merge sanity)
+**Severity:** Refines L-025. The cutover passed its calibration gate (4 variants × 5 domains, 11/11 byte-equivalent within 1e-6) and was about to ship before a sanity 7-variant demo run revealed two real numerical regressions that the calibration test never exercised.
+
+**Symptom:** v0.4.0 cutover (PR #15) was ready to merge. Calibration regression test passed cleanly. User then re-ran the v0.3.2 7-variant demo through the new pipeline — `system_prompt` variant's share-on-commonsense was 94 % vs v0.3.2's 60 % (Δ +34 pp), and `temp_1.5` variant's share-on-reasoning was 5 % vs v0.3.2's 34 % (Δ −29 pp). Two materially different numerical results on the user-visible headline metric, neither caught by the calibration gate.
+
+**Root cause:** The 4-variant calibration only used variants whose Configs differed in the `model` field. It exercised:
+  - Greedy decode only
+  - No `system_prompt`
+  - No `context`
+  - No engine reuse (each variant is its own anchor)
+
+The new `_pipeline.py` introduced two new code paths to handle the v0.4.0 cutover's design decisions:
+  1. `_generate_kwargs(config, max_new_tokens)` — translates `DecodeSpec` to engine kwargs. **Forgot `top_k`**. HF `model.generate()` defaults to `top_k=50` when omitted, silently truncating sample-decode distributions. v0.2.x explicitly passed `top_k=0` (no filtering). Caused `temp_1.5`'s output distribution to compress → smaller δ → narrower `share_per_domain`.
+  2. `_assemble_prompt(config, probe)` — concatenates `system_prompt + "\n" + probe`, then HFEngine.score does `tokenize(concatenated_prompt, add_special=False)`. v0.2.x split-tokenizes: `tokenize(prefix, add_special=True) + tokenize(probe, add_special=False)`. For Llama SentencePiece, single-tokenize at the prefix boundary produces different token IDs than split — propagates to different generated outputs and CE values.
+
+Neither code path was exercised by the calibration variants. Both were exercised by the 7-variant demo. The audit (PR #15 audit doc) explicitly flagged the SentencePiece boundary risk but underestimated its magnitude — assumed `\n` at the boundary made it "almost always safe." It wasn't safe.
+
+**Rule (refines L-025):** L-025 requires "byte-level equivalence to the existing default within float-math tolerance" before promoting to default. This means: equivalence on every code path the new engine introduces. Identify the new code paths (sampling kwargs, prefix assembly, runtime overrides, multi-turn handling, …) and pick at least one calibration input per path. The calibration set should be designed to exercise the cross product of:
+  - Decode strategies (greedy + sample)
+  - Prefix scenarios (no prefix + system_prompt + context + ICL)
+  - Engine reuse vs fresh load
+  - Cross-tokenizer (matching + differing)
+  - Any other Config field whose semantics live in the engine layer
+
+For v0.4.0 the calibration variants accidentally had the simplest possible cross product: greedy × no prefix × fresh load × matching tokenizer. That covered <25 % of the new code surface.
+
+**Diagnostic signature:** Calibration passes 100 %, but a broader "everything we ship" demo run shows variant-specific regressions on derived metrics (share, magnitudes_normalized) of >10 percentage points or >1e-2 relative. The calibration was too narrow.
+
+**Where applied:** v0.4.0 PR #15 fixup commits add:
+  - `top_k` passthrough in `_pipeline._generate_kwargs` and a kwarg on `HFEngine.generate` (Fix 1)
+  - `prefix_text=` kwarg on `HFEngine.score` and `HFEngine.generate` for split-tokenize at the prefix boundary; pipeline passes `_prefix_text(v_config)` instead of pre-concatenating (Fix 2)
+  - `tests/integration/test_calibration_regression_7variant.py` — 7-variant calibration covering the 5 unique-model + 2 runtime-only-modification (`temp_1.5`, `system_prompt`) variants. 6 of 7 variants assert byte-equivalence on `change_vectors` within 1e-6; all 7 assert `share_per_domain` within 2pp.
+
+The 7-variant test is now the broader gate alongside the original 4-variant test. Future engine-touching PRs must pass both. New backends (vLLMEngine, etc.) must add tests for additional code paths they introduce — not just re-run the existing two.
