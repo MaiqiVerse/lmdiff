@@ -139,10 +139,17 @@ class MockEngine:
         max_new_tokens: int = 16,
         temperature: float = 1.0,
         top_p: float = 1.0,
+        top_k: int = 0,
         seed: Optional[int] = None,
     ) -> GenerateResult:
         if "generate" not in self._capabilities:
             raise NotImplementedError("generate capability not in mock capabilities")
+        # ``top_k`` is accepted for Engine-Protocol parity (HFEngine and
+        # the v0.4.0 pipeline pass it for sample-decode variants); the
+        # mock's deterministic synthetic output doesn't model truncation,
+        # so the value is recorded only via the seed-tracking subclass
+        # used in tests/unit/test_seed_plumbing.py — not consumed here.
+        del top_k
         effective_seed = (seed if seed is not None else self._seed) + hash(prompt)
         rng = random.Random(effective_seed)
         words = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog"]

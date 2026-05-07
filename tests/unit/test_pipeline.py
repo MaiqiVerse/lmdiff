@@ -93,7 +93,24 @@ class TestGenerateKwargs:
         assert kw["max_new_tokens"] == 16
         assert kw["temperature"] == 1.5
         assert kw["top_p"] == 0.95
-        assert kw["seed"] == 7
+
+    def test_sample_does_not_include_seed(self):
+        """Fix 3 contract — seed is applied once-per-variant by
+        ``_delta_for_variant`` (probe 0 only), NOT per-probe via
+        gen_kwargs. Putting seed in gen_kwargs would reset RNG
+        on every probe and force every probe in a sampling variant
+        to see the same RNG state — wrong granularity. The
+        end-to-end "seed reaches engine.generate" contract is in
+        ``test_seed_plumbing.py``."""
+        cfg = Config(
+            model="gpt2",
+            decode=DecodeSpec(strategy="sample", temperature=1.5, seed=7),
+        )
+        kw = _generate_kwargs(cfg, max_new_tokens=16)
+        assert "seed" not in kw, (
+            "seed must not be in gen_kwargs (would reset RNG per probe); "
+            "it is plumbed via _delta_for_variant's seed= kwarg instead"
+        )
 
     def test_sample_passes_top_k_explicitly(self):
         """Fix 1 regression test — caught the temp_1.5 share collapse

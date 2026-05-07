@@ -100,6 +100,13 @@ def _generate_kwargs(config: Config, max_new_tokens: int) -> dict[str, Any]:
     kwarg is omitted, which silently truncates sample-decode
     distributions. Passing top_k=0 explicitly is what makes ``temp_1.5``
     variants byte-equivalent to v0.3.2.
+
+    NB: ``seed`` is **not** included here. Seed is applied once per
+    variant at probe 0 by ``_delta_for_variant`` (see ``_resolve_seed``);
+    repeating it on every probe call would reset RNG between probes
+    and force every probe in a sampling variant to see the same RNG
+    state, which is the wrong granularity (lab convention is "pin
+    once per experiment, let RNG advance naturally").
     """
     decode = config.decode
     out: dict[str, Any] = {"max_new_tokens": max_new_tokens}
@@ -110,13 +117,34 @@ def _generate_kwargs(config: Config, max_new_tokens: int) -> dict[str, Any]:
         out["temperature"] = decode.temperature
         out["top_p"] = decode.top_p
         out["top_k"] = decode.top_k
-        if decode.seed is not None:
-            out["seed"] = decode.seed
         return out
     # beam / best_of_n / self_consistency aren't yet wired through
     # HFEngine.generate; the v0.2.x path didn't support them either.
     # Fall through to greedy defaults for byte-equivalence with v0.3.2.
     return out
+
+
+def _resolve_seed(
+    v_config: Config, family_seed: Optional[int],
+) -> Optional[int]:
+    """Effective seed for one variant's generate phase.
+
+    Precedence (Fix 3, v0.4.0 PR #15):
+      1. ``v_config.decode.seed`` if set explicitly — per-variant
+         override (a user can pin one variant while leaving others
+         unpinned).
+      2. ``family_seed`` if set — applies to every variant whose
+         DecodeSpec didn't override.
+      3. ``None`` — no ``manual_seed`` call; RNG state is whatever
+         prior work left it as. Matches PyTorch convention ("no seed
+         arg = no seeding"); the cost is non-reproducibility for
+         sampling variants, which the user is responsible for if they
+         pass neither family seed nor DecodeSpec seed.
+    """
+    decode_seed = getattr(v_config.decode, "seed", None)
+    if decode_seed is not None:
+        return decode_seed
+    return family_seed
 
 
 # ── Per-variant change-vector computation ────────────────────────────
@@ -132,6 +160,7 @@ def _delta_for_variant(
     max_new_tokens: int,
     progress: Optional[bool],
     progress_label: str,
+    seed: Optional[int] = None,
 ) -> tuple[list[float], bool]:
     """Compute the raw δ vector (possibly containing NaN) for one variant.
 
@@ -160,22 +189,39 @@ def _delta_for_variant(
 
     gen_kwargs = _generate_kwargs(v_config, max_new_tokens)
 
+    # Once-per-variant seed pinning (Fix 3, v0.4.0 PR #15). Resolved
+    # seed (DecodeSpec.seed > family seed > None) is passed to
+    # ``engine.generate(seed=…)`` ONLY on probe 0; subsequent probes
+    # pass ``seed=None`` so RNG advances naturally through the loop.
+    # This matches the user mental model "set seed, run experiment"
+    # and avoids the per-probe variant where every probe sees the
+    # same RNG state (over-correlated sampling). If both family seed
+    # and DecodeSpec.seed are None, ``effective_seed`` is None and no
+    # ``manual_seed`` is called anywhere — that's the intentional
+    # PyTorch-convention fallback (non-reproducible by design).
+    effective_seed = _resolve_seed(v_config, seed)
+
     # ── 1. Generate variant outputs ──
     v_outputs: list[str] = []
     v_ids_per_probe: list[list[int]] = []
     for i in _progress_iter(
         range(n), desc=f"{prefix}generate", total=n, enable=progress,
     ):
+        gen_seed = effective_seed if i == 0 else None
         try:
             gen = v_engine.generate(
-                prompts[i], prefix_text=v_prefix, **gen_kwargs,
+                prompts[i], prefix_text=v_prefix, seed=gen_seed,
+                **gen_kwargs,
             )
         except TypeError:
             # Engine without prefix_text kwarg — fall back to single-
             # tokenize via concatenation. (e.g. MockEngine in unit
             # tests.) For real backends the calibration test would catch
-            # any byte-level divergence.
-            gen = v_engine.generate(v_prefix + prompts[i], **gen_kwargs)
+            # any byte-level divergence. Seed kwarg is in the Protocol,
+            # so it's safe to pass even on the fallback path.
+            gen = v_engine.generate(
+                v_prefix + prompts[i], seed=gen_seed, **gen_kwargs,
+            )
         v_outputs.append(gen.text)
         v_ids_per_probe.append(list(gen.tokens))
 
@@ -278,6 +324,7 @@ def run_family_pipeline(
     max_new_tokens: int = 16,
     progress: Optional[bool] = None,
     engine_groups: Optional[dict[str, str]] = None,
+    seed: Optional[int] = None,
 ) -> GeoResult:
     """Run the family pipeline using only the Engine Protocol.
 
@@ -308,6 +355,14 @@ def run_family_pipeline(
         release decision. ``"__base__"`` denotes the base engine
         (never released). When ``None``, every variant is its own
         anchor — no reuse.
+    seed : int | None
+        Top-level RNG seed (Fix 3, v0.4.0 PR #15). When set, each
+        variant whose ``DecodeSpec.seed is None`` will pin RNG via
+        a single ``torch.manual_seed`` call at probe 0 of that
+        variant's generate phase; subsequent probes advance RNG
+        naturally. ``DecodeSpec.seed`` takes precedence per variant.
+        ``None`` (default) leaves RNG unpinned — sample-decode
+        variants are non-reproducible across runs (PyTorch convention).
 
     Returns
     -------
@@ -381,6 +436,7 @@ def run_family_pipeline(
                     max_new_tokens=max_new_tokens,
                     progress=progress,
                     progress_label=f"v{v_idx}/{n_v} {name}",
+                    seed=seed,
                 )
 
                 # Look-ahead-by-one release. Same rule as

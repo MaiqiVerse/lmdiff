@@ -176,12 +176,18 @@ class MinimalEngine:
         max_new_tokens: int = 16,
         temperature: float = 1.0,
         top_p: float = 1.0,
+        top_k: int = 0,
         seed: Optional[int] = None,
     ) -> GenerateResult:
         if "generate" not in self._capabilities:
             raise NotImplementedError(
                 f"Engine {self.name} does not support `generate` capability."
             )
+        # ``top_k`` accepted for Engine-Protocol parity (HFEngine + the
+        # v0.4.0 pipeline pass it for sample-decode variants). Subclasses
+        # that override ``_generate_impl`` may consume it; the default
+        # implementation does not.
+        del top_k
         text, tokens, logprobs = self._generate_impl(
             prompt, max_new_tokens, temperature, top_p, seed,
         )

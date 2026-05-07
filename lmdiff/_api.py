@@ -341,7 +341,17 @@ def compare(
         constructed via ``template.with_config(cfg)`` and the template is
         not closed by ``compare``.
     seed : int | None
-        Reserved for future randomized metrics; v0.3.0 ignores it.
+        Top-level RNG seed for reproducible sampling-decode variants
+        (v0.4.0+). When set, each variant's generate phase begins with a
+        single ``torch.manual_seed(effective_seed)`` call before its
+        first probe. RNG advances naturally through subsequent probes
+        (lab convention: pin once per experiment, not per probe).
+        Per-variant ``DecodeSpec.seed`` overrides this when present.
+        ``None`` (default) leaves RNG unpinned — matches PyTorch
+        convention but means sample-decode variants are not reproducible
+        across runs (the v0.3.x behaviour, which the v0.4.0 7-variant
+        calibration regression surfaced as the 497↔500 probe-count
+        wobble; see L-031).
     progress : bool | None
         Render per-probe progress bars and per-variant phase markers.
         ``None`` (default) auto-enables on a tty and stays silent in
@@ -423,6 +433,7 @@ def compare(
             max_new_tokens=max_new_tokens,
             progress=progress,
             engine_groups=anchor_map,
+            seed=seed,
         )
         if probe_info:
             result.metadata.update(probe_info)
@@ -529,6 +540,7 @@ def family(
             max_new_tokens=max_new_tokens,
             progress=progress,
             engine_groups=anchor_map,
+            seed=seed,
         )
         if probe_info:
             result.metadata.update(probe_info)

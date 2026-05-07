@@ -834,3 +834,27 @@ For v0.4.0 the calibration variants accidentally had the simplest possible cross
   - `tests/integration/test_calibration_regression_7variant.py` — 7-variant calibration covering the 5 unique-model + 2 runtime-only-modification (`temp_1.5`, `system_prompt`) variants. 6 of 7 variants assert byte-equivalence on `change_vectors` within 1e-6; all 7 assert `share_per_domain` within 2pp.
 
 The 7-variant test is now the broader gate alongside the original 4-variant test. Future engine-touching PRs must pass both. New backends (vLLMEngine, etc.) must add tests for additional code paths they introduce — not just re-run the existing two.
+
+## L-031: public kwargs documented as "reserved for future" tend to mask bugs that can't surface until the kwarg is real
+
+**Date:** 2026-05-07
+**Phase:** 4 (v0.4.0 backend cutover, second sanity round)
+**Severity:** High. The kwarg looked harmless because nothing depended on it — but its absence corrupted reproducibility on the headline calibration metric, only visible after the fact because the failure was statistical (probe-count wobble), not a clean exception.
+
+**Symptom:** After Fix 1 + Fix 2 (L-030) landed, the v0.4.0 7-variant calibration regression test produced different `n_probes` across back-to-back GPU runs of the same code on the same inputs: 497 in one run, 500 in another. v0.3.2 was stable at 497. The byte-equivalence assertions on the 6 deterministic variants then mismatched against the v0.3.2 fixture not because the variants' computations diverged — but because the global NaN-filter dropped a different set of 0-3 probes each run.
+
+**Root cause:** `family(seed=…)` and `compare(seed=…)` had been declared in the public API since v0.3.0 but their docstring read *"Reserved for future randomized metrics; v0.3.0 ignores it."* The kwarg was accepted and silently discarded — never plumbed into the pipeline, never reached `HFEngine.generate(seed=…)`. `DecodeSpec.seed` defaulted to `None`. The 7-variant test's `temp_1.5` variant was constructed `DecodeSpec(strategy="sample", temperature=1.5)` — also `seed=None`.
+
+The chain from there:
+1. `temp_1.5.generate` ran with no `torch.manual_seed` call anywhere upstream.
+2. RNG state at temp_1.5's first `model.generate` depended on cumulative prior work — model loads, tokenizer canary checks, ~1000 score forward passes for the 5 prior variants. Tiny scheduling differences (BF16 attention reductions on Blackwell) perturbed cumulative state run-to-run.
+3. Different RNG → different sampled token sequences → some sequences started with EOS (empty output) → those probes flagged NaN by the pipeline's empty-output check (`_pipeline.py:191`).
+4. The global NaN filter (`_universally_valid_indices`) drops a probe if ANY variant produced NaN — so the temp_1.5 wobble dragged the whole 7-variant probe set up and down with it.
+
+The filter was correct. The pipeline math was correct. The seed was the bug, and the no-op `seed` kwarg masked it: every reasonable code reading saw `family(seed=42)` and assumed the value was reaching the sampler. It wasn't.
+
+**Rule:** Public kwargs documented as "reserved for future" or "ignored in vN" tend to mask bugs. Either implement them or remove them. The cost of "implement" is one wire. The cost of "leave it there" is that every user who passes it assumes it works, and every regression that the kwarg's real implementation would have prevented surfaces silently. If the feature behind the kwarg genuinely isn't ready, raise `NotImplementedError` when it's set — that's louder than "silently ignored" and keeps the API surface honest.
+
+**Where applied:** v0.4.0 PR #15 Fix 3 — `_api.compare/family` plumbs `seed` into `run_family_pipeline` (3a); `_pipeline._delta_for_variant` resolves an effective seed (DecodeSpec.seed > family seed > None) and pins it at probe 0 of each variant's generate phase (3b/3c, once-per-variant granularity per PyTorch convention, not per-probe). Fixture must be regenerated because v0.3.2's `temp_1.5` outputs were produced under whatever RNG state the unpinned path happened to land in — that state was incidental, never a designed contract; the new contract is "deterministic given seed."
+
+**Diagnostic signature:** Same code, same inputs, repeated runs produce different aggregate counts (n_probes, n_filtered, n_skipped, etc.) — and the difference is small (single-digit). Look for unpinned RNG in any sample-decode path and any kwarg whose name suggests reproducibility but whose docstring disclaims behaviour. Both are pre-bugs.

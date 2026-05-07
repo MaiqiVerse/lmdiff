@@ -14,10 +14,14 @@
 ### Deprecated
 - ``lmdiff.experiments.family.run_family_experiment`` — emits ``DeprecationWarning`` on call. Use ``lmdiff.compare()`` / ``lmdiff.family()`` instead. Will be removed in v0.5.0. Internal v0.2.x ``InferenceEngine`` path is unchanged so external callers and the ``lmdiff family-experiment`` CLI subcommand keep producing identical numeric output.
 
+### Fixed
+- **``lmdiff.compare(seed=…)`` and ``lmdiff.family(seed=…)`` are now functional** (Fix 3 in PR #15). Both kwargs were declared in the public API since v0.3.0 but their docstring read *"Reserved for future randomized metrics; v0.3.0 ignores it."* — the value was accepted and silently discarded, never reaching ``HFEngine.generate``. Discovered via the v0.4.0 7-variant calibration regression test, which produced different ``n_probes`` (497 vs 500) across back-to-back GPU runs of the same code on the same inputs because ``temp_1.5``'s sample-decode RNG was unpinned. See L-031. Precedence: ``DecodeSpec.seed`` (per variant) > family-level ``seed`` (top-level) > unpinned (``None``, the default; matches PyTorch convention "no seed arg = no seeding"). Granularity: once-per-variant — pinned at probe 0 of each variant's generate phase, RNG advances naturally through the remaining probes in the loop. Lab-pristine per-probe pinning was rejected as the wrong granularity (it would force every probe in a sampling variant to see the same RNG state, over-correlating samples).
+
 ### Notes
+- The v0.3.2 ``temp_1.5`` outputs (and any pre-Fix-3 sample-decode outputs) were produced under whatever RNG state the unpinned path happened to land in — that state was incidental, never a designed contract. From v0.4.0 onward the contract is "deterministic given seed"; users who want to reproduce a specific sample-decode result must pass ``family(seed=…)`` or set ``DecodeSpec.seed``.
 - ``lmdiff.engine.InferenceEngine`` and ``lmdiff.geometry.ChangeGeometry`` are NOT deprecated this release — both are still consumed internally by ``run_family_experiment`` and external scripts may import them. Removal is scheduled for v0.5.0 alongside ``run_family_experiment`` itself.
 - All existing v0.3.x GeoResult JSONs (schema 4 or 5) load and re-render correctly with v0.4.0; the v0.3.2 share / overall-normalized auto-recompute path is unchanged.
-- Tests: 874 passed on ``not slow and not gpu`` (was 861 in v0.3.2; +13 new pipeline unit tests). The calibration regression test runs only on GPU and is the hard contract for cutover safety.
+- Tests: 444 unit tests pass (was 438 pre-Fix-3; +6 ``test_seed_plumbing.py`` cases asserting seed reaches engine.generate, DecodeSpec precedence, and back-to-back reproducibility). The calibration regression tests run only on GPU and remain the hard contract for cutover safety.
 
 ## [0.3.2] - 2026-04-30
 
