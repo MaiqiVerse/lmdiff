@@ -31,12 +31,21 @@ from __future__ import annotations
 
 import gc
 import math
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import numpy as np
 
 from lmdiff._config import Config
 from lmdiff._engine import Engine
+
+# Engine factory contract (Fix 4, v0.4.0 PR #15):
+#   factory(config) -> (engine, pipeline_owns_lifecycle)
+# When ``pipeline_owns_lifecycle`` is True, ``run_family_pipeline``
+# calls ``engine.close()`` after look-ahead-by-one release. When False,
+# the caller (typically ``_api.family``) handed us a long-lived engine
+# (e.g. the user's ``engine=`` template's ``with_config`` result) and
+# we leave its lifetime alone.
+EngineFactory = Callable[[Config], "tuple[Engine, bool]"]
 from lmdiff.geometry import (
     GeoResult,
     _compute_overall_normalized_from_pdn,
@@ -317,16 +326,36 @@ def _delta_for_variant(
 def run_family_pipeline(
     base_engine: Engine,
     base_config: Config,
-    variant_engines: dict[str, Engine],
     variant_configs: dict[str, Config],
     probe_set: ProbeSet,
     *,
+    variant_engines: Optional[dict[str, Engine]] = None,
+    engine_factory: Optional[EngineFactory] = None,
     max_new_tokens: int = 16,
     progress: Optional[bool] = None,
     engine_groups: Optional[dict[str, str]] = None,
     seed: Optional[int] = None,
 ) -> GeoResult:
     """Run the family pipeline using only the Engine Protocol.
+
+    Two engine-supply modes — exactly one of ``variant_engines`` or
+    ``engine_factory`` must be supplied:
+
+    - **Eager** (``variant_engines={name: Engine}``): caller pre-built
+      every variant engine. Pipeline never closes them — caller owns
+      lifecycle. Backward-compatible with v0.4.0-Fix-3 callsites and
+      with unit tests that inject Mock engines explicitly.
+
+    - **Lazy** (``engine_factory=callable``): callable takes one
+      ``Config`` and returns ``(engine, pipeline_owns_lifecycle)``.
+      Engines are constructed on cache-miss inside the variant loop —
+      one at a time. After look-ahead-by-one release fires, if the
+      pipeline owns the engine it's ``.close()``-ed before moving on.
+      Peak resident engines = 2 (base + active variant). This is the
+      v0.3.2 ``ChangeGeometry.analyze`` behavior, restored in v0.4.0
+      via Fix 4. Without this mode, ``_api.family`` would pre-load
+      every unique-model variant before pipeline start (6+ model loads
+      sitting in memory simultaneously for the 7-variant Llama family).
 
     Parameters
     ----------
@@ -335,16 +364,22 @@ def run_family_pipeline(
     base_config : Config
         v0.3 Config carrying base's runtime-only fields (system_prompt,
         context, decode) for prompt assembly.
-    variant_engines : dict[str, Engine]
-        Per-variant engines. May share instances with each other or
-        with ``base_engine`` when the configs are runtime-compatible
-        (engine reuse, see v0.3.2 PR #10).
     variant_configs : dict[str, Config]
-        Per-variant v0.3 Configs. Carries each variant's runtime-only
-        fields, applied at prompt-assembly time. Matches the
-        ``variant_engines`` keys.
+        Per-variant v0.3 Configs in iteration order. The variant order
+        determines the look-ahead-by-one release schedule. Carries each
+        variant's runtime-only fields, applied at prompt-assembly time.
     probe_set : ProbeSet
         The probe set. Domains and per-probe text are read from here.
+    variant_engines : dict[str, Engine] | None
+        Eager-mode engine map. Keys must match ``variant_configs``.
+        Mutually exclusive with ``engine_factory``.
+    engine_factory : Callable[[Config], (Engine, bool)] | None
+        Lazy-mode engine factory. Called by the pipeline on first
+        cache-miss for each unique anchor (not per-variant — variants
+        sharing an anchor share the loaded engine). Returns
+        ``(engine, pipeline_owns_lifecycle)``. When the second value
+        is True, the pipeline ``.close()``-s the engine on release.
+        Mutually exclusive with ``variant_engines``.
     max_new_tokens : int
         Generation length cap.
     progress : bool | None
@@ -377,11 +412,18 @@ def run_family_pipeline(
     if n_total == 0:
         raise ValueError("cannot analyze on an empty probe set")
 
-    variant_names = list(variant_engines.keys())
+    if (variant_engines is None) == (engine_factory is None):
+        raise ValueError(
+            "run_family_pipeline requires exactly one of "
+            "`variant_engines` (eager) or `engine_factory` (lazy)",
+        )
+
+    variant_names = list(variant_configs.keys())
     n_v = len(variant_names)
     if n_v == 0:
-        raise ValueError("variant_engines must contain at least one entry")
-    if set(variant_configs.keys()) != set(variant_names):
+        raise ValueError("variant_configs must contain at least one entry")
+
+    if variant_engines is not None and set(variant_engines.keys()) != set(variant_names):
         raise ValueError(
             "variant_engines and variant_configs must share the same keys",
         )
@@ -391,8 +433,15 @@ def run_family_pipeline(
 
     # ── 2. Engine cache + look-ahead release loop ──
     # Mirrors ChangeGeometry.analyze's loop with the same anchor map
-    # semantics.
+    # semantics. The cache key is the *anchor* name, not the variant
+    # name — variants sharing an anchor share a single loaded engine.
     engine_cache: dict[str, Engine] = {_BASE_ANCHOR: base_engine}
+    # Tracks which cached engines were built BY this pipeline call (lazy
+    # mode only). On release, pipeline-owned engines are .close()-d;
+    # caller-owned engines (eager mode, or lazy factories that returned
+    # owned=False) are left alone — caller manages their lifecycle.
+    pipeline_owned: dict[str, bool] = {}
+
     if engine_groups is None:
         engine_groups = {n: n for n in variant_names}
 
@@ -420,11 +469,22 @@ def run_family_pipeline(
                         anchor=anchor,
                     )
                 else:
-                    # Variant has its own engine; pull from the supplied
-                    # variant_engines dict (caller built it). The cache
-                    # then keeps it for any later variants sharing this
-                    # anchor.
-                    v_engine = variant_engines[anchor]
+                    # Cache miss — produce an engine for this anchor.
+                    # Eager: pull from the dict the caller pre-built.
+                    # Lazy: construct via factory, remember ownership.
+                    if variant_engines is not None:
+                        v_engine = variant_engines[anchor]
+                    else:
+                        anchor_config = variant_configs[anchor]
+                        v_engine, owns = engine_factory(anchor_config)
+                        if owns:
+                            pipeline_owned[anchor] = True
+                        lifecycle_log(
+                            "engine_load",
+                            variant=name,
+                            anchor=anchor,
+                            owned_by_pipeline=owns,
+                        )
                     engine_cache[anchor] = v_engine
 
                 raw_deltas[name], bpb_flags[name] = _delta_for_variant(
@@ -448,11 +508,19 @@ def run_family_pipeline(
                         and _anchor_of(variant_names[next_idx]) == anchor
                     )
                     if not keep:
-                        engine_cache.pop(anchor, None)
-                        # Caller owns the engine lifecycle (it built
-                        # them and will close them in finally) — we
-                        # don't .close() here. The cache pop is enough
-                        # to release the local reference for GC.
+                        released = engine_cache.pop(anchor, None)
+                        # Lazy + pipeline-owned: actually free the
+                        # weights now. Without this .close() the engine
+                        # stays in CPU/GPU memory because some local
+                        # variable in the caller's frame might still
+                        # reference it (or accelerate's device_map kept
+                        # tensors alive). v0.3.2's lazy path closed
+                        # explicitly here — Fix 4 restores that.
+                        if pipeline_owned.pop(anchor, False) and released is not None:
+                            try:
+                                released.close()
+                            except Exception:  # noqa: BLE001
+                                pass
                         gc.collect()
                         lifecycle_log(
                             "engine_release",
@@ -462,10 +530,18 @@ def run_family_pipeline(
     finally:
         # Drop every cached entry except base (which the caller still
         # holds via base_engine and may want to close on its own).
+        # Pipeline-owned remnants (e.g. an exception aborted the loop
+        # before look-ahead release fired) get .close()-d so they
+        # don't leak weights.
         for cached_anchor in list(engine_cache):
             if cached_anchor == _BASE_ANCHOR:
                 continue
-            engine_cache.pop(cached_anchor, None)
+            stale = engine_cache.pop(cached_anchor, None)
+            if pipeline_owned.pop(cached_anchor, False) and stale is not None:
+                try:
+                    stale.close()
+                except Exception:  # noqa: BLE001
+                    pass
         gc.collect()
 
     # ── 3. Build the GeoResult — pure-function math reused as-is ──
@@ -553,4 +629,4 @@ def run_family_pipeline(
     return result
 
 
-__all__ = ["run_family_pipeline"]
+__all__ = ["EngineFactory", "run_family_pipeline"]

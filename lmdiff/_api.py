@@ -281,6 +281,45 @@ def _close_owned(engines: list[Engine], owned_flags: list[bool]) -> None:
             pass
 
 
+def _make_validating_engine_factory(
+    template: Optional[Engine],
+    metric_names: list[str],
+) -> "Any":
+    """Build a lazy engine factory for ``run_family_pipeline``
+    (Fix 4, v0.4.0 PR #15).
+
+    Returns ``factory(config) -> (engine, pipeline_owns_lifecycle)``.
+    Wraps ``_build_engine_for_config`` and runs ``_check_capabilities``
+    eagerly on the freshly-built engine so a missing-capability error
+    surfaces at variant-load time (when the user's still in the call
+    stack of ``family()`` / ``compare()``) rather than mid-forward-pass.
+    If the cap check raises, the just-loaded engine is closed (when we
+    own its lifecycle) so we don't leak weights on the way out.
+
+    The factory is what enables peak-resident-engines = 2 in
+    ``family()``: the pipeline calls the factory only when it actually
+    needs a variant engine, runs the variant, then ``.close()``-s the
+    pipeline-owned engine via look-ahead-by-one release. Without
+    factory mode the pipeline would receive a fully pre-built dict and
+    every unique-model variant would sit in memory until ``family()``
+    returns — the v0.3.2 → v0.4.0 regression Fix 4 closes.
+    """
+    def _factory(cfg: Config) -> "tuple[Engine, bool]":
+        engine, owned = _build_engine_for_config(cfg, template)
+        try:
+            _check_capabilities(metric_names, engine)
+        except Exception:
+            if owned:
+                try:
+                    engine.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
+        return engine, owned
+
+    return _factory
+
+
 # ── Public entry points ───────────────────────────────────────────────
 
 
@@ -405,31 +444,22 @@ def compare(
         [(_BASE_ANCHOR, base_cfg), (variant_name, variant_cfg)],
     )
 
+    # Build base eagerly + check caps. Single variant gets built lazily
+    # by the pipeline via the same factory used by family() — when the
+    # variant's anchor is base, the cache-hit short-circuits the factory
+    # entirely (no extra load). For consistency with family() the
+    # capability check + lazy construction live in one path; see Fix 4.
     base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
-    engines: list[Engine] = [base_engine]
-    owned_flags: list[bool] = [base_owned]
+    _check_capabilities(metric_names, base_engine)
+    factory = _make_validating_engine_factory(engine, metric_names)
     try:
-        # If the single variant reuses base under the anchor map, its
-        # "engine" is the base engine — no extra construction. Otherwise
-        # build a fresh one.
-        if anchor_map[variant_name] == _BASE_ANCHOR:
-            variant_engine = base_engine
-        else:
-            variant_engine, var_owned = _build_engine_for_config(
-                variant_cfg, engine,
-            )
-            engines.append(variant_engine)
-            owned_flags.append(var_owned)
-
-        _check_capabilities(metric_names, base_engine, variant_engine)
-
         from lmdiff._pipeline import run_family_pipeline
         result = run_family_pipeline(
             base_engine=base_engine,
             base_config=base_cfg,
-            variant_engines={variant_name: variant_engine},
             variant_configs={variant_name: variant_cfg},
             probe_set=probe_set,
+            engine_factory=factory,
             max_new_tokens=max_new_tokens,
             progress=progress,
             engine_groups=anchor_map,
@@ -438,7 +468,11 @@ def compare(
         if probe_info:
             result.metadata.update(probe_info)
     finally:
-        _close_owned(engines, owned_flags)
+        if base_owned:
+            try:
+                base_engine.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     return result
 
@@ -505,38 +539,23 @@ def family(
         [(_BASE_ANCHOR, base_cfg), *variant_cfgs.items()],
     )
 
+    # Build base eagerly; check its caps. Variant engines are built
+    # LAZILY by the pipeline via the factory, one at a time, so peak
+    # resident engines = 2 (base + active variant). Without this, every
+    # unique-model variant would sit in memory until family() returns —
+    # the v0.3.2 → v0.4.0 regression L-029 / L-032 documents. See
+    # Fix 4 in PR #15.
     base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
-    engines: list[Engine] = [base_engine]
-    owned_flags: list[bool] = [base_owned]
+    _check_capabilities(metric_names, base_engine)
+    factory = _make_validating_engine_factory(engine, metric_names)
     try:
-        # Build per-variant engines. Variants whose anchor is base or
-        # an earlier variant reuse that engine — no fresh load. Variants
-        # that are their own anchor get a fresh engine.
-        variant_engines: dict[str, Engine] = {}
-        for name, vcfg in variant_cfgs.items():
-            anchor = anchor_map[name]
-            if anchor == _BASE_ANCHOR:
-                variant_engines[name] = base_engine
-            elif anchor == name:
-                ve, owned = _build_engine_for_config(vcfg, engine)
-                engines.append(ve)
-                owned_flags.append(owned)
-                variant_engines[name] = ve
-            else:
-                # Variant reuses an earlier variant's engine — that
-                # variant is already in variant_engines (anchor map is
-                # walked left-to-right by _compute_anchor_map).
-                variant_engines[name] = variant_engines[anchor]
-
-        _check_capabilities(metric_names, base_engine, *engines[1:])
-
         from lmdiff._pipeline import run_family_pipeline
         result = run_family_pipeline(
             base_engine=base_engine,
             base_config=base_cfg,
-            variant_engines=variant_engines,
             variant_configs=variant_cfgs,
             probe_set=probe_set,
+            engine_factory=factory,
             max_new_tokens=max_new_tokens,
             progress=progress,
             engine_groups=anchor_map,
@@ -545,7 +564,11 @@ def family(
         if probe_info:
             result.metadata.update(probe_info)
     finally:
-        _close_owned(engines, owned_flags)
+        if base_owned:
+            try:
+                base_engine.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     return result
 
