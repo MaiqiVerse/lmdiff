@@ -131,7 +131,15 @@ def main() -> int:
     print(f"[regen] probe_domains:   {dict(Counter(pd))}")
     print()
     print("Next steps:")
-    print(f"  git add {args.output.relative_to(_REPO_ROOT)}")
+    # Resolve to absolute first so a CWD-relative ``--output regenerate.json``
+    # still works; fall back to the user-supplied path string when the
+    # output landed outside the repo (relative_to() raises ValueError).
+    try:
+        rel = args.output.resolve().relative_to(_REPO_ROOT)
+        git_path = str(rel)
+    except ValueError:
+        git_path = str(args.output)
+    print(f"  git add {git_path}")
     print("  git commit -m 'fixture: regenerate v0.4.0 7-variant calibration baseline'")
     print("  git push origin <branch>")
     print()
