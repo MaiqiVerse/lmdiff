@@ -1132,6 +1132,74 @@ long sequences, RoPE extrapolation in Yarn beyond original training
 distribution). v0.4.1 ships the validity skeleton; quality-degradation
 flags are a separate v0.5.0+ feature.
 
+### 9.10 Plain unweighted RMS vs token-weighted RMS (added during audit, post user-review)
+
+The §8.4 finding that within-domain CoV is 0.35–0.53 — not approximately
+constant as the §4.1 caveat assumed — opens a real choice between two
+clean per-token formulations:
+
+- **A. Plain unweighted:** `pdn_A[v][d] = sqrt(mean(δ²)) = sqrt(Σδ² / n_d)`
+- **B. Token-weighted:** `pdn_B[v][d] = sqrt(Σ T_i·δ_i² / Σ T_i)`
+
+Both have units `nats/token` (clean). They diverge when within-domain
+`T_i` correlates with `δ_i²` — longer probes systematically having
+larger or smaller per-token drift than shorter ones in the same domain.
+
+**Empirical numbers** (4-variant calibration, see
+`docs/internal/v041_audit_pdn_AB_check.py`):
+
+Per-domain `corr(T_i, δ_i²)` is non-trivial — strongest in long-context
+(0.38–0.72 across variants) but also material in commonsense (+0.18 to
++0.30) and reasoning (−0.29 to −0.00). At those correlations, B differs
+from A by up to ~10–19% per (variant, domain) cell.
+
+**Share-level impact** (v0.4.1 view, long-context dropped from base
+per the validity framework):
+
+| variant | A biggest | A share | B biggest | B share | max abs Δ in row |
+|---|---|---|---|---|---|
+| code | code | 52.1% | code | 46.8% | **5.38pp** (code) |
+| long | reasoning | 46.9% | reasoning | 42.7% | 4.13pp (reasoning) |
+| math | math | 42.6% | math | 44.7% | 2.22pp (code) |
+| yarn | commonsense | 78.7% | commonsense | 81.6% | 2.91pp (commonsense) |
+
+**Biggest-move ranking is preserved across all 4 variants** under both
+formulas. But the absolute shares shift up to 5.4pp — perceptible for
+headline showcase narratives ("CodeLlama spends 52% on code" vs "47%").
+Direction of shift matches the correlation sign: B amplifies positively-
+correlated domains (commonsense in most variants), suppresses negatively-
+correlated (reasoning and code in some).
+
+**Pre-validity view** (long-context included): max share Δ shrinks to
+1.53pp because long-context dominates either way. The 5.4pp number is
+the lab-relevant one because it's what users see post-v0.4.1.
+
+**Recommendation: B (token-weighted).** Three reasons:
+
+1. **Statistical principle.** When T_i varies within a domain, the
+   per-token CE diff estimate has variance ∝ 1/T_i (more tokens →
+   more stable estimate of per-token rate). Token-weighting is the
+   maximum-likelihood weighting; plain unweighted treats every probe
+   as equally informative regardless of length.
+
+2. **Empirical magnitude.** 5.4pp is past "either is fine" territory
+   and into "user will notice in the demo". Choice is real.
+
+3. **Convergence to A as a special case.** When `T_i ≡ T̄_d`, both
+   formulas collapse to the same value. So B is a strict
+   generalization with no downside other than one extra term in the
+   numerator (`T_i ·` per probe).
+
+**Counter-argument for A:** simpler. One less code path. The §4.1
+"approximately equal at small CoV" framing is gentler for the
+methodology page.
+
+**Implementation note:** if user picks B, the formula in §4.1 should
+update to `sqrt(Σ_i T_i · δ_i² / Σ_i T_i)` and the `pdn_per_domain`
+sketch in §4.1 takes one extra `tokens` argument. Section 4.4 derivation
+notes this is the standard variance-weighting form for per-token
+estimators across heterogeneous-length samples.
+
 ---
 
 **End of design audit.**
