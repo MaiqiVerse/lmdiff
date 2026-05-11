@@ -35,6 +35,7 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-027: pre-flight code audit consistently catches more issues than spec-author memory
 - L-028: hotfix release scope should stay minimal even when a broader fix is architecturally cleaner
 - L-029: for multi-variant runs of large models, immediate engine release beats caching even at the cost of reload time
+- L-030: cross-engine equivalence tests must span every code path the new engine introduces, not only the production-canonical inputs
 
 ---
 
@@ -795,3 +796,87 @@ CC's audit caught that `HFEngine.score()` was not byte-equivalent to `InferenceE
 This is a *default*, not a universal. For small models, slow-disk environments, or scenarios where variant order is known to repeat the same anchor many times, caching pays off — but it should be opt-in, not default.
 
 **Where applied:** v0.3.2 PR #10 implements look-ahead-by-one release in `ChangeGeometry.analyze`. Peak active engines capped at 2 (base + 1 active variant) regardless of variant count. Engine reuse (sharing one engine across runtime-only Config differences) sits *on top of* the release rule — runtime-only siblings reuse the cached engine within the same iteration, but the cache itself is bounded by look-ahead release. PR #9's `device_map_summary()` warning surfaces the spillover failure mode at variant load time so the user can kill an OOM-bound run at minute one instead of hour eight.
+
+## L-030: cross-engine equivalence tests must span every code path the new engine introduces, not only the production-canonical inputs
+
+**Date:** 2026-05-07
+**Phase:** 4 (v0.4.0 backend cutover, post-merge sanity)
+**Severity:** Refines L-025. The cutover passed its calibration gate (4 variants × 5 domains, 11/11 byte-equivalent within 1e-6) and was about to ship before a sanity 7-variant demo run revealed two real numerical regressions that the calibration test never exercised.
+
+**Symptom:** v0.4.0 cutover (PR #15) was ready to merge. Calibration regression test passed cleanly. User then re-ran the v0.3.2 7-variant demo through the new pipeline — `system_prompt` variant's share-on-commonsense was 94 % vs v0.3.2's 60 % (Δ +34 pp), and `temp_1.5` variant's share-on-reasoning was 5 % vs v0.3.2's 34 % (Δ −29 pp). Two materially different numerical results on the user-visible headline metric, neither caught by the calibration gate.
+
+**Root cause:** The 4-variant calibration only used variants whose Configs differed in the `model` field. It exercised:
+  - Greedy decode only
+  - No `system_prompt`
+  - No `context`
+  - No engine reuse (each variant is its own anchor)
+
+The new `_pipeline.py` introduced two new code paths to handle the v0.4.0 cutover's design decisions:
+  1. `_generate_kwargs(config, max_new_tokens)` — translates `DecodeSpec` to engine kwargs. **Forgot `top_k`**. HF `model.generate()` defaults to `top_k=50` when omitted, silently truncating sample-decode distributions. v0.2.x explicitly passed `top_k=0` (no filtering). Caused `temp_1.5`'s output distribution to compress → smaller δ → narrower `share_per_domain`.
+  2. `_assemble_prompt(config, probe)` — concatenates `system_prompt + "\n" + probe`, then HFEngine.score does `tokenize(concatenated_prompt, add_special=False)`. v0.2.x split-tokenizes: `tokenize(prefix, add_special=True) + tokenize(probe, add_special=False)`. For Llama SentencePiece, single-tokenize at the prefix boundary produces different token IDs than split — propagates to different generated outputs and CE values.
+
+Neither code path was exercised by the calibration variants. Both were exercised by the 7-variant demo. The audit (PR #15 audit doc) explicitly flagged the SentencePiece boundary risk but underestimated its magnitude — assumed `\n` at the boundary made it "almost always safe." It wasn't safe.
+
+**Rule (refines L-025):** L-025 requires "byte-level equivalence to the existing default within float-math tolerance" before promoting to default. This means: equivalence on every code path the new engine introduces. Identify the new code paths (sampling kwargs, prefix assembly, runtime overrides, multi-turn handling, …) and pick at least one calibration input per path. The calibration set should be designed to exercise the cross product of:
+  - Decode strategies (greedy + sample)
+  - Prefix scenarios (no prefix + system_prompt + context + ICL)
+  - Engine reuse vs fresh load
+  - Cross-tokenizer (matching + differing)
+  - Any other Config field whose semantics live in the engine layer
+
+For v0.4.0 the calibration variants accidentally had the simplest possible cross product: greedy × no prefix × fresh load × matching tokenizer. That covered <25 % of the new code surface.
+
+**Diagnostic signature:** Calibration passes 100 %, but a broader "everything we ship" demo run shows variant-specific regressions on derived metrics (share, magnitudes_normalized) of >10 percentage points or >1e-2 relative. The calibration was too narrow.
+
+**Where applied:** v0.4.0 PR #15 fixup commits add:
+  - `top_k` passthrough in `_pipeline._generate_kwargs` and a kwarg on `HFEngine.generate` (Fix 1)
+  - `prefix_text=` kwarg on `HFEngine.score` and `HFEngine.generate` for split-tokenize at the prefix boundary; pipeline passes `_prefix_text(v_config)` instead of pre-concatenating (Fix 2)
+  - `tests/integration/test_calibration_regression_7variant.py` — 7-variant calibration covering the 5 unique-model + 2 runtime-only-modification (`temp_1.5`, `system_prompt`) variants. 6 of 7 variants assert byte-equivalence on `change_vectors` within 1e-6; all 7 assert `share_per_domain` within 2pp.
+
+The 7-variant test is now the broader gate alongside the original 4-variant test. Future engine-touching PRs must pass both. New backends (vLLMEngine, etc.) must add tests for additional code paths they introduce — not just re-run the existing two.
+
+## L-031: public kwargs documented as "reserved for future" tend to mask bugs that can't surface until the kwarg is real
+
+**Date:** 2026-05-07
+**Phase:** 4 (v0.4.0 backend cutover, second sanity round)
+**Severity:** High. The kwarg looked harmless because nothing depended on it — but its absence corrupted reproducibility on the headline calibration metric, only visible after the fact because the failure was statistical (probe-count wobble), not a clean exception.
+
+**Symptom:** After Fix 1 + Fix 2 (L-030) landed, the v0.4.0 7-variant calibration regression test produced different `n_probes` across back-to-back GPU runs of the same code on the same inputs: 497 in one run, 500 in another. v0.3.2 was stable at 497. The byte-equivalence assertions on the 6 deterministic variants then mismatched against the v0.3.2 fixture not because the variants' computations diverged — but because the global NaN-filter dropped a different set of 0-3 probes each run.
+
+**Root cause:** `family(seed=…)` and `compare(seed=…)` had been declared in the public API since v0.3.0 but their docstring read *"Reserved for future randomized metrics; v0.3.0 ignores it."* The kwarg was accepted and silently discarded — never plumbed into the pipeline, never reached `HFEngine.generate(seed=…)`. `DecodeSpec.seed` defaulted to `None`. The 7-variant test's `temp_1.5` variant was constructed `DecodeSpec(strategy="sample", temperature=1.5)` — also `seed=None`.
+
+The chain from there:
+1. `temp_1.5.generate` ran with no `torch.manual_seed` call anywhere upstream.
+2. RNG state at temp_1.5's first `model.generate` depended on cumulative prior work — model loads, tokenizer canary checks, ~1000 score forward passes for the 5 prior variants. Tiny scheduling differences (BF16 attention reductions on Blackwell) perturbed cumulative state run-to-run.
+3. Different RNG → different sampled token sequences → some sequences started with EOS (empty output) → those probes flagged NaN by the pipeline's empty-output check (`_pipeline.py:191`).
+4. The global NaN filter (`_universally_valid_indices`) drops a probe if ANY variant produced NaN — so the temp_1.5 wobble dragged the whole 7-variant probe set up and down with it.
+
+The filter was correct. The pipeline math was correct. The seed was the bug, and the no-op `seed` kwarg masked it: every reasonable code reading saw `family(seed=42)` and assumed the value was reaching the sampler. It wasn't.
+
+**Rule:** Public kwargs documented as "reserved for future" or "ignored in vN" tend to mask bugs. Either implement them or remove them. The cost of "implement" is one wire. The cost of "leave it there" is that every user who passes it assumes it works, and every regression that the kwarg's real implementation would have prevented surfaces silently. If the feature behind the kwarg genuinely isn't ready, raise `NotImplementedError` when it's set — that's louder than "silently ignored" and keeps the API surface honest.
+
+**Where applied:** v0.4.0 PR #15 Fix 3 — `_api.compare/family` plumbs `seed` into `run_family_pipeline` (3a); `_pipeline._delta_for_variant` resolves an effective seed (DecodeSpec.seed > family seed > None) and pins it at probe 0 of each variant's generate phase (3b/3c, once-per-variant granularity per PyTorch convention, not per-probe). Fixture must be regenerated because v0.3.2's `temp_1.5` outputs were produced under whatever RNG state the unpinned path happened to land in — that state was incidental, never a designed contract; the new contract is "deterministic given seed."
+
+**Diagnostic signature:** Same code, same inputs, repeated runs produce different aggregate counts (n_probes, n_filtered, n_skipped, etc.) — and the difference is small (single-digit). Look for unpinned RNG in any sample-decode path and any kwarg whose name suggests reproducibility but whose docstring disclaims behaviour. Both are pre-bugs.
+
+## L-032: when porting orchestration logic, preserve the resource-lifetime contract — not just the function signature
+
+**Date:** 2026-05-07
+**Phase:** 4 (v0.4.0 backend cutover, third sanity round)
+**Severity:** High. Silent performance regression — runs complete but go through CPU-spillover path; user notices "why are 6 weights loaded at startup" only by reading log lines, not by an exception.
+
+**Symptom:** v0.4.0 backend cutover routed `lmdiff.family()` through the new `run_family_pipeline`. Pipeline kept the same function-level shape as v0.3.2's `ChangeGeometry.analyze` — same anchor map, same look-ahead-by-one release loop, same per-variant call structure. But for the 7-variant Llama family, the user observed 6 model loads happening upfront before any inference started, vs v0.3.2 where loads were interleaved with the variant loop and only 2 engines were ever GPU-resident at once.
+
+**Root cause:** The old `ChangeGeometry.analyze` was passed a list of `Config` objects and constructed each variant's `InferenceEngine` *inside* the variant loop, freed via look-ahead-by-one. The new `run_family_pipeline` was given a `variant_engines: dict[str, Engine]` parameter — a *pre-built* engine dict — by `_api.family()`. The function signature changed from "configs → builds engines internally" to "engines → uses what caller built." The internal cache + release machinery was preserved verbatim, but it now operated on engines the caller had already eagerly constructed; release amounted to dropping a reference inside the cache while the caller's `engines: list` still kept every weight alive until `family()` returned.
+
+The architecture audit that produced the cutover spec focused on the per-variant computation (delta math, prompt assembly, prefix tokenization) and the function signature shape. It missed that `ChangeGeometry.analyze`'s old signature *implied* "I own the engine lifetime" while the new pipeline's signature *implies* "the caller owns it" — same body of orchestration code, opposite resource-lifetime semantics.
+
+**Rule:** When porting performance-critical orchestration logic to a new abstraction layer, identify what the old layer *owned* about resource lifetime — when it allocated, when it freed, what its peak resident set looked like — and write that contract down explicitly in the new layer's signature. A function that "looks the same" can have completely different lifetime characteristics if the inputs are pre-computed instead of lazily constructed inside it. The signature change "list of configs in / list of engines in" is not a refactor — it's a fundamental shift in who owns peak memory pressure.
+
+Concretely: if the old code constructed N items lazily inside its loop, and the new code accepts those N items as a parameter, the new code must either (a) accept a *factory* (so it controls when construction happens) or (b) document loudly that callers are responsible for streaming construction. Option (a) keeps the lifetime contract; option (b) shoves it onto every caller and almost always gets violated.
+
+**Where applied:** v0.4.0 PR #15 Fix 4 — `run_family_pipeline` now accepts an `engine_factory: Callable[[Config], (Engine, bool)]` alongside the existing `variant_engines` dict (mutually exclusive). `_api.family()` and `_api.compare()` switch to factory mode: build base eagerly, pass a validating factory in. Pipeline calls factory on cache-miss inside the variant loop; on look-ahead-by-one release, factory-built engines get `.close()`-d. Peak resident is back to 2 (base + active variant). The eager `variant_engines` mode is preserved for backward compat with the 17 unit-test callsites that inject Mock engines explicitly.
+
+**Diagnostic signature:** Multi-variant `family()` startup logs `[lmdiff] loading weights: …` N times before the first inference. Or `[lmdiff WARNING] hf_device_map sharded across devices` fires for every variant, indicating accelerate had to spill weights to CPU because too many models were resident at once. Or pure CPU usage soars during inference (PCIe paging dominates over compute). v0.3.2's pattern: 1 load → 1 variant runs → 1 release → next load → … (interleaved). v0.4.0 pre-Fix-4: N loads → first inference. v0.4.0 post-Fix-4: back to v0.3.2 pattern.
+
+Companion to L-029 (release aggressively). L-029 said "release after use" — Fix 4 makes it "construct lazily *and* release after use," restoring full v0.3.2 lifetime semantics on the new pipeline.

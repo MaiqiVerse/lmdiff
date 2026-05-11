@@ -105,6 +105,18 @@ class MockEngine:
         same model agree."""
         return hashlib.sha256(self._config.model.encode("utf-8")).hexdigest()[:16]
 
+    # ── v0.4.0 commit 4.0 — Engine Protocol additions ─────────────────
+
+    def token_count(self, text: str) -> int:
+        """Mock: word-split tokenization (matches the synthetic logprobs
+        in ``score`` / ``generate``)."""
+        return max(len(text.split()), 1)
+
+    def tokenizers_equivalent_to(self, other: Any) -> bool:
+        """Default Protocol behaviour — compare ``tokenizer_id``. Two
+        MockEngines built from the same ``Config.model`` agree."""
+        return self.tokenizer_id == other.tokenizer_id
+
     # ── Required methods ──────────────────────────────────────────────
 
     def score(self, prompt: str, continuation: str) -> ScoreResult:
@@ -127,10 +139,17 @@ class MockEngine:
         max_new_tokens: int = 16,
         temperature: float = 1.0,
         top_p: float = 1.0,
+        top_k: int = 0,
         seed: Optional[int] = None,
     ) -> GenerateResult:
         if "generate" not in self._capabilities:
             raise NotImplementedError("generate capability not in mock capabilities")
+        # ``top_k`` is accepted for Engine-Protocol parity (HFEngine and
+        # the v0.4.0 pipeline pass it for sample-decode variants); the
+        # mock's deterministic synthetic output doesn't model truncation,
+        # so the value is recorded only via the seed-tracking subclass
+        # used in tests/unit/test_seed_plumbing.py — not consumed here.
+        del top_k
         effective_seed = (seed if seed is not None else self._seed) + hash(prompt)
         rng = random.Random(effective_seed)
         words = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog"]

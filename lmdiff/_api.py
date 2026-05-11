@@ -281,6 +281,45 @@ def _close_owned(engines: list[Engine], owned_flags: list[bool]) -> None:
             pass
 
 
+def _make_validating_engine_factory(
+    template: Optional[Engine],
+    metric_names: list[str],
+) -> "Any":
+    """Build a lazy engine factory for ``run_family_pipeline``
+    (Fix 4, v0.4.0 PR #15).
+
+    Returns ``factory(config) -> (engine, pipeline_owns_lifecycle)``.
+    Wraps ``_build_engine_for_config`` and runs ``_check_capabilities``
+    eagerly on the freshly-built engine so a missing-capability error
+    surfaces at variant-load time (when the user's still in the call
+    stack of ``family()`` / ``compare()``) rather than mid-forward-pass.
+    If the cap check raises, the just-loaded engine is closed (when we
+    own its lifecycle) so we don't leak weights on the way out.
+
+    The factory is what enables peak-resident-engines = 2 in
+    ``family()``: the pipeline calls the factory only when it actually
+    needs a variant engine, runs the variant, then ``.close()``-s the
+    pipeline-owned engine via look-ahead-by-one release. Without
+    factory mode the pipeline would receive a fully pre-built dict and
+    every unique-model variant would sit in memory until ``family()``
+    returns — the v0.3.2 → v0.4.0 regression Fix 4 closes.
+    """
+    def _factory(cfg: Config) -> "tuple[Engine, bool]":
+        engine, owned = _build_engine_for_config(cfg, template)
+        try:
+            _check_capabilities(metric_names, engine)
+        except Exception:
+            if owned:
+                try:
+                    engine.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
+        return engine, owned
+
+    return _factory
+
+
 # ── Public entry points ───────────────────────────────────────────────
 
 
@@ -341,7 +380,17 @@ def compare(
         constructed via ``template.with_config(cfg)`` and the template is
         not closed by ``compare``.
     seed : int | None
-        Reserved for future randomized metrics; v0.3.0 ignores it.
+        Top-level RNG seed for reproducible sampling-decode variants
+        (v0.4.0+). When set, each variant's generate phase begins with a
+        single ``torch.manual_seed(effective_seed)`` call before its
+        first probe. RNG advances naturally through subsequent probes
+        (lab convention: pin once per experiment, not per probe).
+        Per-variant ``DecodeSpec.seed`` overrides this when present.
+        ``None`` (default) leaves RNG unpinned — matches PyTorch
+        convention but means sample-decode variants are not reproducible
+        across runs (the v0.3.x behaviour, which the v0.4.0 7-variant
+        calibration regression surfaced as the 497↔500 probe-count
+        wobble; see L-031).
     progress : bool | None
         Render per-probe progress bars and per-variant phase markers.
         ``None`` (default) auto-enables on a tty and stays silent in
@@ -379,63 +428,51 @@ def compare(
     ):
         probe_set = probe_set[:n_probes]
 
-    # Engine preflight: when an explicit engine template was provided we
-    # build HFEngines here so that capability checks run before any heavy
-    # lifting. With ``engine=None`` (default) the geometry path uses the
-    # v0.2.x ``InferenceEngine`` directly and the HFEngine instances we'd
-    # build here are never used for inference — they were only kept around
-    # to feed ``_check_capabilities``. Skip the eager build in that case
-    # to avoid loading every model TWICE (once as zombie HFEngine, once as
-    # the real InferenceEngine inside ChangeGeometry). Capability checks
-    # are deferred to the engine that actually runs inference.
-    engines: list[Engine] = []
-    owned_flags: list[bool] = []
-    if engine is not None:
-        base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
-        engines.append(base_engine)
-        owned_flags.append(base_owned)
+    # v0.4.0 backend cutover (PR #15): always build engines via the
+    # public Engine Protocol and route through ``_pipeline``. The
+    # v0.2.x ``ChangeGeometry`` / ``InferenceEngine`` path is no longer
+    # the default — it remains as the implementation behind the
+    # deprecated ``run_family_experiment``.
+    variant_name = (variant_cfg.name or variant_cfg.model)
+    if variant_name == _BASE_ANCHOR:
+        raise ValueError(
+            f"variant name {_BASE_ANCHOR!r} is reserved by lmdiff "
+            f"for the base-engine sentinel; rename your variant"
+        )
+
+    anchor_map = _compute_anchor_map(
+        [(_BASE_ANCHOR, base_cfg), (variant_name, variant_cfg)],
+    )
+
+    # Build base eagerly + check caps. Single variant gets built lazily
+    # by the pipeline via the same factory used by family() — when the
+    # variant's anchor is base, the cache-hit short-circuits the factory
+    # entirely (no extra load). For consistency with family() the
+    # capability check + lazy construction live in one path; see Fix 4.
+    base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
+    _check_capabilities(metric_names, base_engine)
+    factory = _make_validating_engine_factory(engine, metric_names)
     try:
-        if engine is not None:
-            variant_engine, var_owned = _build_engine_for_config(variant_cfg, engine)
-            engines.append(variant_engine)
-            owned_flags.append(var_owned)
-            _check_capabilities(metric_names, *engines)
-
-        # v0.3.0 routes through the existing ChangeGeometry pipeline. The
-        # variant Engine is not yet plugged in — ChangeGeometry currently
-        # builds its own InferenceEngine from the v0.2.x Config. Phase 4
-        # rewires this to consume the new Engine instances directly.
-        from lmdiff.geometry import ChangeGeometry
-        v02_base = _to_v02_config(base_cfg)
-        v02_variant = _to_v02_config(variant_cfg, fallback_name="variant")
-        v02_variant_name = v02_variant.display_name
-        if v02_variant_name == _BASE_ANCHOR:
-            raise ValueError(
-                f"variant name {_BASE_ANCHOR!r} is reserved by lmdiff "
-                f"for the base-engine sentinel; rename your variant"
-            )
-
-        # When the single variant is runtime-compatible with base it
-        # reuses base's engine — otherwise it loads its own. Either way
-        # the anchor map records the decision for analyze().
-        anchor_map = _compute_anchor_map(
-            [(_BASE_ANCHOR, base_cfg), (v02_variant_name, variant_cfg)],
-        )
-
-        cg = ChangeGeometry(
-            base=v02_base,
-            variants={v02_variant_name: v02_variant},
-            prompts=probe_set,
-        )
-        result = cg.analyze(
+        from lmdiff._pipeline import run_family_pipeline
+        result = run_family_pipeline(
+            base_engine=base_engine,
+            base_config=base_cfg,
+            variant_configs={variant_name: variant_cfg},
+            probe_set=probe_set,
+            engine_factory=factory,
             max_new_tokens=max_new_tokens,
             progress=progress,
             engine_groups=anchor_map,
+            seed=seed,
         )
         if probe_info:
             result.metadata.update(probe_info)
     finally:
-        _close_owned(engines, owned_flags)
+        if base_owned:
+            try:
+                base_engine.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     return result
 
@@ -487,60 +524,51 @@ def family(
     ):
         probe_set = probe_set[:n_probes]
 
-    # See ``compare()`` — only build HFEngine instances when an explicit
-    # engine template was passed. With the default ``engine=None`` path,
-    # ChangeGeometry loads its own InferenceEngine and the HFEngines we
-    # built here would be dead weight (one full model load per variant).
-    # On a 7-variant Llama-2 demo this halves peak VRAM at minimum and
-    # is the difference between completing and OOMing.
-    engines: list[Engine] = []
-    owned_flags: list[bool] = []
-    if engine is not None:
-        base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
-        engines.append(base_engine)
-        owned_flags.append(base_owned)
+    # v0.4.0 backend cutover (PR #15): full Engine Protocol path.
+    # Variant engines are built lazily inside the loop below to match
+    # the engine-reuse pattern — variants whose Config is runtime-
+    # compatible with an earlier one share a loaded engine instead of
+    # loading a fresh copy. The look-ahead-by-one release rule lives
+    # in ``_pipeline.run_family_pipeline``.
+    if any(name == _BASE_ANCHOR for name in variant_cfgs):
+        raise ValueError(
+            f"variant name {_BASE_ANCHOR!r} is reserved by lmdiff "
+            f"for the base-engine sentinel; rename your variant"
+        )
+    anchor_map = _compute_anchor_map(
+        [(_BASE_ANCHOR, base_cfg), *variant_cfgs.items()],
+    )
+
+    # Build base eagerly; check its caps. Variant engines are built
+    # LAZILY by the pipeline via the factory, one at a time, so peak
+    # resident engines = 2 (base + active variant). Without this, every
+    # unique-model variant would sit in memory until family() returns —
+    # the v0.3.2 → v0.4.0 regression L-029 / L-032 documents. See
+    # Fix 4 in PR #15.
+    base_engine, base_owned = _build_engine_for_config(base_cfg, engine)
+    _check_capabilities(metric_names, base_engine)
+    factory = _make_validating_engine_factory(engine, metric_names)
     try:
-        if engine is not None:
-            for name, vcfg in variant_cfgs.items():
-                ve, owned = _build_engine_for_config(vcfg, engine)
-                engines.append(ve)
-                owned_flags.append(owned)
-            _check_capabilities(metric_names, *engines)
-
-        # Engine reuse: walk the (base + variants) sequence and find
-        # which variants are runtime-compatible with an earlier config.
-        # Same-anchor variants will share one loaded engine in
-        # ``ChangeGeometry.analyze`` (saves a full model load each).
-        if any(name == _BASE_ANCHOR for name in variant_cfgs):
-            raise ValueError(
-                f"variant name {_BASE_ANCHOR!r} is reserved by lmdiff "
-                f"for the base-engine sentinel; rename your variant"
-            )
-        anchor_map = _compute_anchor_map(
-            [(_BASE_ANCHOR, base_cfg), *variant_cfgs.items()],
-        )
-
-        from lmdiff.geometry import ChangeGeometry
-        v02_base = _to_v02_config(base_cfg)
-        v02_variants = {
-            name: _to_v02_config(vcfg, fallback_name=name)
-            for name, vcfg in variant_cfgs.items()
-        }
-
-        cg = ChangeGeometry(
-            base=v02_base,
-            variants=v02_variants,
-            prompts=probe_set,
-        )
-        result = cg.analyze(
+        from lmdiff._pipeline import run_family_pipeline
+        result = run_family_pipeline(
+            base_engine=base_engine,
+            base_config=base_cfg,
+            variant_configs=variant_cfgs,
+            probe_set=probe_set,
+            engine_factory=factory,
             max_new_tokens=max_new_tokens,
             progress=progress,
             engine_groups=anchor_map,
+            seed=seed,
         )
         if probe_info:
             result.metadata.update(probe_info)
     finally:
-        _close_owned(engines, owned_flags)
+        if base_owned:
+            try:
+                base_engine.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     return result
 
