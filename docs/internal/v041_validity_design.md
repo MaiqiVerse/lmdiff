@@ -502,6 +502,15 @@ in the schema as the unified shape including `share_per_domain` and
 `geo_result_from_json_dict` loader (line 221) supports v1–v5 with on-the-fly
 recomputation of v3/v4 saves via `_ensure_per_domain_normalized_views`.
 
+**Discrepancy with Y.4 §5 wording.** PHASE_PLAN_v6.md Update 5 Y.4 component
+5 says "Schema additions (GeoResult v6 → v7)." That phrasing assumes v0.4.0
+already shipped a v6, which it did not — the v0.4.0 backend cutover (PR #15)
+was a pipeline/engine change with no schema modification. This audit treats
+the live `SCHEMA_VERSION = "5"` as the baseline. The v0.4.1 bump should
+therefore be **v5 → v6**, not v6 → v7. Flagged as a planning artefact; the
+spec's intent is clear from context (one bump, new fields). Confirm naming
+preference in §9.2 below.
+
 ### 5.2 Proposed additions to GeoResult
 
 ```python
@@ -579,20 +588,61 @@ Two reasons to bump rather than do additive-with-v5-tag:
 
 ### 5.5 Auto-flagging legacy data
 
-The heuristic in the spec ("`T_i > 4096` ⇒ suspicious") is brittle: it
-assumes a Llama-2 base context. For users with Mistral-7B (32K) or larger
-bases, the heuristic over-flags.
+**Y.4 §5 specifies a length-heuristic auto-flag** on legacy load:
+"v6 georesults load with all probes assumed valid (no validity field) →
+DeprecationWarning + auto-flag long-context domain as `partial` based on
+probe length heuristic." Align with the spec.
 
-**Recommendation: don't apply a heuristic.** Instead:
+**Plan:**
 
-- On loading any pre-v6 save, emit one `DeprecationWarning` per file:
-  "GeoResult schema v{N} predates the v0.4.1 measurement validity
-  framework. Validity records are unavailable; share/pdn recomputed with
-  current formula assuming all probes valid. Re-run with v0.4.1+ to get
-  accurate validity classification for long-context probes."
-- Provide a CLI helper (out of v0.4.1 scope, note in section 9): `lmdiff
-  validate-result path/to/old.json --base-model meta-llama/Llama-2-7b-hf` — would
-  load the engine config metadata and apply post-hoc validity flags.
+1. On loading any pre-v6 save with `probe_domains` and `avg_tokens_per_probe`
+   populated, walk the per-probe token counts. Use the heuristic:
+
+   ```python
+   # Default Llama-2 base context, can be overridden via metadata key
+   # `base_max_context` (added in v0.4.1 saves) when present.
+   LEGACY_BASE_CONTEXT = 4096
+   base_max = result.metadata.get("base_max_context", LEGACY_BASE_CONTEXT)
+   for i, T_i in enumerate(result.avg_tokens_per_probe):
+       if T_i > base_max:
+           # mark probe i invalid for base; rebuild domain_status
+           ...
+   ```
+
+2. Re-derive `domain_status` per (variant, domain) from the flagged probes
+   (variants on legacy data are assumed to share base's context window since
+   we don't know better — same `base_max` threshold). Domains where some
+   probes flag invalid become `partial`; domains where all flag invalid
+   become `out_of_range`.
+
+3. Recompute `pdn` and `share_per_domain` with the new formula on the
+   valid-probe subset. Emit one `DeprecationWarning` per file:
+
+   > "loaded GeoResult schema v{N}; pre-v0.4.1 saves lack per-engine
+   > context-window metadata. Auto-flagged probes with `T_i > 4096`
+   > (Llama-2 base default) as out-of-context; re-run with v0.4.1+
+   > for accurate per-engine validity classification. Set
+   > metadata['base_max_context'] = <int> to override the heuristic
+   > threshold."
+
+**Caveats to document in the warning text** (the heuristic IS brittle, even
+when we align with the spec):
+
+- Hard-coded `4096` is wrong for Mistral (`32768`), Llama-3 (`8192`),
+  GPT-2 (`1024`), and many others. The `metadata['base_max_context']`
+  override is the escape hatch.
+- Multi-base setups (different `base_engine.config.model` across saves)
+  can't be auto-detected without storing the base model id in metadata.
+  v0.4.1 saves should add `metadata['base_max_context']` alongside
+  existing `metadata['probe_set_name']` etc.
+- Variant context windows aren't recovered from legacy data; the
+  heuristic assumes all variants match base's threshold. This
+  under-flags `variant_only` cases (Yarn-128K's 9000-token success
+  isn't recoverable from a pre-v0.4.1 save). User must re-run for
+  variant-only data.
+
+A `lmdiff validate-result path/to/old.json --base-model <hf-id>` CLI helper
+(out of v0.4.1 scope; tracked separately) would load the right `max_position_embeddings` per supplied model id.
 
 ---
 
@@ -829,6 +879,14 @@ Manual sanity check is enough for one figure update.
 ---
 
 ## 9. Open questions for user review
+
+> **Note on Y.6.** PHASE_PLAN_v6.md Update 5 Y.6 specifies a two-phase lab
+> feedback cycle for v0.4.1: *pre-implementation* (this audit doc shared
+> with lab) and *post-implementation* (lab demo of v0.4.1 with corrected
+> numbers). This PR is the pre-implementation collection point. The
+> open questions below correspond to the structured ask in Y.6, plus two
+> design-detail decisions surfaced during the audit itself (§9.5, §9.6,
+> §9.7).
 
 ### 9.1 ProbeValidity check placement: Options A / B / C
 
