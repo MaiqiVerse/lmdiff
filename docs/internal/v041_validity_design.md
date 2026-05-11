@@ -360,7 +360,22 @@ probes, so the remaining set is more homogeneous).
 ### 4.2 Numerical impact on demo data
 
 Computed from `_demo_check/runs/v032-rerendered/family_geometry.json` (7-variant,
-n=497 probes). Per-domain token stats:
+n=497 probes).
+
+> **Footnote on `avg_tokens_per_probe`** (cross-ref §9.6): the existing
+> field — used in this analysis and in the current `_compute_per_domain_normalized` — stores **prompt-only** token counts.
+> `_pipeline.py:432` populates it via `base_engine.token_count(p)` for each
+> `p` in `probe_set.texts`, before any continuation is generated. The
+> validity check in §1 needs `T_full = T_prefix + T_prompt +
+> T_continuation`, which is **a different number** than what the demo JSON
+> tabulates here. Per-domain RMS results in this section are therefore
+> conservative for the validity-cutoff comparison (real `T_full` is
+> larger). The "91/100 long-context probes >4K" stat is a strict lower
+> bound on the count of out-of-range probes; the true count after adding
+> typical continuation length (16-256 tokens depending on task) is the
+> same or higher.
+
+Per-domain token stats:
 
 | domain | n | T_min | T_max | T_mean | probes > 4K |
 |---|---|---|---|---|---|
@@ -560,18 +575,21 @@ Two reasons to bump rather than do additive-with-v5-tag:
 
 - v6 saves emit the full schema (validity records, domain_status, None-able
   share, corrected pdn).
-- Loading a v5 save:
-  - Synthesize `probe_validity = {}` (empty — caller may also synthesize
-    per-engine entries assuming `max_context = None`, `is_valid = True`).
-  - Synthesize `domain_status = {v: {d: "full" for d in ...} for v in ...}` —
-    legacy data assumed all probes valid for all engines.
-  - Recompute `pdn` and `share` using the new formula on existing
-    `change_vectors` + `probe_domains` — this **changes the numeric values**
-    of those fields versus what the v5 save contained. Emit a
-    `DeprecationWarning`: "loaded v5 GeoResult; recomputed share/pdn with
-    v0.4.1 corrected formula on the assumption all probes are valid for all
-    engines (no validity records in legacy save). Numerics may differ from
-    v0.4.0; re-run with v0.4.1 to get accurate validity classification."
+- Loading a v5 save: two design options, see §9.8 for the open question.
+  - **Option A (recompute on load)**: synthesize empty validity, treat all
+    probes as valid, recompute `pdn` and `share` with the new formula on
+    existing `change_vectors`. Numbers in memory differ from what was
+    saved; user gets the v0.4.1-formula view of legacy data.
+  - **Option B (preserve as saved)**: synthesize empty validity, but leave
+    `pdn` and `share` as the literal saved values (pre-v0.4.1 formula).
+    User gets exactly the numbers they remember; advised via
+    `DeprecationWarning` to re-run for the v0.4.1 numerics.
+
+  Whichever option is chosen, the §5.5 heuristic auto-flag for legacy
+  long-context probes still emits a `DeprecationWarning` and (under Option A)
+  participates in the recomputation; under Option B it's only documented in
+  the warning text without altering values.
+
 - Loading any earlier version (v1–v4): goes through the existing v5
   upgrade path first, then through the v5→v6 path above.
 
@@ -831,11 +849,18 @@ Outline:
 ### 8.2 Integration tests (`tests/integration/`)
 
 - **Existing 4-variant calibration regression** (`test_calibration_regression.py`):
-  the 4-variant probe set is all `≤4K` (no long-context). After v0.4.1 lands,
-  this test should still pass **numerically-identically** to v0.4.0 because
-  every probe is `full` and the new formula reduces to the same value as
-  the corrected old formula on equal-T probes. Verify this hypothesis
-  empirically before treating it as a contract.
+  fixture **must be regenerated** alongside the 7-variant. The original §8.2
+  hypothesis ("4-variant byte-equivalent post-v0.4.1") was theoretically
+  wrong — see §8.4 for the empirical refutation. Two compounding changes:
+  (a) the corrected pdn formula scales every (variant, domain) value by
+  `√T̄_d`, breaking byte-equivalence at the 1e-6 tolerance everywhere;
+  (b) the 4-variant probe set actually does include long-context (the "4"
+  refers to the 4 variants `yarn / long / math / code`, not the 5-domain
+  probe set, which is shared with the 7-variant) — so long-context becomes
+  `partial` for every variant under the validity framework, further shifting
+  the numerics. Plan: rename `calibration_v032_baseline.json` to
+  `calibration_v041_4variant_baseline.json` and regenerate from a v0.4.1
+  GPU run.
 
 - **Existing 7-variant calibration regression** (`test_calibration_regression_7variant.py`):
   long-context domain becomes `out_of_range` for 5 of 7 variants
@@ -863,18 +888,76 @@ if present — current codebase doesn't appear to have one):
 If image-diff tests don't exist: skip the regression layer in v0.4.1.
 Manual sanity check is enough for one figure update.
 
-### 8.4 Calibration fixture evolution
+### 8.4 Calibration fixture evolution — empirically verified
 
-- `tests/fixtures/calibration_v032_baseline.json` (4-variant):
-  **does not need regeneration**. All probes ≤4K, all `full`, new
-  formula numerically equivalent.
-- `tests/fixtures/calibration_v040_7variant_summary.json` (7-variant):
-  **must be regenerated** on a GPU box with v0.4.1 code (one
-  `python scripts/_regenerate_v040_7variant_fixture.py` run).
-- Rename to reflect the schema bump: `calibration_v041_7variant_summary.json`.
-- Update `_v040_7variant_spec.py` → `_v041_7variant_spec.py` with the
-  new constants and the variant-only handling for yarn/long on
-  long-context.
+Verified via `docs/internal/v041_audit_4variant_check.py` (CPU, read-only)
+on the existing `tests/fixtures/calibration_v032_baseline.json`. Results
+overturn the §8.2-original hypothesis that 4-variant could stay
+byte-identical:
+
+**Within-domain T_i variance is large** (CoV = std/mean):
+
+| domain | n | T_min | T_max | T_mean | T_std | CoV |
+|---|---|---|---|---|---|---|
+| code | 100 | 45 | 241 | 116.1 | 50.7 | 0.436 |
+| commonsense | 100 | 13 | 101 | 57.5 | 20.3 | 0.352 |
+| long-context | 100 | 1186 | 19145 | 9010.3 | 4304.7 | 0.478 |
+| math | 100 | 33 | 168 | 71.7 | 25.6 | 0.358 |
+| reasoning | 100 | 10 | 105 | 32.4 | 17.0 | 0.525 |
+
+CoV 0.35–0.53 — within-domain T_i is *not* approximately constant. The §4.1
+"token-weighted ≈ unweighted RMS when within-domain T_i variance is small"
+caveat applies less strongly than the audit doc originally implied. Plain
+unweighted RMS (Formula C) and token-weighted RMS will diverge by a few
+percent within each domain. This doesn't change the design choice (Formula C
+is still the right primitive) but should be acknowledged in §4.1 / methodology.
+
+**pdn_C / pdn_B = √T̄_d everywhere** (theoretical prediction confirmed):
+
+| domain | √T̄_d | observed C/B ratio (all 4 variants) |
+|---|---|---|
+| code | 10.78 | 10.78 |
+| commonsense | 7.58 | 7.58 |
+| long-context | 94.92 | 94.92 |
+| math | 8.47 | 8.47 |
+| reasoning | 5.69 | 5.69 |
+
+Ratios are byte-identical to `√T̄` to machine precision. The pdn formula
+change is **a uniform per-domain rescaling** in this dataset; share values
+shift because the per-domain rescaling factors differ across domains.
+
+**Max diffs vs the existing 1e-6 tolerance:**
+
+- `max |pdn_C − pdn_B|` over all (variant, domain): **7.77** (long-context
+  pdn for `long` variant: 0.083 → 7.85)
+- `max |share_C − share_B|`: **0.85** (long-context share for `yarn`:
+  37.8% → 98.9%)
+- both *vastly* exceed the existing 1e-6 byte-equivalence tolerance
+
+**Conclusion:**
+
+1. **4-variant fixture must be regenerated.** Plan: file rename
+   `calibration_v032_baseline.json` → `calibration_v041_4variant_baseline.json`,
+   regenerate via the same scripted-spec pattern as 7-variant
+   (`scripts/_regenerate_v041_4variant_fixture.py` + `_v041_4variant_spec.py`,
+   mirroring the v0.4.0 prep work).
+2. **7-variant fixture must be regenerated** for the same reason plus the
+   validity-driven domain-status changes (long-context becomes `partial`
+   for every variant in the 4-variant set, `variant_only` for yarn/long
+   in the 7-variant).
+3. **Both regenerations need GPU.** Estimated 30 min (4-variant) + 1.5 h
+   (7-variant) = 2 h GPU. Same Llama-2-7B-base + variant set, just two
+   separate `family()` runs with the v0.4.1 code.
+4. **Test parametrize lists must be updated** to drop or special-case
+   long-context byte assertions for variants where it's `partial` or
+   `out_of_range`.
+
+Numerical values per (variant, domain) are in
+`docs/internal/v041_audit_4variant_check.py` output; reproduce via:
+
+```bash
+mamba run -n lmdiff python docs/internal/v041_audit_4variant_check.py
+```
 
 ---
 
@@ -979,6 +1062,75 @@ return None  # unknown
 ```
 
 Confirm naming order and behaviour for the "unknown" return.
+
+### 9.8 v5 loader behavior on legacy data: recompute vs preserve
+
+Two options for what `geo_result_from_json_dict` does when it encounters
+a v5 save under v0.4.1:
+
+- **Option A — recompute on load** (current §5.5 plan): re-derive
+  `pdn` and `share_per_domain` using the v0.4.1 formula on the saved
+  `change_vectors`. Auto-apply the §5.5 length heuristic to flag
+  long-context probes. Numbers in memory differ from the saved
+  numbers. `DeprecationWarning` notes the recomputation. This is
+  what `_ensure_per_domain_normalized_views` already does for the
+  v3→v5 path (precedent).
+
+- **Option B — preserve saved values** (user-leaning): leave `pdn`,
+  `share_per_domain`, `magnitudes_normalized` exactly as saved.
+  Synthesize empty `probe_validity` and full-status `domain_status`
+  to satisfy the new schema, but don't touch the existing numbers.
+  `DeprecationWarning` reads "values are pre-v0.4.1 formula; re-run
+  for v0.4.1 numerics." User opening an old JSON gets the numbers
+  they remember.
+
+**Trade-off:** Option A is consistent with the v3→v5 precedent (lmdiff
+historically prefers "give the user the corrected number on load");
+Option B is more conservative and matches the principle "saved means
+saved." User leans Option B — the v0.3.2 → v5 recompute was driven by
+a known bug in the saved formula, while v0.4.1's change is an
+improvement to a non-buggy formula. Re-presenting different numbers
+under the same field name without re-execution may surprise users.
+
+**Implementation diff:** Option B is *less* code — skip the recompute
+branch entirely on v5 load, just attach validity stubs. Option A reuses
+the existing `_ensure_per_domain_normalized_views` machinery with one
+extra step (apply length heuristic before computing).
+
+**Recommend Option B**, given user lean and the principle. Preserves
+backward number-stability for users who don't re-run.
+
+### 9.9 Mistral sliding-window attention validity
+
+Mistral-7B's `max_position_embeddings` is 32768 but the model uses a
+sliding-window attention mechanism that bounds each token's effective
+context to 4096 — long prompts can be scored without crash, but
+quality degrades within the sliding window in ways the validity
+framework doesn't capture.
+
+Under v0.4.1 as designed:
+
+- `HFEngine.max_context_length()` reads `max_position_embeddings = 32768`
+- A 30000-token probe is `is_valid = True` for Mistral-7B-base
+- Per-token CE is computed without error but reflects degraded
+  attention, not real per-token drift signal
+
+**Question:** is this acceptable for v0.4.1? Defer
+"sliding-window-aware validity" to v0.5.0+?
+
+**Recommendation:** accept v0.4.1 as the simple `max_position_embeddings`
+threshold. Document the Mistral caveat in
+`docs/methodology/normalization.md` and CHANGELOG. v0.5.0+ adds an
+optional per-engine override (e.g. `Engine.effective_context_length()`
+that returns the sliding-window size when applicable, falling back to
+`max_context_length` otherwise) plus a finer status (`degraded` —
+in-context but quality-suspect — alongside `partial` / `out_of_range`).
+
+Same pattern applies to other quality-degradation cases beyond hard
+context limits (e.g. flash-attention numerical edge cases at very
+long sequences, RoPE extrapolation in Yarn beyond original training
+distribution). v0.4.1 ships the validity skeleton; quality-degradation
+flags are a separate v0.5.0+ feature.
 
 ---
 
