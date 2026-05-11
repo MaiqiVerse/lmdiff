@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.0] - 2026-XX-XX
+## [0.4.0] - 2026-05-08
 
 ### Changed
 - **Backend cutover**: ``lmdiff.compare()`` and ``lmdiff.family()`` now route through ``HFEngine`` (introduced in v0.3.0 PR #2) and the new ``lmdiff/_pipeline.py`` instead of the v0.2.x ``InferenceEngine`` / ``ChangeGeometry`` path. Completes the architectural migration that v0.3.0 started but did not finish. The two paths shared the same Llama-2 calibration baseline; the new path produces byte-identical numeric output to v0.3.2 (within 1e-6 per element) — verified against the 4-variant ``yarn`` / ``long`` / ``code`` / ``math`` × 5-task baseline at ``tests/fixtures/calibration_v032_baseline.json`` by ``tests/integration/test_calibration_regression.py`` (gpu-marked). API surface unchanged from v0.3.x; no migration steps required for users of ``compare()`` / ``family()``.
