@@ -459,7 +459,7 @@ class TestJsonGeometry:
         d = to_json_dict(r)
         s = to_json(r)
         reloaded = json.loads(s)
-        assert reloaded["schema_version"] == "5"
+        assert reloaded["schema_version"] == "6"
         assert reloaded["base_name"] == "llama2-7b"
         assert reloaded["variant_names"] == ["13b", "70b", "chat"]
         assert reloaded["magnitudes"]["13b"] == pytest.approx(1.52)
@@ -790,7 +790,7 @@ class TestSelectiveJsonRoundTrip:
             base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
         )
         d = to_json_dict(r1)
-        assert d["schema_version"] == "5"
+        assert d["schema_version"] == "6"
         s = json.dumps(d, sort_keys=True)
         round_tripped = geo_result_from_json_dict(json.loads(s))
 
@@ -1352,7 +1352,7 @@ class TestSchemaV3RoundTrip:
             probe_domains=("math", "code", "math"),
         )
         d = to_json_dict(result)
-        assert d["schema_version"] == "5"
+        assert d["schema_version"] == "6"
         assert d["probe_domains"] == ["math", "code", "math"]
 
         s = json.dumps(d, sort_keys=True)
@@ -1616,7 +1616,7 @@ class TestSchemaV4RoundTrip:
             magnitudes_normalized={"A": 0.5},
         )
         d = to_json_dict(result)
-        assert d["schema_version"] == "5"
+        assert d["schema_version"] == "6"
         assert d["avg_tokens_per_probe"] == [5.0, 7.0, 9.0]
         assert d["magnitudes_normalized"] == {"A": 0.5}
 
