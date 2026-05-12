@@ -229,6 +229,18 @@ loaded = lmdiff.load_result("output.json")  # round-trips
 
 Loading a JSON saved before v0.3.2 auto-recomputes `share_per_domain` + `magnitudes_normalized` + `magnitudes_per_domain_normalized` using the corrected per-domain per-token formulas (matching the v6 §13 calibration), and emits one `DeprecationWarning`. Re-save with `result.save(path)` to upgrade the file in place. Raw `magnitudes` (length-weighted L2 norm) is unchanged for users who want that view.
 
+## What v0.4.1 ships (latest)
+
+- **Per-probe measurement validity framework.** Per-(engine, probe) `EngineValidity` records flag probes whose tokenized length exceeds the engine's trained context window. Long-context probes outside the base model's window produce catastrophic-failure noise that any per-token aggregator surfaces as "drift" — v0.4.1 excludes them upstream of normalization. Per-(variant, domain) status: `full` / `partial` / `variant_only` / `out_of_range`. Schema v6.
+- **Corrected pdn formula** (`magnitudes_per_domain_normalized`). The v0.3.2 √T̄ form was dimensionally inconsistent (`nats/token^1.5`); v0.4.1 ships `pdn[v][d] = sqrt(mean_{i ∈ d, valid}(δ_i²))` — dimensionally clean `nats/token`. `share_per_domain[v][d]` may be `None` for out-of-context domains. See [`docs/methodology/normalization.md`](docs/methodology/normalization.md) for the derivation and [`docs/migration/v040-to-v041.md`](docs/migration/v040-to-v041.md) for the user impact.
+- **`Engine.max_context_length()` Protocol method.** HFEngine reads `model.config` (fallback chain `max_position_embeddings → n_positions → max_seq_len`); MinimalEngine and MockEngine expose overridable hooks.
+- **`GeoResult.pdn`** short alias for `magnitudes_per_domain_normalized`.
+- **Visualization** `drift_share_dual.png` hatches invalid cells: `partial` gets light diagonal hatch + `*` suffix; `out_of_range` / `variant_only` gets grey background + heavy cross-hatch + `—`.
+
+Loading a v0.4.0 (schema v5) save now emits a `DeprecationWarning` and preserves the saved share/pdn values exactly — "saved means saved." Re-run for v0.4.1 numerics; the formula change shifts numbers and the validity framework drops out-of-context probes.
+
+See [LESSONS.md L-033](LESSONS.md) for the audit-chain history.
+
 ## What v0.3.2 ships
 
 - **`compare()` / `family()`** as the public API, replacing v0.2.x `ModelDiff`.
