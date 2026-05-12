@@ -21,7 +21,10 @@ from typing import Any
 
 # Resolve once at import time; both test and regen script can read it.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-FIXTURE_PATH = _REPO_ROOT / "tests" / "fixtures" / "calibration_v040_7variant_summary.json"
+FIXTURE_PATH = _REPO_ROOT / "tests" / "fixtures" / "calibration_v041_7variant_summary.json"
+# v0.4.1: pdn formula change + validity framework shifts every value;
+# fixture regenerated on GPU via scripts/_regenerate_v041_7variant_fixture.py
+# (commit 8 of v0.4.1 PR). Until then the calibration test auto-skips.
 
 
 def build_run_kwargs() -> dict[str, Any]:
