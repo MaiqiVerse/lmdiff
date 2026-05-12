@@ -62,27 +62,17 @@ def baseline() -> dict:
 def cutover_result() -> dict:
     """Run family() through the new HFEngine pipeline with identical
     inputs to the baseline-generation script. Returns the to_json_dict
-    payload for byte-comparison."""
+    payload for byte-comparison.
+
+    Kwargs come from ``_v041_4variant_spec.build_run_kwargs()`` —
+    same source as ``scripts/_regenerate_v041_4variant_fixture.py`` to
+    eliminate "did the regen script run the same call?" risk.
+    """
     import lmdiff
     from lmdiff.report.json_report import to_json_dict
+    from tests.integration._v041_4variant_spec import build_run_kwargs
 
-    result = lmdiff.family(
-        base="meta-llama/Llama-2-7b-hf",
-        variants={
-            "yarn": "NousResearch/Yarn-Llama-2-7b-128k",
-            "long": "togethercomputer/LLaMA-2-7B-32K",
-            "code": "codellama/CodeLlama-7b-hf",
-            "math": "EleutherAI/llemma_7b",
-        },
-        probes="lm_eval:hellaswag+arc_challenge+gsm8k+mmlu_college_computer_science+longbench_2wikimqa",
-        n_probes=100,
-        max_new_tokens=16,
-        task_overrides={
-            "gsm8k": {"max_new_tokens": 256},
-            "longbench_2wikimqa": {"max_new_tokens": 128},
-        },
-        seed=42,
-    )
+    result = lmdiff.family(**build_run_kwargs())
     payload = to_json_dict(result)
     payload.pop("generated_at", None)  # timestamp would always differ
     return payload
