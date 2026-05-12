@@ -37,6 +37,7 @@ import numpy as np
 
 from lmdiff._config import Config
 from lmdiff._engine import Engine
+from lmdiff._validity import EngineValidity, ProbeValidity, compute_domain_status
 
 # Engine factory contract (Fix 4, v0.4.0 PR #15):
 #   factory(config) -> (engine, pipeline_owns_lifecycle)
@@ -170,18 +171,86 @@ def _delta_for_variant(
     progress: Optional[bool],
     progress_label: str,
     seed: Optional[int] = None,
-) -> tuple[list[float], bool]:
+    base_validity_per_probe: Optional[list[EngineValidity]] = None,
+    all_probe_tokens: Optional[list[int]] = None,
+) -> tuple[list[float], bool, list[EngineValidity]]:
     """Compute the raw δ vector (possibly containing NaN) for one variant.
 
-    Replaces ``ChangeGeometry._delta_for_variant`` byte-for-byte. The
-    only structural difference is the per-probe Python loop here vs
-    per-batch in the v0.2.x version — same total work, same numeric
-    output.
+    v0.4.1 measurement validity (Q9.1, audit §1): when
+    ``base_validity_per_probe`` and ``all_probe_tokens`` are provided,
+    we compute per-probe ``EngineValidity`` for the variant and skip
+    the per-probe sub-loop work for probes flagged invalid for the
+    relevant engine. Skipped probes contribute ``δ = NaN`` and are
+    dropped by the existing ``_universally_valid_indices`` filter.
+
+    Returns
+    -------
+    (deltas, use_bpb, variant_validity_per_probe) where
+    ``variant_validity_per_probe[i]`` is the variant engine's record
+    for ``prompts[i]``. When validity inputs are None (legacy callers,
+    e.g. existing unit tests), every probe is treated as valid and the
+    returned list is built with ``reason="unknown_limit"`` records that
+    don't influence aggregation.
     """
     from lmdiff._progress import iterate as _progress_iter
 
     n = len(prompts)
     prefix = f"{progress_label} " if progress_label else ""
+
+    # ── Validity precompute (Q9.1, audit §1) ───────────────────────
+    # Build the variant's per-probe EngineValidity. Base records are
+    # passed in by run_family_pipeline (computed once across variants).
+    # When no validity inputs are supplied, we synthesize all-valid
+    # records with reason="unknown_limit" so callers that don't care
+    # about validity (existing unit tests) continue to work.
+    variant_max = v_engine.max_context_length()
+    base_max = base_engine.max_context_length()  # for the base reuse fallback below
+
+    base_prefix_text = _prefix_text(base_config)
+    v_prefix_text = _prefix_text(v_config)
+    base_prefix_T = (
+        base_engine.token_count(base_prefix_text) if base_prefix_text else 0
+    )
+    v_prefix_T = (
+        v_engine.token_count(v_prefix_text) if v_prefix_text else 0
+    )
+
+    same_tokenizer = base_engine.tokenizers_equivalent_to(v_engine)
+
+    variant_validity: list[EngineValidity] = []
+    base_skip: list[bool] = [False] * n  # skip score-base loop for this probe
+    var_skip: list[bool] = [False] * n   # skip generate / score-variant loops
+    for i in range(n):
+        # Variant T_i = prefix_var + token_count_for_variant + max_new_tokens
+        if all_probe_tokens is not None and same_tokenizer:
+            var_T = v_prefix_T + all_probe_tokens[i] + max_new_tokens
+        elif all_probe_tokens is not None:
+            var_T = v_prefix_T + v_engine.token_count(prompts[i]) + max_new_tokens
+        else:
+            var_T = -1  # unknown — default to valid
+
+        if variant_max is None or var_T < 0:
+            v_is_valid = True
+            v_reason = "unknown_limit"
+        else:
+            v_is_valid = var_T <= variant_max
+            v_reason = "valid" if v_is_valid else "exceeds_context"
+
+        variant_validity.append(EngineValidity(
+            engine_name=v_engine.name,
+            max_context=variant_max,
+            T_i=var_T if var_T >= 0 else 0,
+            is_valid=v_is_valid,
+            reason=v_reason,
+        ))
+
+        if not v_is_valid:
+            var_skip[i] = True
+
+        if base_validity_per_probe is not None:
+            base_ev = base_validity_per_probe[i]
+            if not base_ev.is_valid:
+                base_skip[i] = True
 
     # Per-Config prefix (system_prompt + context). Passed to the engine
     # via ``prefix_text=`` kwarg so the engine can split-tokenize
@@ -193,8 +262,8 @@ def _delta_for_variant(
     # case: variants without ``system_prompt`` / ``context``), the
     # split-tokenize path collapses to ``[BOS] + tokens(probe)``,
     # byte-identical to the empty-prefix single-tokenize path.
-    base_prefix = _prefix_text(base_config)
-    v_prefix = _prefix_text(v_config)
+    base_prefix = base_prefix_text  # alias; same value, kept for readability
+    v_prefix = v_prefix_text
 
     gen_kwargs = _generate_kwargs(v_config, max_new_tokens)
 
@@ -211,11 +280,19 @@ def _delta_for_variant(
     effective_seed = _resolve_seed(v_config, seed)
 
     # ── 1. Generate variant outputs ──
+    # Skip generation for probes flagged invalid for the variant
+    # engine (v0.4.1 validity framework). Empty output then
+    # short-circuits the score loops below to NaN δ, which the global
+    # _universally_valid_indices filter drops.
     v_outputs: list[str] = []
     v_ids_per_probe: list[list[int]] = []
     for i in _progress_iter(
         range(n), desc=f"{prefix}generate", total=n, enable=progress,
     ):
+        if var_skip[i]:
+            v_outputs.append("")
+            v_ids_per_probe.append([])
+            continue
         gen_seed = effective_seed if i == 0 else None
         try:
             gen = v_engine.generate(
@@ -243,7 +320,9 @@ def _delta_for_variant(
     for i in _progress_iter(
         range(n), desc=f"{prefix}score base|v", total=n, enable=progress,
     ):
-        if not v_outputs[i]:
+        # Skip when probe is out-of-context for base (v0.4.1) OR when
+        # variant produced no output (existing behavior).
+        if base_skip[i] or not v_outputs[i]:
             ce_b_of_v[i] = float("nan")
             ntok_b_of_v[i] = 0
             continue
@@ -273,7 +352,9 @@ def _delta_for_variant(
     for i in _progress_iter(
         range(n), desc=f"{prefix}score v|v", total=n, enable=progress,
     ):
-        if not v_outputs[i]:
+        # var_skip[i] already implies v_outputs[i] == "" via the
+        # generate skip above; check anyway for clarity.
+        if var_skip[i] or not v_outputs[i]:
             ce_v_self[i] = float("nan")
             ntok_v_self[i] = 0
             continue
@@ -317,7 +398,7 @@ def _delta_for_variant(
             vv = bpb_from_ce(vv, n_tokens=ntok_v_self[i], text=v_outputs[i])
         deltas.append(float(bv - vv))
 
-    return deltas, use_bpb
+    return deltas, use_bpb, variant_validity
 
 
 # ── Top-level pipeline ────────────────────────────────────────────────
@@ -431,6 +512,32 @@ def run_family_pipeline(
     # ── 1. Per-probe token counts (Protocol-clean — no _tokenizer) ──
     all_probe_tokens: list[int] = [base_engine.token_count(p) for p in prompts]
 
+    # ── 1b. Per-probe base validity (v0.4.1, Q9.6 worst-case bound) ──
+    # Built once across all variants since base validity is variant-
+    # independent. T_i = T_prefix + T_prompt + max_new_tokens (worst
+    # case before generation). Variant-side validity is built inside
+    # _delta_for_variant where the variant engine is in scope.
+    base_max = base_engine.max_context_length()
+    base_prefix_text = _prefix_text(base_config)
+    base_prefix_T = (
+        base_engine.token_count(base_prefix_text) if base_prefix_text else 0
+    )
+    base_validity_per_probe: list[EngineValidity] = []
+    for i in range(n_total):
+        t_i = base_prefix_T + all_probe_tokens[i] + max_new_tokens
+        if base_max is None:
+            is_valid, reason = True, "unknown_limit"
+        else:
+            is_valid = t_i <= base_max
+            reason = "valid" if is_valid else "exceeds_context"
+        base_validity_per_probe.append(EngineValidity(
+            engine_name=base_engine.name,
+            max_context=base_max,
+            T_i=t_i,
+            is_valid=is_valid,
+            reason=reason,
+        ))
+
     # ── 2. Engine cache + look-ahead release loop ──
     # Mirrors ChangeGeometry.analyze's loop with the same anchor map
     # semantics. The cache key is the *anchor* name, not the variant
@@ -450,6 +557,10 @@ def run_family_pipeline(
 
     raw_deltas: dict[str, list[float]] = {}
     bpb_flags: dict[str, bool] = {}
+    # Per-variant variant-side validity records (one EngineValidity per
+    # probe). Merged with base records into the master probe_validity
+    # dict after the variant loop completes.
+    variant_validity_records: dict[str, list[EngineValidity]] = {}
 
     try:
         for v_idx, name in enumerate(variant_names, 1):
@@ -487,7 +598,7 @@ def run_family_pipeline(
                         )
                     engine_cache[anchor] = v_engine
 
-                raw_deltas[name], bpb_flags[name] = _delta_for_variant(
+                deltas, use_bpb, var_validity = _delta_for_variant(
                     base_engine=base_engine,
                     base_config=base_config,
                     v_engine=v_engine,
@@ -497,7 +608,12 @@ def run_family_pipeline(
                     progress=progress,
                     progress_label=f"v{v_idx}/{n_v} {name}",
                     seed=seed,
+                    base_validity_per_probe=base_validity_per_probe,
+                    all_probe_tokens=all_probe_tokens,
                 )
+                raw_deltas[name] = deltas
+                bpb_flags[name] = use_bpb
+                variant_validity_records[name] = var_validity
 
                 # Look-ahead-by-one release. Same rule as
                 # ChangeGeometry.analyze (v0.3.2 PR #10).
@@ -597,11 +713,58 @@ def run_family_pipeline(
                 name: magnitudes[name] / denom for name in variant_names
             }
 
+    # ── Validity aggregation (v0.4.1) ──
+    # Build master probe_validity dict keyed by probe.id, with per_engine
+    # keyed by engine.name (the display name from EngineValidity.engine_name)
+    # so callers can do ``pv.valid_for(engine.name)`` symmetrically with
+    # the design audit. Variants sharing an anchor (runtime-only mods of
+    # the same underlying engine) collapse to one entry naturally.
+    base_name = base_engine.name
+    probe_validity: dict[str, ProbeValidity] = {}
+    for i in range(n_total):
+        probe = probe_set[i]
+        per_engine: dict[str, EngineValidity] = {
+            base_name: base_validity_per_probe[i],
+        }
+        for vname in variant_names:
+            var_rec = variant_validity_records[vname][i]
+            per_engine[var_rec.engine_name] = var_rec
+        probe_validity[probe.id] = ProbeValidity(
+            probe_id=probe.id,
+            domain=probe.domain,
+            per_engine=per_engine,
+        )
+
+    # Per-(variant, domain) status — uses ALL probes (pre-filter), so
+    # variant_only / out_of_range domains are correctly classified even
+    # when their δ values are all NaN. Keyed by the variant DICT KEY
+    # (vname, what the user passed to family()) for caller convenience;
+    # the validity lookup itself uses engine.name (display name from
+    # EngineValidity.engine_name) since per_engine is keyed that way.
+    domain_status: dict[str, dict[str, str]] = {}
+    domains_in_set = sorted({
+        p.domain for p in probe_set if p.domain is not None
+    })
+    for vname in variant_names:
+        # Look up this variant's engine display name from a sample
+        # validity record (they all share engine_name within a variant).
+        v_engine_name = variant_validity_records[vname][0].engine_name
+        v_status: dict[str, str] = {}
+        for d in domains_in_set:
+            probes_in_d = [
+                pv for pv in probe_validity.values() if pv.domain == d
+            ]
+            v_status[d] = compute_domain_status(
+                probes_in_d, base_name, v_engine_name,
+            )
+        domain_status[vname] = v_status
+
     metadata = {
         "n_total_probes": n_total,
         "n_skipped": n_total - n_valid,
         "bpb_normalized": bpb_flags,
         "max_new_tokens": max_new_tokens,
+        "base_max_context": base_max,
     }
     if probe_set.name:
         metadata["probe_set_name"] = probe_set.name
@@ -624,6 +787,8 @@ def run_family_pipeline(
         avg_tokens_per_probe=avg_tokens_per_probe,
         magnitudes_normalized=magnitudes_normalized,
         magnitudes_per_domain_normalized=mag_per_domain_norm,
+        probe_validity=probe_validity,
+        domain_status=domain_status,
     )
     result.share_per_domain = _compute_share_per_domain(result)
     return result

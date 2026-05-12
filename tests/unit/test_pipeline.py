@@ -253,6 +253,7 @@ class TestProtocolOnlyAccess:
             "name", "tokenizer_id", "n_layers", "hidden_dim", "capabilities",
             "score", "generate", "close", "token_count",
             "tokenizers_equivalent_to",
+            "max_context_length",  # v0.4.1 measurement validity framework
             # MockEngine internals that aren't Protocol but are
             # accessed by the engine itself, not the pipeline:
             # (none — pipeline shouldn't reach into anything else)

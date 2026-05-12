@@ -183,6 +183,30 @@ class GeoResult:
        JSON re-derives this field from the per-token per-domain formula
        above and emits a ``DeprecationWarning``."""
 
+    probe_validity: dict[str, "Any"] = field(default_factory=dict)
+    """Per-probe ``ProbeValidity`` records keyed by probe.id. v0.4.1.
+
+    Empty for legacy GeoResult instances loaded from pre-v6 schemas
+    (the v5 loader synthesizes empty stubs and emits a
+    ``DeprecationWarning``). The values are
+    :class:`lmdiff._validity.ProbeValidity` instances; typed as
+    ``Any`` here to keep ``geometry.py`` free of the validity import
+    (avoids circular import — ``_validity.py`` is Protocol-clean and
+    light-import; this module shouldn't depend on it at import time).
+    """
+
+    domain_status: dict[str, dict[str, str]] = field(default_factory=dict)
+    """Per-(variant, domain) state. v0.4.1.
+
+    ``domain_status[variant_name][domain_name]`` is one of:
+    ``"full"`` / ``"partial"`` / ``"variant_only"`` / ``"out_of_range"``
+    (see :func:`lmdiff._validity.compute_domain_status`). Empty for
+    pre-v6 saves; the v5 loader synthesizes ``{v: {d: "full" for d in
+    domains} for v in variants}`` so callers expecting the field can
+    iterate without a None check (the values are pre-v0.4.1 formula
+    output, but the structure is honored).
+    """
+
     magnitudes_per_domain_normalized: dict[str, dict[str, float]] = field(
         default_factory=dict,
     )
