@@ -269,7 +269,12 @@ def _extract_specialization_peaks(result: "GeoResult") -> list[Finding]:
         per_dom = result.share_per_domain[variant]
         if not per_dom:
             continue
-        peak_dom, peak_share = max(per_dom.items(), key=lambda kv: kv[1])
+        # v0.4.1: skip None entries (out_of_range / variant_only) — they
+        # carry no share signal and ``max`` over a None vs float raises.
+        valid = [(d, s) for d, s in per_dom.items() if s is not None]
+        if not valid:
+            continue
+        peak_dom, peak_share = max(valid, key=lambda kv: kv[1])
         if peak_share <= _SPECIALIZATION_PEAK_SHARE_THRESHOLD:
             continue
         summary = f"{variant}: {peak_share * 100:.0f}% on {peak_dom}"
