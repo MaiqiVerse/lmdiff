@@ -561,7 +561,13 @@ def _layer3_share_table(
     for v in variants:
         row_share = share.get(v, {})
         cells = [v.ljust(name_w)]
-        peak_dom = max(row_share, key=lambda d: row_share.get(d, 0.0)) if row_share else None
+        # v0.4.1: skip None entries (out_of_range / variant_only) when
+        # finding the peak — `max` over None vs float would raise.
+        valid_share = {d: s for d, s in row_share.items() if s is not None}
+        peak_dom = (
+            max(valid_share, key=lambda d: valid_share[d])
+            if valid_share else None
+        )
         for d in domains:
             val = row_share.get(d, 0.0)
             text = _fmt_share_pct(val, width=domain_w)

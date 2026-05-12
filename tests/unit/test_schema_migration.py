@@ -133,6 +133,32 @@ class TestV5LoadPreservesSavedValues:
             restored = geo_result_from_json_dict(v5)
         assert restored.variant_only_metrics is None
 
+    def test_v5_load_type_contract_matches_v6(self):
+        """share_per_domain and pdn value containers must use the
+        SAME type (dict[str, dict[str, float | None]]) regardless of
+        whether the load came from a v5 or v6 save. Consumer code
+        should not need a per-version branch.
+
+        The contract: a v5 save with float-only values gets loaded into
+        the same dict[..][..] = float | None container that a v6 save
+        with None values would. The float values just happen to all
+        be non-None for v5 saves (no validity framework existed)."""
+        v5 = _v5_payload()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            restored = geo_result_from_json_dict(v5)
+
+        # The runtime types — every value site must accept both branches.
+        for variant, row in restored.share_per_domain.items():
+            assert isinstance(row, dict), variant
+            for d, val in row.items():
+                # Either float OR None — same as v6 contract.
+                assert val is None or isinstance(val, float), (variant, d, type(val))
+        for variant, row in restored.magnitudes_per_domain_normalized.items():
+            assert isinstance(row, dict), variant
+            for d, val in row.items():
+                assert val is None or isinstance(val, float), (variant, d, type(val))
+
 
 # ── v6 round-trip: full schema in/out ───────────────────────────────
 
