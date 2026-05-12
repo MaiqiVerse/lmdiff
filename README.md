@@ -260,4 +260,15 @@ MIT — see [LICENSE](LICENSE).
 
 ## Citation
 
+If you use lmdiff in your research, please cite:
+
+```bibtex
+@misc{jiang2026lmdiff,
+  author = {Jiang, Maiqi and Zhang, Yanfu},
+  title  = {lmdiff: a framework for comparing language model configurations},
+  year   = {2026},
+  url    = {https://github.com/MaiqiVerse/lmdiff},
+}
+```
+
 Paper forthcoming.
