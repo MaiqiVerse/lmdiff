@@ -1724,24 +1724,30 @@ class TestMagnitudesPerTaskNormalized:
     def test_per_task_normalized_formula(self):
         result = self._geo()
         hm = result.magnitudes_per_task_normalized()
-        # A on math: ‖(3,4)‖ = 5; n=2, avg_tok=10 → denom=sqrt(20). norm=5/sqrt(20).
-        assert hm["A"]["math"] == pytest.approx(5.0 / math.sqrt(20), abs=1e-9)
+        # v0.4.1 Formula A: sqrt(mean(δ²)).
+        # A on math: δ=(3,4) → sqrt((9+16)/2) = sqrt(12.5).
+        assert hm["A"]["math"] == pytest.approx(math.sqrt(12.5), abs=1e-9)
         assert hm["A"]["code"] == pytest.approx(0.0, abs=1e-9)
-        # B on code: ‖(6,8)‖ = 10; n=2, avg_tok=100 → denom=sqrt(200). norm=10/sqrt(200).
-        assert hm["B"]["code"] == pytest.approx(10.0 / math.sqrt(200), abs=1e-9)
+        # B on code: δ=(6,8) → sqrt((36+64)/2) = sqrt(50).
+        assert hm["B"]["code"] == pytest.approx(math.sqrt(50.0), abs=1e-9)
         assert hm["B"]["math"] == pytest.approx(0.0, abs=1e-9)
 
-    def test_normalization_can_invert_per_task_ranking(self):
-        # Raw: B's code magnitude (10) > A's math magnitude (5). After
-        # per-token normalization (code probes 10× longer), the ranking
-        # can flip.
+    def test_normalization_does_not_depend_on_avg_tokens(self):
+        # v0.4.1 Formula A doesn't use avg_tokens_per_probe. The
+        # v0.3.2-era "ranking can invert based on token weighting" test
+        # is obsolete; the new contract is that per-task RMS reflects
+        # the per-token CE diff distribution directly. With δ already
+        # per-token, no further T weighting is appropriate.
         result = self._geo()
         raw = result.domain_heatmap()
         norm = result.magnitudes_per_task_normalized()
-        # Raw: B-code (10.0) > A-math (5.0)
+        # Raw L2 magnitudes still as before.
         assert raw["B"]["code"] > raw["A"]["math"]
-        # Normalized: A-math (5/sqrt(20)≈1.118) > B-code (10/sqrt(200)≈0.707)
-        assert norm["A"]["math"] > norm["B"]["code"]
+        # Under Formula A, B-code (sqrt(50) ≈ 7.07) > A-math (sqrt(12.5) ≈ 3.54).
+        # Same direction as raw because per-probe RMS preserves ranking
+        # of constant-T-per-domain inputs (and here within-domain T is
+        # constant).
+        assert norm["B"]["code"] > norm["A"]["math"]
 
     def test_raises_without_probe_domains(self):
         result = GeoResult(
@@ -1755,7 +1761,10 @@ class TestMagnitudesPerTaskNormalized:
         with pytest.raises(ValueError, match="probe_domains"):
             result.magnitudes_per_task_normalized()
 
-    def test_raises_without_avg_tokens(self):
+    def test_works_without_avg_tokens(self):
+        # v0.4.1 Formula A doesn't use avg_tokens — the requirement
+        # was dropped. Method now only needs probe_domains. (Same
+        # GeoResult that previously raised should now compute.)
         result = GeoResult(
             base_name="base", variant_names=["A"], n_probes=2,
             magnitudes={"A": 1.0}, cosine_matrix={"A": {"A": 1.0}},
@@ -1763,8 +1772,9 @@ class TestMagnitudesPerTaskNormalized:
             metadata={},
             probe_domains=("math", "math"),
         )
-        with pytest.raises(ValueError, match="avg_tokens_per_probe"):
-            result.magnitudes_per_task_normalized()
+        hm = result.magnitudes_per_task_normalized()
+        # δ = (1, 0) → sqrt((1+0)/2) = sqrt(0.5).
+        assert hm["A"]["math"] == pytest.approx(math.sqrt(0.5), abs=1e-9)
 
 
 class TestPCAMapUseNormalized:

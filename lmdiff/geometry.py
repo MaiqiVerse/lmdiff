@@ -487,34 +487,49 @@ class GeoResult:
         return out
 
     def magnitudes_per_task_normalized(self) -> dict[str, dict[str, float]]:
-        """Per-variant per-task per-token-normalized magnitude.
+        """Per-variant per-task RMS magnitude — v0.4.1 corrected formula.
 
         For each (variant, domain) where domain is treated as a task:
-            norm = ‖δ restricted to domain‖ / sqrt(n_domain_probes × avg_domain_tokens)
+            norm = sqrt(mean_{i ∈ domain}(δ_i²))   [units: nats/token]
 
-        Domains with zero probes or zero average tokens render NaN. None
-        domains coalesce to "unknown".
+        Same formula as :attr:`magnitudes_per_domain_normalized` (the
+        FIELD) — Q9.10 Formula A, plain unweighted RMS over per-token
+        CE diffs. v0.3.2 used ``‖δ‖ / sqrt(n × avg_tokens)`` which was
+        dimensionally ``nats/token^1.5``; v0.4.1 unifies on the
+        clean per-token RMS.
 
-        Requires probe_domains AND avg_tokens_per_probe (schema v4).
+        Method form (recompute on demand) coexists with the field form
+        for two reasons:
+
+        - The v0.2.x ``ChangeGeometry.analyze`` path needs this without
+          relying on a pre-populated field.
+        - Downstream consumers (``magnitudes_specialization_zscore``,
+          ``viz/normalized_magnitude.py``, ``viz/specialization.py``)
+          historically called the method; updating them all to read
+          the field is v0.4.2+ housekeeping. Both surfaces now report
+          the same number.
+
+        Domains with zero probes render NaN. None domains coalesce to
+        "unknown". The method does NOT consult ``domain_status`` — it
+        recomputes over every probe in ``change_vectors`` (which the
+        global NaN filter already restricts to valid probes from the
+        v0.4.1 pipeline path); domain-level None tagging happens only
+        on the field, not on the method's output. Validity-aware
+        consumers should prefer the field.
+
+        Requires probe_domains (schema v3+); ``avg_tokens_per_probe``
+        is no longer required by Formula A (kept as a soft
+        precondition for backward compat in callers that pass v3
+        results).
         """
         if not self.probe_domains:
             raise ValueError(
                 "magnitudes_per_task_normalized requires probe_domains; "
                 "rebuild GeoResult from a ProbeSet, or use a v3+ JSON."
             )
-        if not self.avg_tokens_per_probe:
-            raise ValueError(
-                "magnitudes_per_task_normalized requires avg_tokens_per_probe; "
-                "rebuild GeoResult from a fresh analyze() call (schema v4)."
-            )
         if len(self.probe_domains) != self.n_probes:
             raise ValueError(
                 f"probe_domains length {len(self.probe_domains)} != n_probes {self.n_probes}"
-            )
-        if len(self.avg_tokens_per_probe) != self.n_probes:
-            raise ValueError(
-                f"avg_tokens_per_probe length {len(self.avg_tokens_per_probe)} "
-                f"!= n_probes {self.n_probes}"
             )
 
         # Group probe indices by resolved domain key.
@@ -523,22 +538,19 @@ class GeoResult:
             key = d if d is not None else "unknown"
             by_domain.setdefault(key, []).append(idx)
 
-        tokens = np.asarray(self.avg_tokens_per_probe, dtype=float)
-
         out: dict[str, dict[str, float]] = {}
         for name in self.variant_names:
             vec = np.asarray(self.change_vectors[name], dtype=float)
             per_task: dict[str, float] = {}
             for domain, indices in by_domain.items():
                 sub = vec[indices]
-                sub_tokens = tokens[indices]
                 n_task = len(indices)
-                avg_tok = float(sub_tokens.mean()) if n_task > 0 else 0.0
-                denom = math.sqrt(n_task * avg_tok) if avg_tok > 0 else 0.0
-                if denom > 0:
-                    per_task[domain] = float(np.linalg.norm(sub) / denom)
-                else:
+                if n_task <= 0:
                     per_task[domain] = float("nan")
+                else:
+                    # Formula A: sqrt(mean(δ²)). Units: nats/token.
+                    sum_sq = float(np.sum(sub * sub))
+                    per_task[domain] = float(math.sqrt(sum_sq / n_task))
             out[name] = per_task
         return out
 
