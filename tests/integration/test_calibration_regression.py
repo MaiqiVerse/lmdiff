@@ -1,10 +1,17 @@
 """Calibration regression test for the v0.4.0 backend cutover.
 
 The hard contract for cutover safety: the new HFEngine pipeline must
-produce a GeoResult whose every numeric field matches the v0.3.2
-calibration baseline (committed at
-``tests/fixtures/calibration_v032_baseline.json``) within 1e-6 per
-element on the canonical Llama-2 4-variant case.
+produce a GeoResult whose every numeric field matches the calibration
+baseline within 1e-6 per element on the canonical Llama-2 4-variant
+case.
+
+v0.4.1 update: the formula change (Q9.10 Formula A) shifts pdn values
+by factor √T̄_d everywhere — the v0.3.2 fixture is no longer valid as
+the v0.4.1 baseline. Fixture name updated to
+``calibration_v041_4variant_baseline.json``; the file is regenerated
+on a GPU box via ``scripts/_regenerate_v041_4variant_fixture.py``
+(commit 8 of v0.4.1 PR). Until that regeneration lands the test
+automatically skips.
 
 Marked ``slow`` AND ``gpu``: requires a GPU big enough for two
 Llama-2-7B variants resident at once (~28 GB VRAM peak after the
@@ -25,7 +32,13 @@ import pytest
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
-BASELINE_PATH = Path(__file__).parent.parent / "fixtures" / "calibration_v032_baseline.json"
+# v0.4.1 fixture path. Regenerated on GPU via
+# scripts/_regenerate_v041_4variant_fixture.py (commit 8). Until then
+# the per-test skip below auto-skips the suite.
+BASELINE_PATH = (
+    Path(__file__).parent.parent / "fixtures"
+    / "calibration_v041_4variant_baseline.json"
+)
 TOLERANCE = 1e-6
 
 
@@ -33,10 +46,13 @@ TOLERANCE = 1e-6
 def baseline() -> dict:
     if not BASELINE_PATH.exists():
         pytest.skip(
-            f"calibration baseline not present at {BASELINE_PATH}. "
-            "Generate via the snippet at the bottom of "
-            "docs/internal/v040_cutover_audit.md and commit before "
-            "running this test."
+            f"v0.4.1 calibration baseline not present at "
+            f"{BASELINE_PATH.name}. Regenerate on a GPU box via "
+            "``python scripts/_regenerate_v041_4variant_fixture.py`` "
+            "and commit the produced JSON. The v0.4.1 formula change "
+            "(see L-033 / docs/methodology/normalization.md) makes the "
+            "pre-v0.4.1 fixture incompatible — pdn values shift by "
+            "factor √T̄_d."
         )
     with BASELINE_PATH.open(encoding="utf-8") as f:
         return json.load(f)
@@ -46,27 +62,17 @@ def baseline() -> dict:
 def cutover_result() -> dict:
     """Run family() through the new HFEngine pipeline with identical
     inputs to the baseline-generation script. Returns the to_json_dict
-    payload for byte-comparison."""
+    payload for byte-comparison.
+
+    Kwargs come from ``_v041_4variant_spec.build_run_kwargs()`` —
+    same source as ``scripts/_regenerate_v041_4variant_fixture.py`` to
+    eliminate "did the regen script run the same call?" risk.
+    """
     import lmdiff
     from lmdiff.report.json_report import to_json_dict
+    from tests.integration._v041_4variant_spec import build_run_kwargs
 
-    result = lmdiff.family(
-        base="meta-llama/Llama-2-7b-hf",
-        variants={
-            "yarn": "NousResearch/Yarn-Llama-2-7b-128k",
-            "long": "togethercomputer/LLaMA-2-7B-32K",
-            "code": "codellama/CodeLlama-7b-hf",
-            "math": "EleutherAI/llemma_7b",
-        },
-        probes="lm_eval:hellaswag+arc_challenge+gsm8k+mmlu_college_computer_science+longbench_2wikimqa",
-        n_probes=100,
-        max_new_tokens=16,
-        task_overrides={
-            "gsm8k": {"max_new_tokens": 256},
-            "longbench_2wikimqa": {"max_new_tokens": 128},
-        },
-        seed=42,
-    )
+    result = lmdiff.family(**build_run_kwargs())
     payload = to_json_dict(result)
     payload.pop("generated_at", None)  # timestamp would always differ
     return payload

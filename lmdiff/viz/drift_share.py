@@ -100,31 +100,61 @@ def render_drift_share(
             "render_drift_share requires probe_domains or domain_order; both empty"
         )
 
+    # v0.4.1: read pdn / share / status from result fields (set by the
+    # v0.4.1 pipeline). For legacy GeoResults without these fields
+    # populated, fall back to plain RMS over change_vectors per domain.
+    # ``None`` entries (out_of_range / variant_only) are stored as
+    # ``np.nan`` in the matrices and the cell renderer below detects
+    # them via np.isnan to apply hatched / "—" rendering.
     domains_all = np.array(result.probe_domains)
-    T = np.array(result.avg_tokens_per_probe) if result.avg_tokens_per_probe else None
     cv = {v: np.array(result.change_vectors[v]) for v in variants}
+    pdn_field = result.magnitudes_per_domain_normalized or {}
+    share_field = result.share_per_domain or {}
+    status_field = result.domain_status or {}
 
     norm = np.zeros((len(variants), len(domains)))
+    share = np.zeros((len(variants), len(domains)))
+    statuses: list[list[str]] = [["full"] * len(domains) for _ in variants]
     for i, v in enumerate(variants):
+        v_pdn = pdn_field.get(v, {})
+        v_share = share_field.get(v, {})
+        v_status = status_field.get(v, {})
         for j, d in enumerate(domains):
-            mask = domains_all == d
-            n_d = int(mask.sum())
-            if n_d == 0:
-                norm[i, j] = 0.0
-                continue
-            if T is not None:
-                Tbar = float(T[mask].mean())
-                if Tbar > 0:
-                    norm[i, j] = float(np.sqrt((cv[v][mask] ** 2).sum() / (n_d * Tbar)))
-                else:
-                    norm[i, j] = float(np.sqrt((cv[v][mask] ** 2).sum() / n_d))
+            statuses[i][j] = v_status.get(d, "full")
+            # pdn — prefer field; fall back to plain RMS over change_vectors
+            saved_pdn = v_pdn.get(d, "MISSING")
+            if saved_pdn is None:
+                norm[i, j] = np.nan
+            elif saved_pdn != "MISSING":
+                norm[i, j] = float(saved_pdn)
             else:
-                norm[i, j] = float(np.sqrt((cv[v][mask] ** 2).sum() / n_d))
-
-    norm_sq = norm ** 2
-    row_sums = norm_sq.sum(axis=1, keepdims=True)
-    row_sums[row_sums == 0] = 1.0
-    share = norm_sq / row_sums
+                mask = domains_all == d
+                n_d = int(mask.sum())
+                norm[i, j] = (
+                    float(np.sqrt((cv[v][mask] ** 2).sum() / n_d))
+                    if n_d > 0 else 0.0
+                )
+            # share — prefer field; else derive from pdn² / row_sum
+            saved_share = v_share.get(d, "MISSING")
+            if saved_share is None:
+                share[i, j] = np.nan
+            elif saved_share != "MISSING":
+                share[i, j] = float(saved_share)
+            else:
+                share[i, j] = norm[i, j] ** 2 if not np.isnan(norm[i, j]) else np.nan
+    # Normalize the fallback share rows where we derived from pdn²
+    for i in range(len(variants)):
+        if not np.any(np.isfinite(share[i])):
+            continue
+        # If share row was derived (no explicit field), normalize across
+        # the finite cells. If it came from share_field, leave it alone.
+        v = variants[i]
+        if v in share_field:
+            continue
+        finite_mask = np.isfinite(share[i])
+        total = share[i, finite_mask].sum()
+        if total > 0:
+            share[i, finite_mask] = share[i, finite_mask] / total
 
     fig = plt.figure(figsize=(16.5, 7.8))
     gs = fig.add_gridspec(
@@ -153,19 +183,60 @@ def render_drift_share(
     ax_legend_z.axis("off")
     ax_domain_legend.axis("off")
 
+    # v0.4.1 hatching for invalid cells (Q9.4):
+    #   full         → no hatch
+    #   partial      → "////" (light diagonal)
+    #   out_of_range → "xxxx" (heavy cross-hatch)
+    #   variant_only → "xxxx" (same as out_of_range in v0.4.1; v0.5.0+
+    #                          will surface variant-only metrics)
+    HATCH = {
+        "full": "",
+        "partial": "////",
+        "out_of_range": "xxxx",
+        "variant_only": "xxxx",
+    }
+    NA_BG = "#cccccc"
+    NA_LABEL = "—"
+
     # Left: drift magnitude (sequential blue)
-    abs_max = float(norm.max()) if norm.size else 0.21
+    # NaN cells (None pdn) replaced with 0 for the colormap so the bar
+    # range isn't distorted; the patch overlay below covers them with
+    # the NA background + hatch.
+    norm_for_cmap = np.where(np.isfinite(norm), norm, 0.0)
+    abs_max = float(np.nanmax(norm)) if np.any(np.isfinite(norm)) else 0.21
     boundaries_abs = [0, 0.025, 0.05, 0.10, 0.20, max(abs_max + 0.01, 0.21)]
     colors_abs = ["#f0f0f0", "#c6dbef", "#6baed6", "#2171b5", "#08306b"]
     cmap_abs = ListedColormap(colors_abs)
     norm_cmap_abs = BoundaryNorm(boundaries_abs, cmap_abs.N)
-    ax_abs.imshow(norm, cmap=cmap_abs, norm=norm_cmap_abs, aspect="auto")
+    ax_abs.imshow(norm_for_cmap, cmap=cmap_abs, norm=norm_cmap_abs, aspect="auto")
 
     for i, v in enumerate(variants):
         for j, d in enumerate(domains):
             val = norm[i, j]
+            status = statuses[i][j]
+            if not np.isfinite(val):
+                # Out-of-range / variant_only — overlay grey + hatch + "—"
+                ax_abs.add_patch(plt.Rectangle(
+                    (j - 0.5, i - 0.5), 1, 1,
+                    facecolor=NA_BG, hatch=HATCH[status],
+                    edgecolor="black", linewidth=0.4,
+                ))
+                ax_abs.text(j, i, NA_LABEL,
+                            ha="center", va="center",
+                            fontsize=15, fontweight="bold", color="dimgray")
+                continue
+            if status == "partial":
+                # Add a light hatch on top of the colormap fill so users
+                # can see "some probes excluded here." Number is still
+                # rendered; the partial flag is suffix "*" via the label.
+                ax_abs.add_patch(plt.Rectangle(
+                    (j - 0.5, i - 0.5), 1, 1,
+                    facecolor="none", hatch=HATCH["partial"],
+                    edgecolor="black", linewidth=0.3, alpha=0.7,
+                ))
             text_color = "white" if val > 0.10 else ("white" if val > 0.05 else "#222")
-            ax_abs.text(j, i, f"{val:.4f}",
+            label = f"{val:.4f}" + ("*" if status == "partial" else "")
+            ax_abs.text(j, i, label,
                         ha="center", va="center",
                         fontsize=15, fontweight="bold", color=text_color)
 
@@ -183,15 +254,33 @@ def render_drift_share(
     )
 
     # Right: share (diverging purple-orange)
+    share_for_cmap = np.where(np.isfinite(share), share, 0.0)
     boundaries_share = [0, 0.10, 0.18, 0.22, 0.30, 1.0]
     colors_share = ["#542788", "#b2abd2", "#f2f2f2", "#fdb863", "#b35806"]
     cmap_share = ListedColormap(colors_share)
     norm_cmap_share = BoundaryNorm(boundaries_share, cmap_share.N)
-    ax_z.imshow(share, cmap=cmap_share, norm=norm_cmap_share, aspect="auto")
+    ax_z.imshow(share_for_cmap, cmap=cmap_share, norm=norm_cmap_share, aspect="auto")
 
     for i, v in enumerate(variants):
         for j, d in enumerate(domains):
             sv = share[i, j]
+            status = statuses[i][j]
+            if not np.isfinite(sv):
+                ax_z.add_patch(plt.Rectangle(
+                    (j - 0.5, i - 0.5), 1, 1,
+                    facecolor=NA_BG, hatch=HATCH[status],
+                    edgecolor="black", linewidth=0.4,
+                ))
+                ax_z.text(j, i, NA_LABEL,
+                          ha="center", va="center",
+                          fontsize=18, fontweight="bold", color="dimgray")
+                continue
+            if status == "partial":
+                ax_z.add_patch(plt.Rectangle(
+                    (j - 0.5, i - 0.5), 1, 1,
+                    facecolor="none", hatch=HATCH["partial"],
+                    edgecolor="black", linewidth=0.3, alpha=0.7,
+                ))
             if sv < 0.10:
                 c = "white"
             elif sv < 0.18:
@@ -202,7 +291,8 @@ def render_drift_share(
                 c = "#3d2855"
             else:
                 c = "white"
-            ax_z.text(j, i, f"{sv * 100:.0f}%",
+            label = f"{sv * 100:.0f}%" + ("*" if status == "partial" else "")
+            ax_z.text(j, i, label,
                       ha="center", va="center",
                       fontsize=18, fontweight="bold", color=c)
 

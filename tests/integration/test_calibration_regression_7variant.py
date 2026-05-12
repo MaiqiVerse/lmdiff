@@ -16,8 +16,8 @@ Plus the 5 unique-model variants (yarn/long/code/math/chat) for
 spot-checking against the v0.4.0 baseline.
 
 The exact ``family()`` kwargs the test runs against and the fixture
-path are defined in ``_v040_7variant_spec.py`` so
-``scripts/_regenerate_v040_7variant_fixture.py`` runs the *same*
+path are defined in ``_v041_7variant_spec.py`` so
+``scripts/_regenerate_v041_7variant_fixture.py`` runs the *same*
 call — no "did the regen script match the test?" risk.
 
 Tolerance rationale:
@@ -35,12 +35,15 @@ Tolerance rationale:
   - ``magnitudes_per_domain_normalized``: 1e-3 (slightly looser than
     1e-6 because pdn participates in the share normalization)
 
-If any assertion fails, the cutover did not safely preserve v0.4.0
-behavior. v0.4.0 doesn't ship.
+If any assertion fails, the cutover / formula change did not safely
+preserve v0.4.1 behavior. v0.4.1 doesn't ship.
 
-The fixture is the v0.4.0 baseline (``calibration_v040_…``), not the
-v0.3.2 fixture. v0.3.2's ``temp_1.5`` outputs were produced under
-unpinned RNG and are no longer the contract — see L-031.
+The fixture is the v0.4.1 baseline (``calibration_v041_7variant_summary.json``).
+v0.3.2 / v0.4.0 fixtures are no longer the contract — the formula
+change (Q9.10 Formula A) and validity framework shift every value,
+see L-033 / docs/methodology/normalization.md. v0.3.2's ``temp_1.5``
+outputs were also produced under unpinned RNG and are no longer the
+contract — see L-031.
 """
 from __future__ import annotations
 
@@ -48,7 +51,7 @@ import json
 
 import pytest
 
-from tests.integration._v040_7variant_spec import (
+from tests.integration._v041_7variant_spec import (
     ALL_VARIANTS,
     BYTE_EQUIVALENT_VARIANTS,
     FIXTURE_PATH,
@@ -75,7 +78,7 @@ def baseline() -> dict:
         pytest.skip(
             f"7-variant fixture not present at {FIXTURE_PATH}. "
             "Regenerate by running "
-            "``python scripts/_regenerate_v040_7variant_fixture.py`` "
+            "``python scripts/_regenerate_v041_7variant_fixture.py`` "
             "on a GPU box, then commit the produced JSON. The script "
             "uses the same family() kwargs as this test."
         )
@@ -87,7 +90,7 @@ def cutover_result() -> dict:
     """Run the 7-variant family() through the new HFEngine pipeline
     and return the to_json_dict payload for comparison.
 
-    Kwargs come from ``_v040_7variant_spec.build_run_kwargs()`` —
+    Kwargs come from ``_v041_7variant_spec.build_run_kwargs()`` —
     same source as the regeneration script, so test and fixture can't
     drift.
     """

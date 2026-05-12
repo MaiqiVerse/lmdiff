@@ -880,3 +880,41 @@ Concretely: if the old code constructed N items lazily inside its loop, and the 
 **Diagnostic signature:** Multi-variant `family()` startup logs `[lmdiff] loading weights: …` N times before the first inference. Or `[lmdiff WARNING] hf_device_map sharded across devices` fires for every variant, indicating accelerate had to spill weights to CPU because too many models were resident at once. Or pure CPU usage soars during inference (PCIe paging dominates over compute). v0.3.2's pattern: 1 load → 1 variant runs → 1 release → next load → … (interleaved). v0.4.0 pre-Fix-4: N loads → first inference. v0.4.0 post-Fix-4: back to v0.3.2 pattern.
 
 Companion to L-029 (release aggressively). L-029 said "release after use" — Fix 4 makes it "construct lazily *and* release after use," restoring full v0.3.2 lifetime semantics on the new pipeline.
+
+## L-033: self-consistent ad-hoc fixes evade validation
+
+**Date:** 2026-05-12
+**Phase:** 2 commit 4.1 (v0.4.1 measurement validity + pdn formula correction)
+**Severity:** High — the bug published as v0.3.2 showcase numbers and shipped through v0.4.0 unchallenged. Only external lab critique exposed it.
+
+**Context:** v0.3.2 PR #11 introduced the `share_per_domain` formula `sqrt(Σδ²/ΣT)` as an ad-hoc fix for "long-context domain over-dominates share" observed in pre-PR#11 raw L2 magnitude form. The formula had no derivation in docs. v6 plan §13 calibration mockup numbers were derived from the same formula. v0.4.0 implementation produced numbers matching the mockup. Calibration regression tests passed. Lab demo showcase numbers (long → reasoning 66%, etc.) were published.
+
+**Failure mode:** when mockup and implementation come from the same formula, validation only confirms implementation-matches-spec, not spec-matches-truth. The √T-correction was a happy accident that incidentally suppressed long-context dominance by dividing out the dimensional inflation — but for the wrong mechanism. The real cause (long-context probes are invalid measurements when base model context window is smaller than probe length) was invisible to the formula and to the testing regime.
+
+Lab critique 三个字 "没什么根据" ("no basis") triggered an audit chain that revealed:
+(a) **dimensional inconsistency** (δ already per-token, √T̄ over-corrects, yielding units of `nats/token^1.5`);
+(b) **self-consistent error in mockup-implementation pair** (the v6 §13 mockup numbers and the v0.3.2 PR #11 implementation both came from the same formula, so passing calibration tests proved nothing about correctness);
+(c) **deeper measurement validity issue underneath** (long-context probes outside the base context window are catastrophic-failure noise, not signal — any per-token aggregator surfaces them as drift).
+
+Three rounds of user push-back during the audit conversation were necessary to reach the correct framing — each round reframing the previous wrong defense. Process retrospective documented in PHASE_PLAN_v6.md Update 5 Y.10.
+
+**Generalizable rule:** Validate metrics against external ground truth, not against mockups generated from the same formula. Specifically:
+
+- Theoretical derivation from published frameworks (Oyama, BPB, perplexity lit) with explicit unit / assumption checks.
+- Empirical data with predetermined success criteria established before formula design.
+- Cross-implementation comparison (e.g. lm-eval-harness equivalent scoring path) when possible.
+
+When defending a metric in response to external critique, the **first action** is to read the implementation and trace units, not to search the literature for a justification. (Three Claude defenses in the audit conversation were wrong before the user's push-back forced reading the actual code. Code first. Literature second. Derivation third.)
+
+**Where applied:** v0.4.1 (this release):
+- Validity framework upstream of normalization — `lmdiff/_validity.py` + per-probe `EngineValidity` records produced inside `_delta_for_variant`.
+- Plain unweighted RMS (Q9.10 Formula A) replaces √T̄ — dimensionally clean, only one obvious formula after the validity framework drops the catastrophic-failure probes.
+- `docs/methodology/normalization.md` carries the derivation, Oyama citation, alternatives considered. v0.4.1+ methodology decisions ship with published derivations alongside published numbers.
+
+**Diagnostic signature:** Showcase metric numbers that are self-consistent across mockup, implementation, and tests but have no derivation in docs and were never compared to an external benchmark or theoretical expectation. The numbers can be "correct" in the sense that they reproduce the spec — and still measure nothing meaningful. Particularly suspicious: ad-hoc formulas introduced to "fix" a presentation problem (e.g. "long-context dominates share") rather than to compute a definable quantity.
+
+Source:
+- v0.3.2 PR #11 (lmdiff, `share_per_domain` formula)
+- Lab feedback 2026-05-11 ("√T 没什么根据")
+- Audit chain documented in PHASE_PLAN_v6.md Update 5 Y.1-Y.4
+- Fix: v0.4.1 (Phase 2 commit 4.1)

@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.4.1] - 2026-05-12
+
+### Changed (breaking)
+
+- **``magnitudes_per_domain_normalized`` formula corrected** (Q9.10 Formula A). v0.3.2 PR #11's ``sqrt(Σδ²/ΣT)`` was dimensionally inconsistent (units: ``nats/token^1.5``). v0.4.1 ships the dimensionally clean form ``pdn[v][d] = sqrt(mean_{i ∈ d, valid}(δ_i²))`` — plain unweighted per-token CE diff RMS over the *valid* probe subset (units: ``nats/token``). Empirical impact: ``pdn_new / pdn_old = √T̄_d`` everywhere; on the 4-variant calibration max pdn diff is 7.77 (vs 1e-6 byte-equivalence tolerance) and max share diff is 0.85. See ``docs/methodology/normalization.md`` for the derivation and ``docs/migration/v040-to-v041.md`` for the user impact. v0.4.0 saves (schema v5) load with their pre-v0.4.1 share / pdn values **preserved exactly** per Q9.8 — re-run for v0.4.1 numerics.
+- **``share_per_domain[v][d]`` may now be ``None``** — sentinel for out_of_range / variant_only domains where base couldn't measure the comparison (e.g. 9000-token long-context probes against Llama-2-7B's 4096 context window). Existing code that does ``share[v][d] * 100`` will raise ``TypeError`` on these cells; add a ``None`` check. Valid rows still sum to 1.0 over themselves.
+
+### Added
+
+- **``Engine.max_context_length() -> int | None`` Protocol method.** HFEngine reads ``model.config`` with fallback chain ``max_position_embeddings → n_positions → max_seq_len → None`` (Q9.7). MinimalEngine exposes ``_max_context_impl`` hook for subclasses; MockEngine accepts ``max_context`` constructor kwarg. Yarn-128K and similar RoPE-extrapolation models trust the claimed capacity; quality-degradation flags (sliding-window Mistral) deferred to v0.5.0+ per Q9.9.
+- **Per-probe measurement validity framework** (Q9.1, audit §1, §2). New ``lmdiff/_validity.py`` module with ``ProbeValidity`` / ``EngineValidity`` frozen dataclasses and ``compute_domain_status`` helper. Pipeline builds records inside ``_delta_for_variant`` before the three per-probe sub-loops; invalid probes skip generate / score work and yield NaN δ (dropped by the existing global filter). Per-(engine, probe) ``T_i = T_prefix + T_prompt + max_new_tokens`` worst-case bound (Q9.6).
+- **GeoResult new fields**: ``probe_validity: dict[probe_id, ProbeValidity]``, ``domain_status: dict[variant_name, dict[domain_name, str]]``, ``variant_only_metrics: dict | None`` (always ``None`` in v0.4.1; reserved for v0.5.0+ population). ``share_per_domain`` and ``magnitudes_per_domain_normalized`` value types widened to ``float | None``.
+- **``GeoResult.pdn`` property alias** for ``magnitudes_per_domain_normalized`` (Q9.5). Returns the same dict — no copy. Reduces typing friction without renaming.
+- **GeoResult schema v6** (Q9.2). Writer emits v6 exclusively. Reader accepts v1-v6 with version-specific upgrade paths.
+- **Visualization** ``drift_share_dual.png`` now respects validity status: ``full`` cells unchanged; ``partial`` cells overlay light hatch ``////`` and ``*`` label suffix; ``out_of_range`` / ``variant_only`` cells render with grey background, heavy ``xxxx`` hatch, and ``—`` label.
+- **Documentation**: ``docs/methodology/normalization.md`` — full derivation of Formula A, validity framework rationale, Oyama et al. (2025) citation, alternatives considered (Path B specialization layer, Path C rank-based, token-weighted RMS). ``docs/migration/v040-to-v041.md`` — user instructions and FAQ.
+- **LESSONS.md L-033** — self-consistent ad-hoc fixes evade validation. The v0.3.2 PR #11 √T̄ correction had no derivation in docs and the v6 §13 calibration mockup was hand-derived from the same formula; tests passed by checking implementation-vs-mockup, never mockup-vs-truth. Lab critique 三个字 "没什么根据" triggered the audit chain documented in PHASE_PLAN_v6.md Update 5.
+
+### Deprecated
+
+- **Loading v5 (v0.3.2 - v0.4.0) saves** emits a single ``DeprecationWarning`` on every load: "values use the pre-v0.4.1 formula; preserved as saved per Q9.8; re-run for v0.4.1 numerics."
+- **Loading v1-v4 saves** continues to emit a ``DeprecationWarning``; share / pdn synthesized via the v0.4.1 formula (those saves had no share / pdn fields at all).
+
+### Notes
+
+- 4-variant calibration fixture renamed ``calibration_v032_baseline.json`` → ``calibration_v041_4variant_baseline.json``; 7-variant fixture renamed ``calibration_v040_7variant_summary.json`` → ``calibration_v041_7variant_summary.json``. Both regenerated via ``scripts/_regenerate_v041_{4,7}variant_fixture.py`` (~2h GPU total). Until the new fixtures land, the calibration regression tests automatically skip with a pointer message.
+- Mistral-7B's sliding-window attention degrades quality past ~4K effective context even though ``max_position_embeddings = 32768`` reports a higher cap. v0.4.1 trusts ``max_position_embeddings`` as the validity threshold (Q9.9); a finer ``effective_context_length`` / ``degraded`` status is deferred to v0.5.0+.
+- 501 unit tests pass on CPU (was 451 in v0.4.0; +50 new across max_context_length, validity dataclasses, pipeline validity wiring, pdn formula, schema migration, viz).
+
 ## [0.4.0] - 2026-05-08
 
 ### Changed
