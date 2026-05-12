@@ -694,31 +694,9 @@ def run_family_pipeline(
         float(all_probe_tokens[i]) for i in valid_indices
     )
 
-    # Schema v4 corrected at v0.3.2 PR #11: per-domain per-token
-    # normalization, with the overall as the per-domain RMS.
-    mag_per_domain_norm = _compute_per_domain_normalized(
-        variant_names, change_vectors, probe_domains, avg_tokens_per_probe,
-    )
-    magnitudes_normalized: dict[str, float] = {}
-    if mag_per_domain_norm:
-        magnitudes_normalized = _compute_overall_normalized_from_pdn(
-            mag_per_domain_norm,
-        )
-    elif avg_tokens_per_probe:
-        # Single-domain fallback — same as ChangeGeometry.analyze.
-        mean_tokens = float(np.mean(avg_tokens_per_probe))
-        denom = math.sqrt(n_valid * mean_tokens) if mean_tokens > 0 else 0.0
-        if denom > 0:
-            magnitudes_normalized = {
-                name: magnitudes[name] / denom for name in variant_names
-            }
-
-    # ── Validity aggregation (v0.4.1) ──
-    # Build master probe_validity dict keyed by probe.id, with per_engine
-    # keyed by engine.name (the display name from EngineValidity.engine_name)
-    # so callers can do ``pv.valid_for(engine.name)`` symmetrically with
-    # the design audit. Variants sharing an anchor (runtime-only mods of
-    # the same underlying engine) collapse to one entry naturally.
+    # ── Validity aggregation (v0.4.1) — must happen BEFORE pdn ──
+    # because the pdn formula needs domain_status to know which
+    # (variant, domain) cells should be None vs computed.
     base_name = base_engine.name
     probe_validity: dict[str, ProbeValidity] = {}
     for i in range(n_total):
@@ -758,6 +736,28 @@ def run_family_pipeline(
                 probes_in_d, base_name, v_engine_name,
             )
         domain_status[vname] = v_status
+
+    # ── Per-domain pdn + overall (v0.4.1 corrected formula, validity-aware) ──
+    # mag_per_domain_norm[v][d] = sqrt(mean(δ²)) over valid probes;
+    # None for out_of_range / variant_only domains. Overall =
+    # per-domain RMS over valid (non-None) entries.
+    mag_per_domain_norm = _compute_per_domain_normalized(
+        variant_names, change_vectors, probe_domains, avg_tokens_per_probe,
+        domain_status=domain_status,
+    )
+    magnitudes_normalized: dict[str, float] = {}
+    if mag_per_domain_norm:
+        magnitudes_normalized = _compute_overall_normalized_from_pdn(
+            mag_per_domain_norm,
+        )
+    elif avg_tokens_per_probe:
+        # Single-domain fallback — same as ChangeGeometry.analyze.
+        mean_tokens = float(np.mean(avg_tokens_per_probe))
+        denom = math.sqrt(n_valid * mean_tokens) if mean_tokens > 0 else 0.0
+        if denom > 0:
+            magnitudes_normalized = {
+                name: magnitudes[name] / denom for name in variant_names
+            }
 
     metadata = {
         "n_total_probes": n_total,

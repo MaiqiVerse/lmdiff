@@ -159,29 +159,27 @@ class GeoResult:
        this field via the per-domain RMS formula above when both
        ``probe_domains`` and ``avg_tokens_per_probe`` are present."""
 
-    share_per_domain: dict[str, dict[str, float]] = field(default_factory=dict)
-    """Per-variant per-domain energy share. Schema v5.
+    share_per_domain: dict[str, dict[str, float | None]] = field(default_factory=dict)
+    """Per-variant per-domain energy share. Schema v5/v6.
 
-    For each variant ``v`` and domain ``d``::
+    For each variant ``v`` and domain ``d`` over the *valid* domains
+    (``domain_status[v][d] in {"full", "partial"}``)::
 
         share_per_domain[v][d] = pdn[v][d]² / Σ_d' pdn[v][d']²
 
-    where ``pdn`` is :attr:`magnitudes_per_domain_normalized` (per-token
-    RMS within each domain).
-
-    Rows sum to 1.0 (within float tolerance) when the variant has any
-    non-zero per-domain magnitude. Empty when ``probe_domains`` or
-    ``avg_tokens_per_probe`` is empty (no per-domain per-token
-    breakdown available).
+    For ``out_of_range`` / ``variant_only`` domains: ``share[v][d] = None``
+    (v0.4.1+ explicit "not measured" sentinel). Valid rows sum to
+    1.0 within float tolerance.
 
     .. note::
        v0.3.0–v0.3.2 saved this as raw-magnitude shares
-       (``‖δ_{v|d}‖² / Σ_d' ‖δ_{v|d'}‖²``), which are length-weighted —
-       a single long-context domain (e.g., longbench probes averaging
-       ~9000 tokens) would dominate 90–99 % of every variant's share
-       even when the per-token drift was modest. Loading a pre-v0.3.2
-       JSON re-derives this field from the per-token per-domain formula
-       above and emits a ``DeprecationWarning``."""
+       (``‖δ_{v|d}‖² / Σ_d' ‖δ_{v|d'}‖²``), length-weighted. v0.3.2
+       PR #11 corrected to per-token shares (still dimensionally
+       inconsistent — see L-033). v0.4.1 (this version) uses plain
+       unweighted per-domain RMS over valid probes (Q9.10 Formula A)
+       and explicit ``None`` for invalid domains. Loading a pre-v6
+       save preserves the saved values per Q9.8 ("saved means
+       saved") and emits a ``DeprecationWarning``."""
 
     probe_validity: dict[str, "Any"] = field(default_factory=dict)
     """Per-probe ``ProbeValidity`` records keyed by probe.id. v0.4.1.
@@ -207,25 +205,45 @@ class GeoResult:
     output, but the structure is honored).
     """
 
-    magnitudes_per_domain_normalized: dict[str, dict[str, float]] = field(
+    variant_only_metrics: dict[str, dict[str, dict[str, float]]] | None = None
+    """Stub for v0.5.0+ variant-only measurements. v0.4.1.
+
+    Reserved for surfacing per-(variant, domain) measurements where
+    base couldn't score the probes (status ``"variant_only"``) but the
+    variant could — e.g. Yarn-128K's per-token CE on long-context
+    probes. v0.4.1 ships the field always set to ``None`` (no
+    measurement); v0.5.0+ will populate. The schema reservation lets
+    v0.4.x users start consuming the field name without a breaking
+    schema change when the population logic lands.
+    """
+
+    magnitudes_per_domain_normalized: dict[str, dict[str, float | None]] = field(
         default_factory=dict,
     )
-    """Per-variant per-domain per-token RMS magnitude. v0.3.2 (additive).
+    """Per-variant per-domain RMS magnitude. v0.3.2 → v0.4.1.
 
-    For each variant ``v`` and domain ``d``::
+    For each variant ``v`` and domain ``d`` over the *valid* probe
+    subset (``domain_status[v][d] in {"full", "partial"}``)::
 
-        magnitudes_per_domain_normalized[v][d]
-            = sqrt( Σ_{i∈d} δ[v][i]² / Σ_{i∈d} T[i] )
-            = sqrt( Σ_{i∈d} δ[v][i]² / (n_d · T̄_d) )
+        magnitudes_per_domain_normalized[v][d] = sqrt(mean(δ_i² for valid i in d))
 
-    Per-token RMS of the change scalar within domain ``d``, comparable
-    across domains regardless of how many probes each domain has or
-    how long their prompts are. The corrected basis for both
-    :attr:`share_per_domain` (relative per-token energy across domains)
-    and :attr:`magnitudes_normalized` (overall RMS).
+    Units: ``nats/token`` (v0.4.1; the v0.3.2 ``sqrt(Σδ²/ΣT)`` form was
+    dimensionally ``nats/token^1.5`` — see L-033). For ``out_of_range``
+    or ``variant_only`` domains the value is ``None`` (sentinel for
+    "not measured", distinguishes from "measured zero drift").
 
-    Empty when ``probe_domains`` or ``avg_tokens_per_probe`` is empty.
-    Auto-recomputed on load when missing from the JSON."""
+    Also accessible via the short alias :attr:`pdn`. Empty when
+    ``probe_domains`` is empty. Pre-v6 saves load with the saved
+    values preserved (Q9.8) and a ``DeprecationWarning``."""
+
+    @property
+    def pdn(self) -> dict[str, dict[str, float | None]]:
+        """Short alias for :attr:`magnitudes_per_domain_normalized` (v0.4.1, Q9.5).
+
+        Reduces user-facing typing friction. Identical content; both
+        attributes resolve to the same dict object (no copy).
+        """
+        return self.magnitudes_per_domain_normalized
 
     def summary_table(self) -> list[dict]:
         """One row per variant: {variant, magnitude, cosines}."""
@@ -1060,117 +1078,156 @@ def _compute_per_domain_normalized(
     change_vectors: dict[str, list[float]],
     probe_domains: tuple[str | None, ...],
     avg_tokens_per_probe: tuple[float, ...],
-) -> dict[str, dict[str, float]]:
-    """Per-variant per-domain per-token RMS magnitude. v0.3.2.
+    domain_status: dict[str, dict[str, str]] | None = None,
+) -> dict[str, dict[str, float | None]]:
+    """Per-variant per-domain RMS magnitude — v0.4.1 corrected formula.
 
     For each variant ``v`` and domain ``d``::
 
-        pdn[v][d] = sqrt( Σ_{i∈d} δ[v][i]² / Σ_{i∈d} T[i] )
+        pdn[v][d] = sqrt(mean(δ_i² for i in domain d))   (Q9.10 Formula A)
 
-    The denominator is the total token count in domain ``d`` —
-    equivalently ``n_d · T̄_d``. Per-token RMS is comparable across
-    domains regardless of probe count or prompt length.
+    Units: ``nats/token`` (clean — δ is already per-token CE diff). The
+    v0.3.2 ``sqrt(Σδ²/ΣT)`` form was dimensionally
+    ``nats/token^1.5`` — see L-033 and ``docs/methodology/normalization.md``.
+    The new formula is plain unweighted RMS over the valid probe set.
 
-    Returns ``{}`` when probe_domains is empty, avg_tokens_per_probe
-    is empty, or their lengths disagree (can't align).
+    The ``domain_status`` argument (added v0.4.1) carries per-(variant,
+    domain) state from the measurement validity framework. When provided:
+
+    - ``full`` / ``partial`` domains compute pdn from the change_vectors
+      indices that fall in this domain (the global NaN filter has
+      already dropped invalid probes from change_vectors).
+    - ``out_of_range`` / ``variant_only`` domains return ``None``
+      explicitly — caller-visible "not measured" sentinel that
+      distinguishes from "measured zero drift".
+
+    When ``domain_status`` is ``None`` (legacy v0.2.x ChangeGeometry
+    path, schema-recompute on v3/v4 load), every domain is treated as
+    ``full`` and pdn is float (never None) — the validity framework is
+    not active.
+
+    The ``avg_tokens_per_probe`` argument is unused under Formula A and
+    is kept in the signature only for backward compatibility with the
+    v0.3.2 callers (``ChangeGeometry.analyze`` and the v3/v4 loader);
+    the new pipeline passes it for the same reason but the body
+    ignores it.
+
+    Returns ``{}`` when probe_domains is empty.
     """
-    if not probe_domains or not avg_tokens_per_probe:
-        return {}
-    if len(probe_domains) != len(avg_tokens_per_probe):
+    del avg_tokens_per_probe  # unused under Formula A; kept for sig compat
+    if not probe_domains:
         return {}
     by_domain: dict[str, list[int]] = {}
     for idx, d in enumerate(probe_domains):
         key = d if d is not None else "unknown"
         by_domain.setdefault(key, []).append(idx)
 
-    out: dict[str, dict[str, float]] = {}
+    out: dict[str, dict[str, float | None]] = {}
     for variant in variant_names:
         vec = np.asarray(change_vectors[variant], dtype=float)
-        per_dom: dict[str, float] = {}
+        per_dom: dict[str, float | None] = {}
+        v_status = domain_status.get(variant, {}) if domain_status else {}
         for domain, indices in by_domain.items():
+            status = v_status.get(domain, "full")  # default when no status
+            if status in {"out_of_range", "variant_only"}:
+                per_dom[domain] = None
+                continue
             sub = vec[indices]
-            sum_sq = float(np.sum(sub * sub))
-            sum_tokens = float(sum(avg_tokens_per_probe[i] for i in indices))
-            if sum_tokens <= 0:
-                per_dom[domain] = 0.0
+            n_d = len(sub)
+            if n_d == 0:
+                per_dom[domain] = None
             else:
-                per_dom[domain] = float(math.sqrt(sum_sq / sum_tokens))
+                sum_sq = float(np.sum(sub * sub))
+                per_dom[domain] = float(math.sqrt(sum_sq / n_d))
         out[variant] = per_dom
     return out
 
 
 def _compute_overall_normalized_from_pdn(
-    pdn: dict[str, dict[str, float]],
+    pdn: dict[str, dict[str, float | None]],
 ) -> dict[str, float]:
     """Overall per-variant magnitude as the per-domain RMS of pdn.
 
-    For each variant ``v``::
+    For each variant ``v``, over the *valid* domains (pdn value is
+    not None)::
 
-        overall_normalized[v] = sqrt( (1/D) · Σ_d pdn[v][d]² )
+        overall_normalized[v] = sqrt( (1/D_valid) · Σ_d pdn[v][d]² )
 
-    Each domain weighted equally — a single long-prompt domain doesn't
-    dominate the overall number. Returns ``{}`` when ``pdn`` is empty.
+    Each valid domain weighted equally — a single long-prompt domain
+    doesn't dominate the overall number. Domains with ``pdn = None``
+    (out_of_range / variant_only under v0.4.1 validity framework)
+    are excluded from both the sum and the count, so they neither
+    inflate nor depress the variant's overall magnitude. Returns
+    ``{}`` when ``pdn`` is empty; returns ``0.0`` for variants with
+    no valid domains at all.
     """
     out: dict[str, float] = {}
     for variant, dom_pdn in pdn.items():
-        if not dom_pdn:
+        valid_vals = [float(m) for m in dom_pdn.values() if m is not None]
+        if not valid_vals:
             out[variant] = 0.0
             continue
-        vals_sq = [float(m) ** 2 for m in dom_pdn.values()]
+        vals_sq = [m * m for m in valid_vals]
         out[variant] = float(math.sqrt(sum(vals_sq) / len(vals_sq)))
     return out
 
 
 def _compute_share_per_domain(
     result: "GeoResult",
-) -> dict[str, dict[str, float]]:
-    """Per-variant per-domain relative energy share (corrected v0.3.2).
+) -> dict[str, dict[str, float | None]]:
+    """Per-variant per-domain relative energy share — v0.4.1 validity-aware.
 
-    For each variant ``v`` and domain ``d``::
+    For each variant ``v`` over the *valid* domains (pdn not None)::
 
         share_per_domain[v][d] = pdn[v][d]² / Σ_d' pdn[v][d']²
 
-    Where ``pdn`` is :attr:`GeoResult.magnitudes_per_domain_normalized`
-    (per-token RMS within each domain). Rows sum to 1.0 within float
-    tolerance.
+    Out-of-range / variant_only domains carry ``share[v][d] = None``
+    (sentinel for "not measured"; distinguishes from "measured zero
+    drift"). Valid rows sum to 1.0 within float tolerance.
 
     Reads ``result.magnitudes_per_domain_normalized`` if populated;
-    otherwise computes pdn on-the-fly from ``result.change_vectors`` /
-    ``probe_domains`` / ``avg_tokens_per_probe``. Returns ``{}`` when
-    pdn cannot be computed (no probe_domains or no token info). When
-    every per-domain pdn is zero for a variant, that variant's row is
-    all zeros — never raises ZeroDivisionError.
+    otherwise computes pdn on-the-fly via the v0.4.1 formula. Passes
+    ``result.domain_status`` through so out_of_range / variant_only
+    domains are correctly None-tagged. When pdn is None for every
+    domain of a variant, that variant's row is all-None.
 
     .. note::
        v0.3.0–v0.3.2 used the raw-magnitude formula
-       ``‖δ_{v|d}‖² / Σ_d' ‖δ_{v|d'}‖²``, which is length-weighted —
-       a single domain whose probes are 100× longer than the others
-       would dominate ~99 % of every variant's share. The v0.3.2 fix
-       uses per-token-normalized magnitudes, restoring the intent
-       ("which domain has variant V drifted most per token?").
+       ``‖δ_{v|d}‖² / Σ_d' ‖δ_{v|d'}‖²``, which was length-weighted.
+       v0.3.2 PR #11 corrected to per-token weighted (still
+       dimensionally inconsistent, see L-033). v0.4.1 corrects to
+       plain unweighted RMS over valid probes (Q9.10 Formula A) and
+       uses ``None`` for invalid domains.
     """
     pdn = result.magnitudes_per_domain_normalized
     if not pdn:
         # On-the-fly compute so callers get a correct share regardless
         # of whether ``magnitudes_per_domain_normalized`` was populated
-        # at construction time. Direct GeoResult fixtures, legacy v4
-        # JSON, and analyze() all flow through this path.
+        # at construction time.
         pdn = _compute_per_domain_normalized(
             result.variant_names,
             result.change_vectors,
             result.probe_domains,
             result.avg_tokens_per_probe,
+            result.domain_status or None,
         )
     if not pdn:
         return {}
-    out: dict[str, dict[str, float]] = {}
+    out: dict[str, dict[str, float | None]] = {}
     for variant, dom_pdn in pdn.items():
-        sq = {d: float(m) ** 2 for d, m in dom_pdn.items()}
-        total = sum(sq.values())
-        if total <= 0:
-            out[variant] = {d: 0.0 for d in sq}
-        else:
-            out[variant] = {d: v / total for d, v in sq.items()}
+        valid_sq = {
+            d: float(m) ** 2 for d, m in dom_pdn.items() if m is not None
+        }
+        total = sum(valid_sq.values())
+        per_dom: dict[str, float | None] = {}
+        for d, m in dom_pdn.items():
+            if m is None:
+                per_dom[d] = None
+            elif total <= 0:
+                per_dom[d] = 0.0
+            else:
+                per_dom[d] = (float(m) ** 2) / total
+        out[variant] = per_dom
     return out
 
 
