@@ -5,6 +5,9 @@ Covers:
 - ``ProbeValidity`` predicates (``valid_for``, ``valid_for_all``)
 - ``compute_domain_status`` against synthetic mixes covering all four
   states + the documented hybrid tie-breaking case + empty edge case
+- the ``min_valid_fraction`` floor (v0.4.1): each state it can produce,
+  inclusivity at the boundary, and the ``0.0`` / ``1.0`` degenerate
+  floors
 """
 from __future__ import annotations
 
@@ -164,31 +167,159 @@ class TestComputeDomainStatus:
         assert compute_domain_status(probes, "base", "var") == "variant_only"
 
     def test_hybrid_80_20_is_partial(self):
-        # 80 valid for both, 20 valid for variant only.
-        # Per audit §2.1: classified as partial (the 80 still produce
-        # signal; the 20 feed v0.5.0+ variant_only_metrics).
+        # 80 valid for both, 20 valid for variant only. The
+        # valid-for-both fraction (0.80) clears the default floor, so
+        # the audit §2.1 tie-break applies: partial wins (the 80 still
+        # produce signal; the 20 feed v0.5.0+ variant_only_metrics).
         probes = [_probe(f"p{i}", True, True) for i in range(80)]
         probes += [_probe(f"q{i}", False, True) for i in range(20)]
         assert compute_domain_status(probes, "base", "var") == "partial"
 
-    def test_mixed_valid_some_invalid_is_partial(self):
-        # 50/50 split with all four combinations present.
+    def test_mixed_quarter_valid_is_out_of_range_under_default_floor(self):
+        # 25/25/25/25 split across all four combinations. Only 1 of 4
+        # probes is valid for both — below the 0.5 default floor — and
+        # the variant-only fraction (0.25) is too small to redeem it.
         probes = [
             _probe("p1", True, True),
             _probe("p2", True, False),
             _probe("p3", False, True),
             _probe("p4", False, False),
         ]
-        assert compute_domain_status(probes, "base", "var") == "partial"
+        assert compute_domain_status(probes, "base", "var") == "out_of_range"
+        # Pre-v0.4.1 semantics (no floor) called this partial.
+        assert compute_domain_status(
+            probes, "base", "var", min_valid_fraction=0.0,
+        ) == "partial"
 
     def test_empty_probes_is_out_of_range(self):
         assert compute_domain_status([], "base", "var") == "out_of_range"
 
-    def test_base_valid_variant_invalid_is_partial(self):
+    def test_base_valid_variant_invalid(self):
         # All probes valid for base, all invalid for variant. Edge case
-        # where the variant has a *smaller* context than base. Not
-        # variant_only (variant has zero valid). Not out_of_range (base
-        # measures everything). Falls into "partial" — base measures,
-        # variant doesn't, so base-vs-variant δ can't be computed.
+        # where the variant has a *smaller* context than base. Zero
+        # valid-for-both, zero variant-only — nothing measurable, so the
+        # floor sends it to out_of_range.
         probes = [_probe(f"p{i}", True, False) for i in range(5)]
+        assert compute_domain_status(probes, "base", "var") == "out_of_range"
+        # Without the floor this fell through to partial, even though no
+        # base-vs-variant δ can be computed for any probe.
+        assert compute_domain_status(
+            probes, "base", "var", min_valid_fraction=0.0,
+        ) == "partial"
+
+
+# ── min_valid_fraction floor ─────────────────────────────────────────
+
+
+class TestMinValidFractionFloor:
+    """The floor added in v0.4.1 after the Llama-2 calibration showed a
+    27.6% long-context share resting on 9 of 100 probes.
+
+    Fixture shape throughout: 100 probes, 9 valid for both (the real
+    calibration number), remainder split between variant-only and
+    neither to drive the two sub-branches.
+    """
+
+    @staticmethod
+    def _mix(n_both: int, n_var_only: int, n_neither: int, n_base_only: int = 0):
+        probes = [_probe(f"b{i}", True, True) for i in range(n_both)]
+        probes += [_probe(f"v{i}", False, True) for i in range(n_var_only)]
+        probes += [_probe(f"n{i}", False, False) for i in range(n_neither)]
+        probes += [_probe(f"o{i}", True, False) for i in range(n_base_only)]
+        return probes
+
+    # ── the four states under the default floor ──
+
+    def test_full_unaffected_by_floor(self):
+        # 100% valid clears any floor, including 1.0.
+        probes = self._mix(n_both=100, n_var_only=0, n_neither=0)
+        assert compute_domain_status(probes, "base", "var") == "full"
+        assert compute_domain_status(
+            probes, "base", "var", min_valid_fraction=1.0,
+        ) == "full"
+
+    def test_above_floor_stays_partial(self):
+        probes = self._mix(n_both=60, n_var_only=20, n_neither=20)
         assert compute_domain_status(probes, "base", "var") == "partial"
+
+    def test_below_floor_with_variant_coverage_is_variant_only(self):
+        # The calibration's yarn / long / code shape: 9 valid for both,
+        # 91 measurable by the variant alone.
+        probes = self._mix(n_both=9, n_var_only=91, n_neither=0)
+        assert compute_domain_status(probes, "base", "var") == "variant_only"
+
+    def test_below_floor_without_variant_coverage_is_out_of_range(self):
+        # The calibration's math / chat shape: 9 valid for both, the
+        # other 91 measurable by nobody.
+        probes = self._mix(n_both=9, n_var_only=0, n_neither=91)
+        assert compute_domain_status(probes, "base", "var") == "out_of_range"
+
+    def test_below_floor_with_insufficient_variant_coverage(self):
+        # Variant covers more than base but still under the floor —
+        # not enough to justify a variant_only sub-table entry.
+        probes = self._mix(n_both=9, n_var_only=40, n_neither=51)
+        assert compute_domain_status(probes, "base", "var") == "out_of_range"
+
+    # ── boundary: exactly at the floor ──
+
+    def test_exactly_at_floor_is_inclusive_for_partial(self):
+        # frac_both == 0.5 exactly → clears the floor → partial.
+        probes = self._mix(n_both=50, n_var_only=0, n_neither=50)
+        assert compute_domain_status(probes, "base", "var") == "partial"
+
+    def test_one_below_floor_flips_to_out_of_range(self):
+        # frac_both == 0.49 → below → out_of_range. Pins the boundary
+        # against an off-by-one in the comparison direction.
+        probes = self._mix(n_both=49, n_var_only=0, n_neither=51)
+        assert compute_domain_status(probes, "base", "var") == "out_of_range"
+
+    def test_exactly_at_floor_is_inclusive_for_variant_only(self):
+        # frac_both == 0.1 (below), frac_var_only == 0.5 exactly →
+        # clears → variant_only.
+        probes = self._mix(n_both=10, n_var_only=50, n_neither=40)
+        assert compute_domain_status(probes, "base", "var") == "variant_only"
+
+    def test_variant_only_one_below_floor(self):
+        probes = self._mix(n_both=10, n_var_only=49, n_neither=41)
+        assert compute_domain_status(probes, "base", "var") == "out_of_range"
+
+    # ── degenerate floors ──
+
+    def test_floor_zero_reproduces_pre_v041_semantics(self):
+        # With the floor disabled, a single valid-for-both probe out of
+        # 100 sustains partial — the behaviour the floor exists to stop.
+        probes = self._mix(n_both=1, n_var_only=0, n_neither=99)
+        assert compute_domain_status(
+            probes, "base", "var", min_valid_fraction=0.0,
+        ) == "partial"
+        assert compute_domain_status(probes, "base", "var") == "out_of_range"
+
+    def test_floor_zero_still_reaches_variant_only(self):
+        # n_both == 0 with variant coverage → variant_only, via the
+        # branch that only the disabled floor can reach.
+        probes = self._mix(n_both=0, n_var_only=100, n_neither=0)
+        assert compute_domain_status(
+            probes, "base", "var", min_valid_fraction=0.0,
+        ) == "variant_only"
+
+    def test_floor_one_demands_total_coverage(self):
+        # min_valid_fraction=1.0: anything short of full drops out.
+        probes = self._mix(n_both=99, n_var_only=1, n_neither=0)
+        assert compute_domain_status(
+            probes, "base", "var", min_valid_fraction=1.0,
+        ) == "out_of_range"
+
+    # ── validation ──
+
+    @pytest.mark.parametrize("bad", [-0.1, 1.1, 2.0, -1.0])
+    def test_out_of_range_floor_raises(self, bad):
+        probes = self._mix(n_both=50, n_var_only=0, n_neither=50)
+        with pytest.raises(ValueError, match="min_valid_fraction"):
+            compute_domain_status(probes, "base", "var", min_valid_fraction=bad)
+
+    def test_empty_domain_short_circuits_before_validation(self):
+        # Documented edge: empty domain is out_of_range. Validation of
+        # the floor happens first, so a bad floor still raises.
+        assert compute_domain_status([], "base", "var") == "out_of_range"
+        with pytest.raises(ValueError, match="min_valid_fraction"):
+            compute_domain_status([], "base", "var", min_valid_fraction=5.0)

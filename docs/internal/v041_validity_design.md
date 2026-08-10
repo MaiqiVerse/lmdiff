@@ -214,17 +214,32 @@ class ProbeValidity:
 The four states from the spec:
 
 - `full` — every probe in the domain is valid for base AND every variant
-- `partial` — domain has both valid-for-both and invalid-for-some probes
-- `variant_only` — every probe is invalid for base, ≥1 valid for some variant
-- `out_of_range` — every probe invalid for every engine
+- `partial` — domain has both valid-for-both and invalid-for-some probes,
+  and the valid-for-both subset meets `min_valid_fraction`
+- `variant_only` — the valid-for-both subset is below `min_valid_fraction`,
+  but variant-only coverage meets it
+- `out_of_range` — every probe invalid for every engine, or the
+  valid-for-both subset is below the floor with no variant coverage
 
 ### 2.1 Computation logic
 
+> **Corrected 2026-08-09 (post-implementation).** The version originally
+> written here had no `min_valid_fraction` floor: any single valid-for-both
+> probe was enough to sustain `partial`. That rule shipped as
+> `lmdiff/_validity.py` and produced, on the v0.4.1 Llama-2 calibration,
+> long-context shares of 27.6 % (`temp_1.5`) and 18.4 % (`chat`) computed
+> from 9 surviving probes out of 100 — the same class of failure v0.4.1
+> exists to fix. See §2.1.1 below for the resolution and the §8.4
+> contradiction it settles. The floor is the shipped behaviour.
+
 ```python
+DEFAULT_MIN_VALID_FRACTION = 0.5
+
 def compute_domain_status(
     probes_in_domain: list[ProbeValidity],
     base_name: str,
     variant_name: str,
+    min_valid_fraction: float = DEFAULT_MIN_VALID_FRACTION,
 ) -> str:
     base_valid = [p.valid_for(base_name) for p in probes_in_domain]
     var_valid = [p.valid_for(variant_name) for p in probes_in_domain]
@@ -238,16 +253,85 @@ def compute_domain_status(
         return "full"
     if n_neither == n:
         return "out_of_range"
-    if n_both == 0 and n_var_only > 0:
+
+    frac_both = n_both / n
+    frac_var_only = n_var_only / n
+
+    if frac_both < min_valid_fraction:
+        if frac_var_only >= min_valid_fraction:
+            return "variant_only"
+        return "out_of_range"
+    if n_both == 0 and n_var_only > 0:   # reachable only when floor == 0.0
         return "variant_only"
-    return "partial"  # any mix
+    return "partial"
 ```
 
 **Hybrid case (80 valid-for-both + 20 valid-for-variant-only):** classified as
-`partial`. Rationale: `partial` is the most inclusive state and triggers the
-"include valid probes, surface variance" branch in section 3. The 20
-variant-only probes participate in the (v0.5.0+) `variant_only_metrics`
-sub-table; for v0.4.1 share computation they're excluded from the denominator.
+`partial`. `frac_both = 0.8` clears the floor, so the original tie-break still
+applies: `partial` is the most inclusive state and triggers the "include valid
+probes, surface variance" branch in section 3. The 20 variant-only probes
+participate in the (v0.5.0+) `variant_only_metrics` sub-table; for v0.4.1
+share computation they're excluded from the denominator.
+
+**Below the floor that reasoning inverts.** With too thin a valid-for-both
+subset there is nothing worth aggregating, so the domain leaves the share
+entirely. This makes `variant_only` and `out_of_range` mean "not enough
+measurable probes to trust" rather than the literal "no measurable probes" —
+a domain with a handful of valid-for-both probes can land in either.
+Thresholding on *sufficiency* rather than *existence* is the point.
+
+Boundaries are inclusive: a fraction exactly equal to `min_valid_fraction`
+clears it. `min_valid_fraction=0.0` reproduces the original rule exactly and
+is retained as a supported, unit-tested degenerate case.
+
+### 2.1.1 Resolution of the §2.1 / §8.4 contradiction
+
+This document shipped with two incompatible predictions for the same
+(base, domain) pairs:
+
+- **§2.1** (the code above, pre-floor) implies `partial` for long-context on
+  every variant, since 9 of 100 probes are valid for both.
+- **§8.4** conclusion 2 asserts long-context becomes "`partial` for every
+  variant in the 4-variant set, `variant_only` for yarn/long in the
+  7-variant."
+
+§8.4 cannot follow from the pre-floor §2.1 rule under any circumstances: both
+calibrations run the identical probe set against the identical base model, so
+the same 9 probes survive in both, and `n_both = 9 > 0` forces `partial` in
+both. The regenerated fixtures confirmed this — every (variant, long-context)
+cell came back `partial`, in both the 4-variant and 7-variant runs.
+
+**Resolved toward §8.4.** The code matching §2.1 is not evidence §2.1 was
+right — §2.1 is what specified the code, so agreement between them is
+circular (this is L-033's failure mode recurring one layer up: a
+self-consistent spec/implementation pair validating nothing). §8.4's
+parenthetical expressed the design *intent* — long-context should drop out
+for variants that cannot measure it — while §2.1's tie-break was
+under-specified about how thin a valid subset may get. The floor implements
+the intent; §2.1 above is corrected to match.
+
+Post-floor status on the calibration set (verified by replaying
+`compute_domain_status` over the committed fixtures' `probe_validity`
+records):
+
+| variant | long-context (pre-floor) | long-context (post-floor) | both / var-only |
+|---|---|---|---|
+| `yarn` | `partial` | `variant_only` | 9 / 91 |
+| `long` | `partial` | `variant_only` | 9 / 91 |
+| `code` | `partial` | `variant_only` | 9 / 80 |
+| `math` | `partial` | `out_of_range` | 9 / 0 |
+| `chat` | `partial` | `out_of_range` | 9 / 0 |
+| `temp_1.5` | `partial` | `out_of_range` | 9 / 0 |
+| `system_prompt` | `partial` | `out_of_range` | 9 / 0 |
+
+This is close to §8.4's intent but not identical to its letter: `code` also
+lands on `variant_only` (CodeLlama's 16384-token window covers 80 of the 100
+long-context probes), which §8.4 did not anticipate. All non-long-context
+domains are `full` and unaffected by the floor.
+
+Rationale for the specific default of 0.5, and the argument that any fixed
+floor beats the implicit `1/n`, live in
+`docs/methodology/normalization.md` §"Minimum valid fraction".
 
 ### 2.2 Per-variant or aggregate?
 
@@ -945,6 +1029,17 @@ shift because the per-domain rescaling factors differ across domains.
    validity-driven domain-status changes (long-context becomes `partial`
    for every variant in the 4-variant set, `variant_only` for yarn/long
    in the 7-variant).
+
+   > **Contradiction, resolved 2026-08-09 — see §2.1.1.** The
+   > `variant_only for yarn/long in the 7-variant` clause here conflicted
+   > with §2.1's original tie-break rule, which yields `partial` for every
+   > variant in *both* calibrations (identical probe set, identical base ⇒
+   > the same 9 of 100 long-context probes survive in each). The first
+   > regeneration confirmed `partial` across the board. Resolved in favour
+   > of this section's intent by adding a `min_valid_fraction` floor to
+   > §2.1; post-floor the long-context column is `variant_only` for
+   > yarn / long / **code** and `out_of_range` for the rest. Both fixtures
+   > need a second regeneration to reflect the floor.
 3. **Both regenerations need GPU.** Estimated 30 min (4-variant) + 1.5 h
    (7-variant) = 2 h GPU. Same Llama-2-7B-base + variant set, just two
    separate `family()` runs with the v0.4.1 code.

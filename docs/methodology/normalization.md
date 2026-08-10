@@ -106,9 +106,74 @@ per-probe records:
 | status | meaning | share treatment |
 |---|---|---|
 | `full` | every probe in the domain valid for both base and variant | included; numeric share |
-| `partial` | some probes valid, some not | included; numeric share computed on valid subset; "*" suffix in viz |
-| `variant_only` | every probe invalid for base, ≥1 valid for variant | excluded; share = None; surface via v0.5.0+ `variant_only_metrics` |
-| `out_of_range` | every probe invalid for every engine | excluded; share = None |
+| `partial` | valid-for-both subset meets `min_valid_fraction` | included; numeric share computed on valid subset; "*" suffix in viz |
+| `variant_only` | valid-for-both below the floor, variant-only coverage meets it | excluded; share = None; surface via v0.5.0+ `variant_only_metrics` |
+| `out_of_range` | nothing measurable, or valid-for-both below the floor with no variant coverage | excluded; share = None |
+
+## Minimum valid fraction
+
+Dropping invalid probes is necessary but not sufficient. A domain can
+survive the per-probe filter with so few probes left that its aggregate
+is no longer a measurement of the domain — it is a measurement of
+whichever probes happened to be short enough.
+
+The Llama-2-7B calibration is the worked example. Of 100
+`longbench_2wikimqa` probes, **9** fit inside the 4096-token base
+window (`T_i` distribution: min 1202, median 7849, max 19161). Those 9
+survivors are not a random sample — they are the short left tail, the
+probes that test long-context capability *least*. Aggregating them
+produced long-context shares of 27.6 % (`temp_1.5`) and 18.4 % (`chat`),
+plotted beside domains measured on all 100 probes, with only a hatch
+pattern to mark the difference.
+
+This is the same failure the validity framework exists to fix (L-033),
+one level quieter: a number that is arithmetically correct and
+substantively meaningless.
+
+So `compute_domain_status` takes a **`min_valid_fraction` floor**,
+default `0.5`. A domain whose valid-for-both subset falls below the
+floor reports no share at all:
+
+- variant-only coverage also meets the floor → `variant_only`
+- otherwise → `out_of_range`
+
+Either way `share` and `pdn` become `None`, and the domain is excluded
+from the overall normalized magnitude rather than contributing a share
+built on a handful of probes.
+
+**Why 0.5.** It is a round majority-rule choice, not a derived constant,
+and it should be read as such. The defensible claim is comparative, not
+absolute: *some* floor is needed, and the implicit alternative is worse.
+With no floor the effective threshold is `1/n` — one surviving probe out
+of a hundred still yields a plotted share — and unlike an explicit
+constant, `1/n` is invisible at the call site and drifts silently with
+probe count. A named parameter with a documented default can at least be
+argued with, and overridden:
+
+```python
+compute_domain_status(probes, base, variant, min_valid_fraction=0.0)
+```
+
+`0.0` disables the floor and restores pre-v0.4.1 behaviour exactly;
+`1.0` collapses `partial` entirely, admitting only fully-measured
+domains. Both are supported and unit-tested.
+
+**Effect on the v0.4.1 calibration.** Every non-long-context domain is
+`full` (100/100 valid) and unaffected. On long-context, all seven
+variants move off `partial`:
+
+| variant | pre-floor | post-floor | valid-for-both / variant-only |
+|---|---|---|---|
+| `yarn` | `partial` | `variant_only` | 9 / 91 |
+| `long` | `partial` | `variant_only` | 9 / 91 |
+| `code` | `partial` | `variant_only` | 9 / 80 |
+| `math` | `partial` | `out_of_range` | 9 / 0 |
+| `chat` | `partial` | `out_of_range` | 9 / 0 |
+| `temp_1.5` | `partial` | `out_of_range` | 9 / 0 |
+| `system_prompt` | `partial` | `out_of_range` | 9 / 0 |
+
+The long-context column becomes `None` for every variant, and each
+variant's remaining four domains renormalize to sum to 1.0.
 
 ## History — v0.3.2 PR #11 → v0.4.1
 

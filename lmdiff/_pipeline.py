@@ -37,7 +37,12 @@ import numpy as np
 
 from lmdiff._config import Config
 from lmdiff._engine import Engine
-from lmdiff._validity import EngineValidity, ProbeValidity, compute_domain_status
+from lmdiff._validity import (
+    DEFAULT_MIN_VALID_FRACTION,
+    EngineValidity,
+    ProbeValidity,
+    compute_domain_status,
+)
 
 # Engine factory contract (Fix 4, v0.4.0 PR #15):
 #   factory(config) -> (engine, pipeline_owns_lifecycle)
@@ -416,6 +421,7 @@ def run_family_pipeline(
     progress: Optional[bool] = None,
     engine_groups: Optional[dict[str, str]] = None,
     seed: Optional[int] = None,
+    min_valid_fraction: float = DEFAULT_MIN_VALID_FRACTION,
 ) -> GeoResult:
     """Run the family pipeline using only the Engine Protocol.
 
@@ -479,6 +485,15 @@ def run_family_pipeline(
         naturally. ``DecodeSpec.seed`` takes precedence per variant.
         ``None`` (default) leaves RNG unpinned — sample-decode
         variants are non-reproducible across runs (PyTorch convention).
+    min_valid_fraction : float
+        Floor on the fraction of a domain's probes that must be
+        measurable before that domain reports a ``share_per_domain``
+        value; forwarded to
+        :func:`lmdiff._validity.compute_domain_status`. Defaults to
+        :data:`~lmdiff._validity.DEFAULT_MIN_VALID_FRACTION` (0.5).
+        Domains below the floor are classified ``variant_only`` or
+        ``out_of_range`` and carry ``None`` for both ``share`` and
+        ``pdn``. Pass ``0.0`` to disable the floor.
 
     Returns
     -------
@@ -734,6 +749,7 @@ def run_family_pipeline(
             ]
             v_status[d] = compute_domain_status(
                 probes_in_d, base_name, v_engine_name,
+                min_valid_fraction=min_valid_fraction,
             )
         domain_status[vname] = v_status
 

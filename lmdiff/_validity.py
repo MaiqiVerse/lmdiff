@@ -19,6 +19,11 @@ classify each (variant, domain) pair as ``full`` / ``partial`` /
 runs the corrected pdn formula (``sqrt(mean(δ²))``, Q9.10 Formula A)
 over the *valid* probe subset.
 
+Classification is gated by :data:`DEFAULT_MIN_VALID_FRACTION`: a domain
+whose measurable subset falls below the floor reports no share at all
+rather than a share resting on a handful of probes. See that constant's
+docstring for the rationale.
+
 Design rationale: see ``docs/internal/v041_validity_design.md`` §1–§2,
 PHASE_PLAN_v6.md Update 5 Y.4 components 1–3, and L-033.
 
@@ -111,46 +116,110 @@ class ProbeValidity:
 
 # ── Domain status ────────────────────────────────────────────────────
 
+#: Minimum fraction of a domain's probes that must be measurable before
+#: the domain is allowed to contribute a ``share_per_domain`` value.
+#:
+#: A domain whose valid-for-both subset falls below this floor is
+#: reclassified away from ``partial`` — to ``variant_only`` when the
+#: variant alone can still cover the floor, otherwise ``out_of_range``.
+#: Either way the domain's ``share`` and ``pdn`` become ``None``.
+#:
+#: Why a floor exists at all: without one the effective threshold is
+#: ``1/n`` — a single surviving probe out of a hundred would still
+#: produce a share plotted next to fully-measured domains, with nothing
+#: but a hatch pattern to signal that it rests on one measurement. The
+#: v0.4.1 Llama-2 calibration hit exactly this: 9 of 100 long-context
+#: probes fit inside the 4096-token base window, and those 9 are the
+#: short left tail of the length distribution — the probes that test
+#: long-context capability least. They yielded long-context shares of
+#: 27.6 % (``temp_1.5``) and 18.4 % (``chat``).
+#:
+#: Why 0.5 specifically: it is a round majority-rule choice, not a
+#: derived constant. Its defensibility is relative — any fixed floor is
+#: arbitrary, but ``1/n`` is both worse and invisible. See
+#: ``docs/methodology/normalization.md`` §"Minimum valid fraction".
+DEFAULT_MIN_VALID_FRACTION = 0.5
+
 
 def compute_domain_status(
     probes_in_domain: list[ProbeValidity],
     base_name: str,
     variant_name: str,
+    min_valid_fraction: float = DEFAULT_MIN_VALID_FRACTION,
 ) -> str:
     """Classify a (variant, domain) pair as one of four states.
+
+    Parameters
+    ----------
+    probes_in_domain : list[ProbeValidity]
+        Every probe assigned to this domain, pre-NaN-filter.
+    base_name, variant_name : str
+        Engine display names, as keyed in ``ProbeValidity.per_engine``.
+    min_valid_fraction : float
+        Floor in ``[0.0, 1.0]`` on the fraction of the domain's probes
+        that must be measurable for the domain to report a share.
+        Defaults to :data:`DEFAULT_MIN_VALID_FRACTION`. Passing ``0.0``
+        disables the floor and restores the pre-v0.4.1 behaviour in
+        which any single valid probe was enough to sustain ``partial``.
 
     Status definitions
     ------------------
     ``full``
         Every probe in the domain is valid for both base and variant.
         Domain participates fully in ``share_per_domain`` and in
-        per-domain pdn / magnitudes.
+        per-domain pdn / magnitudes. Reported regardless of the floor —
+        100 % valid always clears it.
 
     ``partial``
-        Domain has a mix — some probes valid for both, some invalid for
-        one or the other. Domain participates in ``share_per_domain``
-        using only the valid-for-both subset.
+        Domain has a mix, and the valid-for-both subset meets
+        ``min_valid_fraction``. Domain participates in
+        ``share_per_domain`` using only that subset.
 
     ``variant_only``
-        Every probe is invalid for base, but at least one is valid for
-        the variant. Base couldn't measure the comparison; the variant
-        side has signal that v0.5.0+ ``variant_only_metrics`` will
-        surface. v0.4.1 excludes the domain from ``share_per_domain``
-        and assigns ``share[v][d] = None``.
+        The valid-for-both subset is below the floor, but the variant
+        alone can measure at least ``min_valid_fraction`` of the domain.
+        Base couldn't sustain the comparison; the variant side has
+        signal that v0.5.0+ ``variant_only_metrics`` will surface.
+        v0.4.1 excludes the domain from ``share_per_domain`` and assigns
+        ``share[v][d] = None``.
 
     ``out_of_range``
-        Every probe is invalid for every engine. Domain entirely
-        excluded.
+        Every probe is invalid for every engine, or the valid-for-both
+        subset is below the floor with no variant-side coverage to
+        redeem it. Domain entirely excluded; ``share[v][d] = None``.
 
-    Tie-breaking for hybrid cases (e.g. 80 valid-for-both + 20
-    valid-for-variant-only): ``partial`` wins. Rationale per audit
-    §2.1: the 80 valid-for-both probes still produce signal worth
-    aggregating; the 20 variant-only probes feed the (v0.5.0+)
-    variant_only sub-table without affecting the v0.4.1 share.
+    Tie-breaking
+    ------------
+    Above the floor, ``partial`` wins hybrid cases (e.g. 80
+    valid-for-both + 20 valid-for-variant-only): the 80 valid-for-both
+    probes produce signal worth aggregating, and the 20 variant-only
+    probes feed the (v0.5.0+) variant_only sub-table without affecting
+    the v0.4.1 share.
+
+    Below the floor that reasoning inverts — too thin a base to
+    aggregate — so the domain drops out of the share entirely. Note this
+    makes ``variant_only`` and ``out_of_range`` mean "not enough
+    measurable probes to trust" rather than the literal "no measurable
+    probes"; a domain with a handful of valid-for-both probes can land
+    in either. Thresholding on *sufficiency* rather than *existence* is
+    the point of the floor.
+
+    Boundaries are inclusive on both sides: a fraction exactly equal to
+    ``min_valid_fraction`` clears it.
 
     Edge: empty ``probes_in_domain`` → ``out_of_range`` (defensive;
     ``share`` for an empty domain is meaningless).
+
+    Raises
+    ------
+    ValueError
+        If ``min_valid_fraction`` is outside ``[0.0, 1.0]``.
     """
+    if not 0.0 <= min_valid_fraction <= 1.0:
+        raise ValueError(
+            f"min_valid_fraction must be in [0.0, 1.0], got {min_valid_fraction}",
+        )
+
     n = len(probes_in_domain)
     if n == 0:
         return "out_of_range"
@@ -165,12 +234,28 @@ def compute_domain_status(
         return "full"
     if n_neither == n:
         return "out_of_range"
+
+    frac_both = n_both / n
+    frac_var_only = n_var_only / n
+
+    if frac_both < min_valid_fraction:
+        # Too few valid-for-both probes to aggregate. The variant side
+        # may still carry enough coverage to be worth flagging for the
+        # v0.5.0+ variant_only sub-table.
+        if frac_var_only >= min_valid_fraction:
+            return "variant_only"
+        return "out_of_range"
+    # Reachable only when the floor is disabled (min_valid_fraction ==
+    # 0.0); with any positive floor, n_both == 0 implies frac_both == 0
+    # and the branch above has already returned. Retained so that
+    # min_valid_fraction=0.0 exactly reproduces pre-v0.4.1 semantics.
     if n_both == 0 and n_var_only > 0:
         return "variant_only"
     return "partial"
 
 
 __all__ = [
+    "DEFAULT_MIN_VALID_FRACTION",
     "EngineValidity",
     "ProbeValidity",
     "compute_domain_status",
