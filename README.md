@@ -115,20 +115,24 @@ Compare seven Llama-2-7B variants — five weight-modified, two **inference-time
 
 The figure renders two views per (variant, domain) cell. **Left**: per-domain per-token drift magnitude — comparable across domains regardless of probe length. **Right**: relative share of each variant's behavioral budget across domains, rows summing to 100 %. Numbers come from a `family()` run over 5 × 100 lm-eval probes (hellaswag, arc_challenge, gsm8k, mmlu_college_computer_science, longbench_2wikimqa).
 
+The **long-context column is cross-hatched and blank** for every variant. Llama-2-7B's context window is 4096 tokens; 91 of the 100 `longbench_2wikimqa` probes are longer than that, so base cannot score them. The 9 that fit are the short left tail of the length distribution — the probes that test long-context capability least. v0.4.1 reports no share for a domain that thin rather than one computed from the survivors; see [`docs/methodology/normalization.md`](docs/methodology/normalization.md). Each row's remaining four domains sum to 100 %.
+
 | Variant | Type of change | Biggest move on | Share |
 |---|---|---|---|
-| `yarn` | long-context fine-tune | commonsense | 51 % |
-| `long` | long-context fine-tune | reasoning | 66 % |
-| `code` | code fine-tune | code | 32 % |
-| `math` | math fine-tune | math | 35 % |
-| `chat` | RLHF | reasoning | 30 % |
-| `system_prompt` | **pure prompt change** | commonsense | 60 % |
-| `temp_1.5` | **pure decoding change** | reasoning | 34 % |
+| `yarn` | long-context fine-tune | commonsense | 79 % |
+| `code` | code fine-tune | code | 52 % |
+| `long` | long-context fine-tune | reasoning | 47 % |
+| `math` | math fine-tune | math | 43 % |
+| `system_prompt` | **pure prompt change** | commonsense | 62 % |
+| `chat` | RLHF | *no dominant domain* | top two within 2.5 pp |
+| `temp_1.5` | **pure decoding change** | *no dominant domain* | top two within 4.1 pp |
 
 What the same plot tells you, on the same axes:
 
-- **`system_prompt`** — same weights, no fine-tuning, just `system_prompt="You are concise."` — concentrates 60 % of its behavioral budget on commonsense. That's larger than `chat`'s biggest move (30 % on reasoning), without changing a single weight.
-- **`temp_1.5`** — same weights, same prompt, only the decoding temperature changes — still has a measurable signature concentrated on reasoning (34 %). A "pure sampling effect" is not behaviorally invisible.
+- **`system_prompt`** — same weights, no fine-tuning, just `system_prompt="You are concise."` — concentrates 62 % of its behavioral budget on commonsense. Among the seven variants only `yarn` concentrates harder, and `system_prompt` gets there without changing a single weight.
+- **`temp_1.5`** — same weights, same prompt, only the decoding temperature changes — still produces drift on every domain. A "pure sampling effect" is not behaviorally invisible. Unlike the fine-tunes, though, it doesn't concentrate: its four measured domains span 19–31 %, so this is a diffuse change rather than a targeted one.
+- **Fine-tuning targets show up where you'd expect.** `code` (CodeLlama) puts 52 % on code and `math` (llemma) 43 % on math — each variant's largest share is the domain it was trained for.
+- **Not every variant has a signature.** `chat` and `temp_1.5` spread their budget with no domain clearly ahead (top-two gaps of 2.5 pp and 4.1 pp). Reading a peak off either would be reading noise — `temp_1.5` is sample-decoded and the calibration test allows it 2 pp of jitter on this very metric. "Where did it act biggest" is only a meaningful question when something actually leads.
 - **Weight modifications** (`yarn`, `long`, `code`, `math`, `chat`) and **non-weight modifications** (`system_prompt`, `temp_1.5`) appear in the same plot, comparable on the same axes. This is what "configuration is the unit" means in practice.
 
 ## Metrics: what each one means
@@ -145,14 +149,16 @@ For each variant *v*, the **change vector** **δ_v** has one entry per probe —
 
 | Field | Range | What it answers |
 |---|---|---|
-| `magnitudes_per_domain_normalized[v][d]` | ≥ 0 | Per-token RMS drift of variant *v* on domain *d*: `sqrt( Σ_{i∈d} δ_v[i]² / Σ_{i∈d} T[i] )`. Comparable across domains regardless of how many probes each domain has or how long their prompts are. |
-| `share_per_domain[v][d]` | [0, 1], rows sum to 1 | Relative per-token energy of variant *v* across domains: `pdn[v][d]² / Σ_d' pdn[v][d']²`. The "where did variant *v* act biggest" view shown in the right pane of the showcase figure. |
+| `magnitudes_per_domain_normalized[v][d]` | ≥ 0, or `None` | Per-token RMS drift of variant *v* on domain *d*: `sqrt( mean_{i∈d}(δ_v[i]²) )`, in nats/token. Comparable across domains regardless of how many probes each domain has or how long their prompts are. `None` when the domain has too few measurable probes — see below. |
+| `share_per_domain[v][d]` | [0, 1], rows sum to 1 | Relative per-token energy of variant *v* across domains: `pdn[v][d]² / Σ_d' pdn[v][d']²`. The "where did variant *v* act biggest" view shown in the right pane of the showcase figure. `None` on the same cells as `pdn`; rows sum to 1 over the non-`None` entries. |
 | `magnitudes_normalized[v]` | ≥ 0 | Per-domain RMS of `pdn[v][·]`. Each domain weighted equally, so a single long-prompt domain doesn't dominate. |
 | `cosine_matrix[v][w]` | [−1, +1] | Do variants *v* and *w* push base in the same probe-by-probe direction? +1 = perfect agreement, 0 = independent, −1 = opposed. |
 | `selective_cosine_matrix[v][w]` | [−1, +1] | Same as cosine, after subtracting each variant's mean δ. Strips out uniform-offset agreement; keeps probe-specific direction. If raw cosine is high but selective is low, agreement was offset-driven. |
 | `magnitudes[v]` | ≥ 0 | Raw L2 norm `‖δ_v‖`. Length-weighted (a long-prompt domain inflates this). Use `magnitudes_normalized` for cross-run comparisons; raw is reported for completeness. |
 
 **Why per-token per-domain normalization matters.** In a heterogeneous probe mix (short MCQ ~30 tokens + long extractive QA ~9000 tokens), raw `‖δ‖²` is dominated by the longest probes. Per-token normalization strips length bias so specialization signatures become visible.
+
+**Why some cells are `None`.** Normalization can't rescue a measurement that was never valid. A probe longer than a model's context window isn't a small measurement, it's a broken one — position embeddings extrapolate past their trained range and per-token CE inflates for both models at once. v0.4.1 checks each (engine, probe) pair against the engine's context window before scoring, and drops a whole domain from the share when fewer than half its probes survive for both sides. `None` means "not measured", which is different from a measured zero. See [`docs/methodology/normalization.md`](docs/methodology/normalization.md) for the derivation and the `min_valid_fraction` floor.
 
 **Why the two cosines.** Raw cosine tells you whether variants agree on probe-level direction at all. Selective cosine separates "they have the same offset" from "they prefer the same probes." If `yarn` and `long` both have raw cosine 0.95 with `code`, but selective is 0.94 vs 0.85, then `yarn-code` share probe-specific preferences while `long-code` agreement was more offset-driven.
 
@@ -167,7 +173,7 @@ result = lmdiff.family(
     probes="lm_eval:hellaswag+arc_challenge",
     n_probes=100,
 )
-result.share_per_domain["yarn"]    # → {'commonsense': 0.51, 'reasoning': 0.49}
+result.share_per_domain["yarn"]    # → {'commonsense': …, 'reasoning': …}, sums to 1.0
 result.cosine_matrix["yarn"]["code"]
 result.figures(out_dir="figs/")    # drift_share_dual + direction_agreement + change_size_bars
 ```
