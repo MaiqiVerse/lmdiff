@@ -175,6 +175,67 @@ variants move off `partial`:
 The long-context column becomes `None` for every variant, and each
 variant's remaining four domains renormalize to sum to 1.0.
 
+## What moves when the formula moves
+
+A formula change does not stop at the formula. Two downstream constants
+were calibrated against Formula B's numeric range and had to be
+converted with it; both were missed on the first pass and caught only by
+looking at the rendered figure.
+
+**Drift-magnitude colour bins** (`lmdiff/viz/drift_share.py`,
+`_DRIFT_BIN_EDGES`). The left pane of `drift_share_dual.png` bins pdn
+into barely / small / moderate / big / huge. Through v0.4.0 the edges
+were `0.025 / 0.05 / 0.10 / 0.20`. Formula A exceeds Formula B by
+`√T̄_d`, and short-prompt domains have `T̄` of roughly 30–120 tokens, so
+`√T̄` lands between 5.7 and 11. Shifting the identical ×2 ladder one
+decade up — to `0.25 / 0.5 / 1.0 / 2.0` — is therefore a **unit
+conversion, not a retune**: same structure, same spacing, same labels,
+restated in the new units. Left unconverted, 26 of 28 measured cells in
+the v0.4.1 calibration fell into the top bin and the pane carried no
+information at all.
+
+The corollary matters more than the constant: these edges are **not** to
+be fitted to whichever dataset is in front of you. An empty `barely` bin
+is itself a result — it says nothing in this probe set is near-identical
+to base. A ×8 ladder was rejected during review for exactly this reason:
+its only argument was that it filled every bin, which is a cosmetic
+argument. If the pdn formula changes again, convert these edges by the
+same factor rather than re-fitting them.
+
+**Specialization margin** (`lmdiff/_findings.py`,
+`_SPECIALIZATION_PEAK_MARGIN`). `SpecializationPeakFinding` fires when a
+variant's top domain exceeds a 30 % share. That test asks whether the
+peak is *large*; it never asked whether the peak was *ahead*. Dropping
+long-context renormalized every row over four domains instead of five,
+and `chat`'s peak rose from 29.9 % (silent, below the floor) to 32.0 %
+(a specialization claim) — while leading its runner-up by 2.5 pp. The
+floor fix had manufactured a finding for one of the two variants with
+the weakest claim to one.
+
+So the peak must now also lead the runner-up by `_SPECIALIZATION_PEAK_MARGIN`,
+5 pp. There is no derivation for 5 pp, but there is an anchor: the
+calibration regression grants sample-decode variants a 2 pp tolerance on
+this very metric, which is measurement noise we have already committed
+to in writing. A claim whose entire margin sits under twice the noise we
+tolerate should not be stated as a result. 5 pp is 2× that tolerance,
+rounded up.
+
+Suppression alone would have been the wrong fix. A variant with no
+finding is indistinguishable from a variant that was never measured, so
+below the margin the variant now reports `UndifferentiatedFinding`:
+
+```
+chat: no dominant domain (math 32%, code 29%, commonsense 23%)
+temp_1.5: no dominant domain (commonsense 31%, reasoning 27%, code 24%)
+```
+
+That is a positive result, not the absence of one. A modification
+touching several domains at once — instruction tuning, a decoding change
+— genuinely has no single target, and reporting the spread says more
+than naming whichever domain won by a point. Every variant with any
+measurable domain now yields exactly one verdict: a named peak or an
+explicit "no dominant domain".
+
 ## History — v0.3.2 PR #11 → v0.4.1
 
 The v0.3.0–v0.3.2 share formula was `‖δ_d‖² / Σ ‖δ_d'‖²` — raw L2

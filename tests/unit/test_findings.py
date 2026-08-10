@@ -24,6 +24,7 @@ from lmdiff._findings import (
     MostLikeBaseFinding,
     SpecializationPeakFinding,
     TokenizerMismatchFinding,
+    UndifferentiatedFinding,
     extract_findings,
 )
 from lmdiff.geometry import GeoResult, _compute_share_per_domain
@@ -163,6 +164,204 @@ class TestSpecializationPeak:
         findings = extract_findings(geo)
         assert not any(
             isinstance(f, SpecializationPeakFinding) for f in findings
+        )
+
+
+# ── Specialization margin gate / UndifferentiatedFinding (v0.4.1) ─────
+
+
+def _geo_with_shares(shares: dict[str, dict[str, float | None]]) -> GeoResult:
+    """GeoResult whose share_per_domain is set directly.
+
+    The peak / undifferentiated rules read ``share_per_domain`` only, so
+    pinning it beats hand-solving change_vectors that produce a target
+    share to 0.1 pp.
+    """
+    domains = tuple(sorted({d for row in shares.values() for d in row}))
+    n = len(domains)
+    geo = _build_geo(
+        variants={v: [1.0] * n for v in shares},
+        domains=domains,
+    )
+    geo.share_per_domain = {v: dict(row) for v, row in shares.items()}
+    return geo
+
+
+class TestSpecializationMargin:
+    """A peak must lead the runner-up by ``_SPECIALIZATION_PEAK_MARGIN``
+    (5 pp) before it is named. Below that the variant reports
+    ``UndifferentiatedFinding`` instead — argmax over a near-uniform
+    distribution is not a finding.
+    """
+
+    def test_narrow_lead_yields_undifferentiated_not_peak(self):
+        # The real v0.4.1 `chat` shape: peak clears 30% but leads by 2.5pp.
+        geo = _geo_with_shares({
+            "chat": {"math": 0.320, "code": 0.295, "commonsense": 0.230,
+                     "reasoning": 0.155},
+        })
+        findings = extract_findings(geo)
+        assert not any(isinstance(f, SpecializationPeakFinding) for f in findings)
+        undiff = [f for f in findings if isinstance(f, UndifferentiatedFinding)]
+        assert len(undiff) == 1
+        assert undiff[0].details["variant"] == "chat"
+        assert undiff[0].details["margin"] == pytest.approx(0.025)
+
+    def test_wide_lead_still_yields_peak(self):
+        # The real v0.4.1 `code` shape: 52.1% vs 28.6% → 23.5pp lead.
+        geo = _geo_with_shares({
+            "code": {"code": 0.521, "math": 0.286, "commonsense": 0.134,
+                     "reasoning": 0.059},
+        })
+        findings = extract_findings(geo)
+        peaks = [f for f in findings if isinstance(f, SpecializationPeakFinding)]
+        assert len(peaks) == 1
+        assert peaks[0].details["domain"] == "code"
+        assert peaks[0].details["margin"] == pytest.approx(0.235)
+        assert not any(isinstance(f, UndifferentiatedFinding) for f in findings)
+
+    def test_margin_boundary_is_inclusive(self):
+        # Exactly 5.0pp clears the gate.
+        geo = _geo_with_shares({
+            "v": {"a": 0.40, "b": 0.35, "c": 0.15, "d": 0.10},
+        })
+        findings = extract_findings(geo)
+        assert any(isinstance(f, SpecializationPeakFinding) for f in findings)
+
+    def test_just_below_margin_boundary_flips(self):
+        geo = _geo_with_shares({
+            "v": {"a": 0.40, "b": 0.36, "c": 0.14, "d": 0.10},
+        })
+        findings = extract_findings(geo)
+        assert any(isinstance(f, UndifferentiatedFinding) for f in findings)
+        assert not any(isinstance(f, SpecializationPeakFinding) for f in findings)
+
+    def test_exactly_one_verdict_per_variant(self):
+        """Every variant with measurable share gets a peak OR an
+        undifferentiated finding — never both, never neither. Silence
+        would be indistinguishable from "not measured"."""
+        geo = _geo_with_shares({
+            "sharp": {"a": 0.70, "b": 0.15, "c": 0.10, "d": 0.05},
+            "flat": {"a": 0.26, "b": 0.25, "c": 0.25, "d": 0.24},
+            "weak_lead": {"a": 0.28, "b": 0.26, "c": 0.24, "d": 0.22},
+        })
+        findings = extract_findings(geo)
+        verdicts: dict[str, list[str]] = {}
+        for f in findings:
+            if isinstance(f, (SpecializationPeakFinding, UndifferentiatedFinding)):
+                verdicts.setdefault(f.details["variant"], []).append(
+                    type(f).__name__,
+                )
+        assert set(verdicts) == {"sharp", "flat", "weak_lead"}
+        assert all(len(v) == 1 for v in verdicts.values())
+        assert verdicts["sharp"] == ["SpecializationPeakFinding"]
+        # Flat and weak_lead both fall under the margin — note weak_lead's
+        # peak is also below the 30% floor, so pre-v0.4.1 it produced
+        # nothing at all.
+        assert verdicts["flat"] == ["UndifferentiatedFinding"]
+        assert verdicts["weak_lead"] == ["UndifferentiatedFinding"]
+
+    def test_summary_names_the_spread(self):
+        geo = _geo_with_shares({
+            "temp": {"commonsense": 0.308, "reasoning": 0.267,
+                     "code": 0.238, "math": 0.187},
+        })
+        undiff = [
+            f for f in extract_findings(geo)
+            if isinstance(f, UndifferentiatedFinding)
+        ][0]
+        assert undiff.summary == (
+            "temp: no dominant domain "
+            "(commonsense 31%, reasoning 27%, code 24%)"
+        )
+
+    def test_all_none_share_row_yields_no_verdict(self):
+        """A variant with nothing measurable is silent — that is the
+        "not computed" case the undifferentiated finding exists to be
+        distinguishable from."""
+        geo = _geo_with_shares({"v": {"a": None, "b": None}})
+        findings = extract_findings(geo)
+        assert not any(
+            isinstance(f, (SpecializationPeakFinding, UndifferentiatedFinding))
+            for f in findings
+        )
+
+
+# ── Validity filtering of drift cells (v0.4.1) ────────────────────────
+
+
+class TestDriftCellsRespectDomainStatus:
+    """``MostLikeBase`` / ``BiggestMove`` must not name a domain the
+    validity framework excluded. ``domain_heatmap()`` is deliberately
+    validity-unaware, so the filter lives in the findings layer.
+    """
+
+    @staticmethod
+    def _geo():
+        # v1 is near-identical to base on domain "b" — but only because
+        # "b" is the domain base cannot measure.
+        geo = _build_geo(
+            variants={
+                "v1": [3.0, 4.0, 0.001, 0.001],
+                "v2": [1.0, 1.0, 1.0, 1.0],
+            },
+            domains=("a", "a", "b", "b"),
+        )
+        return geo
+
+    def test_without_status_the_excluded_cell_wins(self):
+        """Baseline: absent domain_status, legacy behaviour is unchanged
+        and the tiny cell is reported."""
+        geo = self._geo()
+        most_like = [
+            f for f in extract_findings(geo)
+            if isinstance(f, MostLikeBaseFinding)
+        ][0]
+        assert (most_like.details["variant"], most_like.details["domain"]) == (
+            "v1", "b",
+        )
+
+    def test_out_of_range_cell_is_not_reported(self):
+        geo = self._geo()
+        geo.domain_status = {
+            "v1": {"a": "full", "b": "out_of_range"},
+            "v2": {"a": "full", "b": "full"},
+        }
+        most_like = [
+            f for f in extract_findings(geo)
+            if isinstance(f, MostLikeBaseFinding)
+        ][0]
+        assert most_like.details["domain"] != "b" or \
+            most_like.details["variant"] != "v1"
+        assert most_like.details["drift"] > 0.001
+
+    def test_variant_only_cell_is_not_reported(self):
+        geo = self._geo()
+        geo.domain_status = {
+            "v1": {"a": "full", "b": "variant_only"},
+            "v2": {"a": "full", "b": "full"},
+        }
+        cells = [
+            (f.details["variant"], f.details["domain"])
+            for f in extract_findings(geo)
+            if isinstance(f, (MostLikeBaseFinding, BiggestMoveFinding))
+        ]
+        assert ("v1", "b") not in cells
+
+    def test_partial_cell_is_still_reported(self):
+        """``partial`` domains keep their numeric share, so they stay
+        eligible for drift findings."""
+        geo = self._geo()
+        geo.domain_status = {
+            "v1": {"a": "full", "b": "partial"},
+            "v2": {"a": "full", "b": "full"},
+        }
+        most_like = [
+            f for f in extract_findings(geo)
+            if isinstance(f, MostLikeBaseFinding)
+        ][0]
+        assert (most_like.details["variant"], most_like.details["domain"]) == (
+            "v1", "b",
         )
 
 

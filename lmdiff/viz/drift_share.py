@@ -15,11 +15,62 @@ matplotlib is imported lazily inside ``render_drift_share`` so that
 """
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from lmdiff.geometry import GeoResult
+
+
+#: Bin edges for the left pane's drift-magnitude colour scale, in
+#: nats/token (the units of ``magnitudes_per_domain_normalized``).
+#:
+#: **These edges are tied to the pdn formula and move with it.** Through
+#: v0.4.0 they were ``0.025 / 0.05 / 0.10 / 0.20``, calibrated against
+#: Formula B (``sqrt(Σδ²/ΣT)``). v0.4.1's Formula A (``sqrt(mean(δ²))``)
+#: is larger by exactly ``√T̄_d`` — for short-prompt domains T̄ runs
+#: roughly 30–120 tokens, so ``√T̄`` is 5.7–11. Shifting the identical
+#: ×2 ladder one decade up is therefore a **unit conversion, not a
+#: retune**: same structure, same spacing, same labels, restated in the
+#: new units. Left unconverted, 93 % of cells in the v0.4.1 calibration
+#: fell in the top bin and the pane carried no information.
+#:
+#: Consequently: do not tune these to make a particular dataset look
+#: well-distributed. An empty ``barely`` bin is a result — it says no
+#: cell in this probe set is near-identical to base — and filling it
+#: would be cosmetic. If the pdn formula changes again, convert these by
+#: the same factor rather than re-fitting them.
+#:
+#: Derivation lives in ``docs/methodology/normalization.md``.
+_DRIFT_BIN_EDGES: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0)
+
+#: Plain-language name per bin; parallel to the five colours.
+_DRIFT_BIN_NAMES: tuple[str, ...] = (
+    "barely", "small", "moderate", "big", "huge",
+)
+
+#: Above this magnitude a cell's number is drawn in white rather than
+#: dark grey, for contrast against the darker end of the colormap.
+#: Anchored to the ladder's second edge so it converts along with it.
+_DRIFT_TEXT_LIGHT_ABOVE: float = _DRIFT_BIN_EDGES[1]
+
+
+def _fmt_edge(x: float) -> str:
+    """Trim trailing zeros so 0.25 / 0.5 / 1 / 2 read cleanly."""
+    return f"{x:g}"
+
+
+def _drift_bin_label_texts() -> list[str]:
+    """Range text per bin, derived from :data:`_DRIFT_BIN_EDGES`."""
+    edges = _DRIFT_BIN_EDGES
+    texts = [f"< {_fmt_edge(edges[0])}"]
+    texts += [
+        f"{_fmt_edge(lo)}–{_fmt_edge(hi)}"
+        for lo, hi in zip(edges, edges[1:])
+    ]
+    texts.append(f"> {_fmt_edge(edges[-1])}")
+    return texts
 
 
 def _ordered_domains(result: "GeoResult", explicit: list[str] | None) -> list[str]:
@@ -84,6 +135,7 @@ def render_drift_share(
         BiggestMoveFinding,
         MostLikeBaseFinding,
         SpecializationPeakFinding,
+        UndifferentiatedFinding,
     )
 
     mpl.rcParams.update({
@@ -204,7 +256,8 @@ def render_drift_share(
     # the NA background + hatch.
     norm_for_cmap = np.where(np.isfinite(norm), norm, 0.0)
     abs_max = float(np.nanmax(norm)) if np.any(np.isfinite(norm)) else 0.21
-    boundaries_abs = [0, 0.025, 0.05, 0.10, 0.20, max(abs_max + 0.01, 0.21)]
+    _top = _DRIFT_BIN_EDGES[-1]
+    boundaries_abs = [0, *_DRIFT_BIN_EDGES, max(abs_max + 0.01, _top * 1.05)]
     colors_abs = ["#f0f0f0", "#c6dbef", "#6baed6", "#2171b5", "#08306b"]
     cmap_abs = ListedColormap(colors_abs)
     norm_cmap_abs = BoundaryNorm(boundaries_abs, cmap_abs.N)
@@ -234,7 +287,7 @@ def render_drift_share(
                     facecolor="none", hatch=HATCH["partial"],
                     edgecolor="black", linewidth=0.3, alpha=0.7,
                 ))
-            text_color = "white" if val > 0.10 else ("white" if val > 0.05 else "#222")
+            text_color = "white" if val > _DRIFT_TEXT_LIGHT_ABOVE else "#222"
             label = f"{val:.4f}" + ("*" if status == "partial" else "")
             ax_abs.text(j, i, label,
                         ha="center", va="center",
@@ -325,12 +378,18 @@ def render_drift_share(
     strip_w = 0.175
     strip_left = 0.010
     strip_gap = 0.006
+    # Labels derived from _DRIFT_BIN_EDGES rather than restated, so a
+    # future rescaling can't leave the legend describing bins the
+    # colormap no longer uses (which is exactly what the v0.4.1 Formula A
+    # change would have done here).
     abs_legend_items = [
-        ("#f0f0f0", "< 0.025\nbarely",    "#222"),
-        ("#c6dbef", "0.025–0.05\nsmall", "#222"),
-        ("#6baed6", "0.05–0.10\nmoderate", "#222"),
-        ("#2171b5", "0.10–0.20\nbig",     "white"),
-        ("#08306b", "> 0.20\nhuge",       "white"),
+        (color, f"{text}\n{name}", txt_color)
+        for (color, txt_color), text, name in zip(
+            [("#f0f0f0", "#222"), ("#c6dbef", "#222"), ("#6baed6", "#222"),
+             ("#2171b5", "white"), ("#08306b", "white")],
+            _drift_bin_label_texts(),
+            _DRIFT_BIN_NAMES,
+        )
     ]
     for k, (color, lbl, txt_color) in enumerate(abs_legend_items):
         cx = strip_left + k * (strip_w + strip_gap)
@@ -400,16 +459,33 @@ def render_drift_share(
     if biggest is not None:
         bullets.extend(["• Biggest single move:", f"  {biggest.summary}", ""])
 
-    peaks = [f for f in findings if isinstance(f, SpecializationPeakFinding)]
+    # Both per-variant verdicts share this block: a named peak, or an
+    # explicit "no dominant domain". Rendering only the peaks would let
+    # a reader mistake a suppressed claim for a variant that wasn't
+    # measured. Summaries appear verbatim (v6 §12.6); the undifferentiated
+    # ones carry a spread breakdown and need wrapping to fit the column.
+    peaks = [
+        f for f in findings
+        if isinstance(f, (SpecializationPeakFinding, UndifferentiatedFinding))
+    ]
     if peaks:
         bullets.extend(["• Where each variant", "  acts biggest:"])
         for p in peaks:
-            bullets.append(f"  {p.summary}")
+            wrapped = textwrap.wrap(p.summary, width=32) or [p.summary]
+            bullets.append(f"  {wrapped[0]}")
+            bullets.extend(f"   {cont}" for cont in wrapped[1:])
 
+    # The bullet block grows with variant count and with the wrapped
+    # spread lines on undifferentiated variants, so step and font size
+    # scale down together to keep it inside this axes. Fixed spacing
+    # would run the tail of the list into the domain↔dataset panel below.
     y0 = 0.62
+    _step_max, _font_max = 0.043, 9.0
+    step = min(_step_max, (y0 - 0.02) / max(len(bullets), 1))
+    fontsize = max(6.5, _font_max * (step / _step_max))
     for i, line in enumerate(bullets):
-        ax_takeaway.text(0.0, y0 - i * 0.043, line,
-                         fontsize=9, color="#222",
+        ax_takeaway.text(0.0, y0 - i * step, line,
+                         fontsize=fontsize, color="#222",
                          transform=ax_takeaway.transAxes, va="top",
                          family="DejaVu Sans Mono", linespacing=1.3)
 

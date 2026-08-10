@@ -507,6 +507,7 @@ def _layer2_headlines(findings: tuple, sty: _Styler) -> list[str]:
         DirectionOutlierFinding,
         MostLikeBaseFinding,
         SpecializationPeakFinding,
+        UndifferentiatedFinding,
     )
 
     out = [sty("bold", "Headlines")]
@@ -535,6 +536,11 @@ def _layer2_headlines(findings: tuple, sty: _Styler) -> list[str]:
             # peaks still get headline lines here.
             label = "Specialization peak".ljust(label_w)
             out.append(f"  {label}: {sty('orange', f.summary)}")
+        elif isinstance(f, UndifferentiatedFinding):
+            # Deliberately not styled as a peak — this is the absence of
+            # a peak, reported rather than left silent.
+            label = "No dominant domain".ljust(label_w)
+            out.append(f"  {label}: {f.summary}")
     return out
 
 

@@ -12,7 +12,9 @@ Stable extraction order::
      b. BiggestMoveFinding
      c. DirectionClusterFinding (≥3 variants only)
      d. DirectionOutlierFinding (only if cluster fired)
-     e. SpecializationPeakFinding (one per variant, alphabetical)
+     e. SpecializationPeakFinding / UndifferentiatedFinding
+        (exactly one per variant, alphabetical — which of the two
+        depends on whether the variant's top domain leads by enough)
   2. warning findings
      - TokenizerMismatchFinding
   3. caveat findings
@@ -38,6 +40,7 @@ __all__ = [
     "DirectionClusterFinding",
     "DirectionOutlierFinding",
     "SpecializationPeakFinding",
+    "UndifferentiatedFinding",
     "AccuracyArtifactFinding",
     "TokenizerMismatchFinding",
     "BaseAccuracyMissingFinding",
@@ -51,6 +54,27 @@ __all__ = [
 _CLUSTER_COSINE_THRESHOLD = 0.90
 _OUTLIER_COSINE_THRESHOLD = 0.85
 _SPECIALIZATION_PEAK_SHARE_THRESHOLD = 0.30
+
+#: Minimum lead the top domain must hold over the runner-up before
+#: ``SpecializationPeakFinding`` will name it (v0.4.1).
+#:
+#: The 30 % floor above asks "is the peak large?"; it does not ask "is
+#: the peak *ahead*?". argmax over a near-uniform distribution is not a
+#: finding — with four measured domains, a variant at 32/29/23/16 has no
+#: more claim to a math specialization than one at 25/25/25/25.
+#:
+#: Why 5 pp. There is no derivation, but there is an anchor: the
+#: calibration regression allows sample-decode variants 2 pp of drift on
+#: this very metric (``TOL_SHARE_PCT_POINTS``). That is measurement
+#: noise we have already admitted to in writing. A claim whose entire
+#: margin is under twice the noise we tolerate should not be stated as a
+#: result. 5 pp is 2× the admitted tolerance, rounded up.
+#:
+#: Below this margin the variant gets an :class:`UndifferentiatedFinding`
+#: instead of silence — "computed, no conclusion" is a different
+#: statement from "not computed", and the reader needs to tell them
+#: apart. See ``docs/methodology/normalization.md``.
+_SPECIALIZATION_PEAK_MARGIN = 0.05
 _GENERATIVE_TASKS = frozenset({
     "gsm8k",
     "longbench_2wikimqa",
@@ -101,7 +125,21 @@ class DirectionOutlierFinding(Finding):
 
 @dataclass(frozen=True)
 class SpecializationPeakFinding(Finding):
-    """A variant whose share_per_domain peak exceeds 30%."""
+    """A variant whose share_per_domain peak exceeds 30% AND leads the
+    runner-up domain by at least ``_SPECIALIZATION_PEAK_MARGIN``."""
+
+
+@dataclass(frozen=True)
+class UndifferentiatedFinding(Finding):
+    """A variant whose share is spread with no domain clearly leading.
+
+    Fires when the top domain's lead over the runner-up is below
+    ``_SPECIALIZATION_PEAK_MARGIN``. This is a positive result, not an
+    absence of one: a modification that touches several domains at once
+    (instruction tuning, a decoding change) genuinely has no single
+    target, and saying so is more informative than naming whichever
+    domain happened to win by a point.
+    """
 
 
 @dataclass(frozen=True)
@@ -124,13 +162,39 @@ class BaseAccuracyMissingFinding(Finding):
 
 
 def _per_domain_drift(result: "GeoResult") -> dict[str, dict[str, float]]:
-    """Per-variant per-domain drift (raw L2 magnitude)."""
+    """Per-variant per-domain drift (raw L2 magnitude), validity-filtered.
+
+    ``domain_heatmap()`` is deliberately validity-unaware — it is a raw
+    ``‖δ‖`` accessor over whatever survived the probe filter, and other
+    callers want it that way. But findings are user-facing claims, so
+    cells the validity framework excluded from ``share_per_domain`` must
+    not reappear here: without this filter a domain reporting "—" in the
+    figure could still be named "most like base" in the same figure's
+    sidebar, sourced from the handful of probes that happened to fit the
+    base context window.
+
+    Cells whose ``domain_status`` is ``variant_only`` / ``out_of_range``
+    are dropped. Missing status defaults to ``full`` so legacy results
+    (v0.2.x ChangeGeometry, v1–v5 loads) are unaffected.
+    """
     if not result.probe_domains:
         return {}
     try:
-        return result.domain_heatmap()
+        heat = result.domain_heatmap()
     except (ValueError, AttributeError):
         return {}
+
+    status = getattr(result, "domain_status", None) or {}
+    if not status:
+        return heat
+    return {
+        variant: {
+            domain: value
+            for domain, value in per_dom.items()
+            if status.get(variant, {}).get(domain, "full") in ("full", "partial")
+        }
+        for variant, per_dom in heat.items()
+    }
 
 
 def _flatten_drift_cells(
@@ -274,7 +338,33 @@ def _extract_specialization_peaks(result: "GeoResult") -> list[Finding]:
         valid = [(d, s) for d, s in per_dom.items() if s is not None]
         if not valid:
             continue
-        peak_dom, peak_share = max(valid, key=lambda kv: kv[1])
+        # Descending by share; ties broken by domain name so the choice
+        # is deterministic rather than dict-order dependent.
+        ordered = sorted(valid, key=lambda kv: (-kv[1], kv[0]))
+        peak_dom, peak_share = ordered[0]
+        runner_share = ordered[1][1] if len(ordered) > 1 else 0.0
+        margin = peak_share - runner_share
+
+        if margin < _SPECIALIZATION_PEAK_MARGIN:
+            # No domain leads by enough to name one. Report the spread
+            # itself — silence here would be indistinguishable from
+            # "this variant wasn't measured".
+            top = ordered[:3]
+            spread = ", ".join(f"{d} {s * 100:.0f}%" for d, s in top)
+            out.append(
+                UndifferentiatedFinding(
+                    severity="info",
+                    summary=f"{variant}: no dominant domain ({spread})",
+                    details={
+                        "variant": variant,
+                        "top_domains": [d for d, _ in top],
+                        "top_shares": [s for _, s in top],
+                        "margin": margin,
+                    },
+                )
+            )
+            continue
+
         if peak_share <= _SPECIALIZATION_PEAK_SHARE_THRESHOLD:
             continue
         summary = f"{variant}: {peak_share * 100:.0f}% on {peak_dom}"
@@ -286,6 +376,8 @@ def _extract_specialization_peaks(result: "GeoResult") -> list[Finding]:
                     "variant": variant,
                     "domain": peak_dom,
                     "share": peak_share,
+                    "runner_up_share": runner_share,
+                    "margin": margin,
                 },
             )
         )
