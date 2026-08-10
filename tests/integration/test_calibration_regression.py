@@ -13,6 +13,19 @@ on a GPU box via ``scripts/_regenerate_v041_4variant_fixture.py``
 (commit 8 of v0.4.1 PR). Until that regeneration lands the test
 automatically skips.
 
+Per-domain assertions are selected per (variant, domain) cell by the
+validity status encoded in ``_v041_4variant_spec``:
+
+  - ``full`` / ``partial`` → numeric assertion within 1e-6
+  - ``variant_only`` / ``out_of_range`` → ``share`` and ``pdn`` must
+    both be ``None``
+
+Under the v0.4.1 ``min_valid_fraction`` floor, long-context is the only
+non-``full`` column — ``variant_only`` for yarn / long / code,
+``out_of_range`` for math. 16 measured cells, 4 unmeasured. Every
+variant here decodes greedily, so there is no looser sample-decode
+tolerance tier (contrast the 7-variant test).
+
 Marked ``slow`` AND ``gpu``: requires a GPU big enough for two
 Llama-2-7B variants resident at once (~28 GB VRAM peak after the
 v0.3.2 engine-reuse fix). Skipped by default ``pytest -m "not slow and
@@ -29,6 +42,13 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+
+from tests.integration._v041_4variant_spec import (
+    ALL_VARIANTS,
+    EXPECTED_DOMAIN_STATUS,
+    MEASURED_CELLS,
+    UNMEASURED_CELLS,
+)
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
@@ -136,22 +156,71 @@ def test_magnitudes_normalized_match(baseline, cutover_result):
         ) < TOLERANCE, v
 
 
-def test_per_domain_normalized_match(baseline, cutover_result):
+def test_fixture_domain_status_matches_spec(baseline):
+    """The fixture's own validity classification must match what the
+    spec encodes. CPU-only guard: if a future regeneration changes
+    validity behaviour (a different ``min_valid_fraction``, a new
+    context-window fallback), this fails fast instead of silently
+    reshaping which cells below get a numeric vs a ``None``
+    assertion."""
+    assert baseline["domain_status"] == EXPECTED_DOMAIN_STATUS
+
+
+def test_run_domain_status_matches_spec(cutover_result):
+    """Same contract, against the live run."""
+    assert cutover_result["domain_status"] == EXPECTED_DOMAIN_STATUS
+
+
+@pytest.mark.parametrize(("variant", "domain"), MEASURED_CELLS)
+def test_per_domain_normalized_match(baseline, cutover_result, variant, domain):
     """v0.3.2 added magnitudes_per_domain_normalized; verify the cutover
-    preserves it field-for-field."""
-    for v in baseline["variant_names"]:
-        for d in baseline["magnitudes_per_domain_normalized"][v]:
-            b = baseline["magnitudes_per_domain_normalized"][v][d]
-            c = cutover_result["magnitudes_per_domain_normalized"][v][d]
-            assert abs(b - c) < TOLERANCE, (v, d, b, c)
+    preserves it field-for-field on every measurable cell."""
+    b = baseline["magnitudes_per_domain_normalized"][variant][domain]
+    c = cutover_result["magnitudes_per_domain_normalized"][variant][domain]
+    assert b is not None, f"spec says {variant}/{domain} is measured, fixture has None"
+    assert c is not None, f"spec says {variant}/{domain} is measured, run produced None"
+    assert abs(b - c) < TOLERANCE, (variant, domain, b, c)
 
 
-def test_share_per_domain_match(baseline, cutover_result):
-    for v in baseline["variant_names"]:
-        for d in baseline["share_per_domain"][v]:
-            b = baseline["share_per_domain"][v][d]
-            c = cutover_result["share_per_domain"][v][d]
-            assert abs(b - c) < TOLERANCE, (v, d, b, c)
+@pytest.mark.parametrize(("variant", "domain"), MEASURED_CELLS)
+def test_share_per_domain_match(baseline, cutover_result, variant, domain):
+    b = baseline["share_per_domain"][variant][domain]
+    c = cutover_result["share_per_domain"][variant][domain]
+    assert b is not None, f"spec says {variant}/{domain} is measured, fixture has None"
+    assert c is not None, f"spec says {variant}/{domain} is measured, run produced None"
+    assert abs(b - c) < TOLERANCE, (variant, domain, b, c)
+
+
+@pytest.mark.parametrize(("variant", "domain"), UNMEASURED_CELLS)
+def test_unmeasured_cells_are_none(baseline, cutover_result, variant, domain):
+    """``variant_only`` / ``out_of_range`` cells carry ``None``, not a
+    number and not 0.0 — the sentinel distinguishes "not measured" from
+    "measured zero drift". Before the v0.4.1 ``min_valid_fraction``
+    floor these were ``partial`` and carried shares built on 9 of 100
+    probes."""
+    for field in ("share_per_domain", "magnitudes_per_domain_normalized"):
+        b = baseline[field][variant][domain]
+        c = cutover_result[field][variant][domain]
+        assert b is None, (
+            f"{field}[{variant}][{domain}]: fixture should be None for "
+            f"status {EXPECTED_DOMAIN_STATUS[variant][domain]}, got {b}"
+        )
+        assert c is None, (
+            f"{field}[{variant}][{domain}]: run should be None for "
+            f"status {EXPECTED_DOMAIN_STATUS[variant][domain]}, got {c}"
+        )
+
+
+@pytest.mark.parametrize("variant", ALL_VARIANTS)
+def test_share_rows_sum_to_one_over_measured_cells(cutover_result, variant):
+    """Excluding a domain renormalizes the rest — the surviving cells
+    must still form a distribution."""
+    row = cutover_result["share_per_domain"][variant]
+    total = sum(x for x in row.values() if x is not None)
+    assert abs(total - 1.0) < 1e-9, (
+        f"share_per_domain[{variant}] sums to {total}, expected 1.0 over "
+        f"non-None cells"
+    )
 
 
 def test_probe_count_and_distribution_match(baseline, cutover_result):
