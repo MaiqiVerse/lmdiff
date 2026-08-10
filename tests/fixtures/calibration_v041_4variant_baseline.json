@@ -2093,28 +2093,28 @@
     "code": {
       "code": "full",
       "commonsense": "full",
-      "long-context": "partial",
+      "long-context": "variant_only",
       "math": "full",
       "reasoning": "full"
     },
     "long": {
       "code": "full",
       "commonsense": "full",
-      "long-context": "partial",
+      "long-context": "variant_only",
       "math": "full",
       "reasoning": "full"
     },
     "math": {
       "code": "full",
       "commonsense": "full",
-      "long-context": "partial",
+      "long-context": "out_of_range",
       "math": "full",
       "reasoning": "full"
     },
     "yarn": {
       "code": "full",
       "commonsense": "full",
-      "long-context": "partial",
+      "long-context": "variant_only",
       "math": "full",
       "reasoning": "full"
     }
@@ -2126,37 +2126,37 @@
     "yarn": 7.991623192225348
   },
   "magnitudes_normalized": {
-    "code": 0.42534166136042995,
-    "long": 1.265693621208732,
-    "math": 0.5952720466697411,
-    "yarn": 0.37236803370708516
+    "code": 0.467476500339539,
+    "long": 1.3953900993445152,
+    "math": 0.664422658873862,
+    "yarn": 0.3978873928956368
   },
   "magnitudes_per_domain_normalized": {
     "code": {
       "code": 0.6751077743566867,
       "commonsense": 0.3420830693466347,
-      "long-context": 0.17447214954095447,
+      "long-context": null,
       "math": 0.4995993412425157,
       "reasoning": 0.22747808329244174
     },
     "long": {
       "code": 1.1924850569294052,
       "commonsense": 0.7734483375556733,
-      "long-context": 0.47058218883377073,
+      "long-context": null,
       "math": 1.4556801053950021,
       "reasoning": 1.910289665544055
     },
     "math": {
       "code": 0.6954543781142546,
       "commonsense": 0.540196881720584,
-      "long-context": 0.07690363601197561,
+      "long-context": null,
       "math": 0.867771444749717,
       "reasoning": 0.4871684874025733
     },
     "yarn": {
       "code": 0.21773463725368247,
       "commonsense": 0.7060304840536216,
-      "long-context": 0.24501480145749768,
+      "long-context": null,
       "math": 0.26428453475603336,
       "reasoning": 0.132377406368876
     }
@@ -24785,32 +24785,32 @@
   },
   "share_per_domain": {
     "code": {
-      "code": 0.5038489617735925,
-      "commonsense": 0.1293651540609416,
-      "long-context": 0.033651650748170954,
-      "math": 0.27592932823727084,
-      "reasoning": 0.057204905180024086
+      "code": 0.5213947560045866,
+      "commonsense": 0.13387010404798572,
+      "long-context": null,
+      "math": 0.2855381586266507,
+      "reasoning": 0.05919698132077687
     },
     "long": {
-      "code": 0.17753284145078238,
-      "commonsense": 0.07468535223519819,
-      "long-context": 0.0276467308038108,
-      "math": 0.26454813616262385,
-      "reasoning": 0.4555869393475848
+      "code": 0.18258059809635094,
+      "commonsense": 0.07680886628471768,
+      "long-context": null,
+      "math": 0.27206998170666574,
+      "reasoning": 0.4685405539122656
     },
     "math": {
-      "code": 0.27298344400108754,
-      "commonsense": 0.1647036271374553,
-      "long-context": 0.00333804944310857,
-      "math": 0.42502035284780254,
-      "reasoning": 0.13395452657054605
+      "code": 0.2738977281600409,
+      "commonsense": 0.16525525735724741,
+      "long-context": null,
+      "math": 0.4264438434820549,
+      "reasoning": 0.1344031710006568
     },
     "yarn": {
-      "code": 0.06838175726098636,
-      "commonsense": 0.7190053441995744,
-      "long-context": 0.08659042173815291,
-      "math": 0.10074620898166266,
-      "reasoning": 0.025276267819623666
+      "code": 0.07486428748767003,
+      "commonsense": 0.7871664161523136,
+      "long-context": null,
+      "math": 0.11029686066285344,
+      "reasoning": 0.027672435697162927
     }
   },
   "variant_names": [
