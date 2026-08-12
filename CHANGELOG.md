@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.1] - 2026-05-12
+## [0.4.1] - 2026-08-12
 
 ### Changed (breaking)
 
@@ -34,7 +34,7 @@
 
 ### Notes
 
-- 4-variant calibration fixture renamed ``calibration_v032_baseline.json`` → ``calibration_v041_4variant_baseline.json``; 7-variant fixture renamed ``calibration_v040_7variant_summary.json`` → ``calibration_v041_7variant_summary.json``. Both regenerated via ``scripts/_regenerate_v041_{4,7}variant_fixture.py`` (~2h GPU total). Until the new fixtures land, the calibration regression tests automatically skip with a pointer message.
+- 4-variant calibration fixture renamed ``calibration_v032_baseline.json`` → ``calibration_v041_4variant_baseline.json``; 7-variant fixture renamed ``calibration_v040_7variant_summary.json`` → ``calibration_v041_7variant_summary.json``. Both regenerated via ``scripts/_regenerate_v041_{4,7}variant_fixture.py`` (~2h GPU total). Both calibration suites pass against the regenerated fixtures: 4-variant 51 tests, 7-variant 89 tests.
 - Mistral-7B's sliding-window attention degrades quality past ~4K effective context even though ``max_position_embeddings = 32768`` reports a higher cap. v0.4.1 trusts ``max_position_embeddings`` as the validity threshold (Q9.9); a finer ``effective_context_length`` / ``degraded`` status is deferred to v0.5.0+.
 - 530 unit tests pass on CPU (was 451 in v0.4.0; +79 new across max_context_length, validity dataclasses, the ``min_valid_fraction`` floor, the specialization margin gate, validity-filtered drift findings, pipeline validity wiring, pdn formula, schema migration, viz). Full tree (CI scope, ``pytest tests/``): 1012 passed, 7 skipped.
 
