@@ -132,7 +132,7 @@ class TestPipelineDispatch:
         geo = _make_geo()
         out = _pipeline.render(geo, channel="json")
         assert isinstance(out, dict)
-        assert out["schema_version"] == "5"
+        assert out["schema_version"] == "6"
 
     def test_figures_channel_applied_tier_returns_list(self, tmp_path):
         # Commit 1.9 default: tier='applied' returns list[Path] of 3 PNGs.
@@ -287,7 +287,7 @@ class TestGeoResultConvenience:
         geo.save(str(path))
         assert path.exists()
         d = json.loads(path.read_text(encoding="utf-8"))
-        assert d["schema_version"] == "5"
+        assert d["schema_version"] == "6"
         assert "share_per_domain" in d
 
 

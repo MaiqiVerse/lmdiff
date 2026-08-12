@@ -1,10 +1,30 @@
 """Calibration regression test for the v0.4.0 backend cutover.
 
 The hard contract for cutover safety: the new HFEngine pipeline must
-produce a GeoResult whose every numeric field matches the v0.3.2
-calibration baseline (committed at
-``tests/fixtures/calibration_v032_baseline.json``) within 1e-6 per
-element on the canonical Llama-2 4-variant case.
+produce a GeoResult whose every numeric field matches the calibration
+baseline within 1e-6 per element on the canonical Llama-2 4-variant
+case.
+
+v0.4.1 update: the formula change (Q9.10 Formula A) shifts pdn values
+by factor √T̄_d everywhere — the v0.3.2 fixture is no longer valid as
+the v0.4.1 baseline. Fixture name updated to
+``calibration_v041_4variant_baseline.json``; the file is regenerated
+on a GPU box via ``scripts/_regenerate_v041_4variant_fixture.py``
+(commit 8 of v0.4.1 PR). Until that regeneration lands the test
+automatically skips.
+
+Per-domain assertions are selected per (variant, domain) cell by the
+validity status encoded in ``_v041_4variant_spec``:
+
+  - ``full`` / ``partial`` → numeric assertion within 1e-6
+  - ``variant_only`` / ``out_of_range`` → ``share`` and ``pdn`` must
+    both be ``None``
+
+Under the v0.4.1 ``min_valid_fraction`` floor, long-context is the only
+non-``full`` column — ``variant_only`` for yarn / long / code,
+``out_of_range`` for math. 16 measured cells, 4 unmeasured. Every
+variant here decodes greedily, so there is no looser sample-decode
+tolerance tier (contrast the 7-variant test).
 
 Marked ``slow`` AND ``gpu``: requires a GPU big enough for two
 Llama-2-7B variants resident at once (~28 GB VRAM peak after the
@@ -23,9 +43,22 @@ from pathlib import Path
 
 import pytest
 
+from tests.integration._v041_4variant_spec import (
+    ALL_VARIANTS,
+    EXPECTED_DOMAIN_STATUS,
+    MEASURED_CELLS,
+    UNMEASURED_CELLS,
+)
+
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
-BASELINE_PATH = Path(__file__).parent.parent / "fixtures" / "calibration_v032_baseline.json"
+# v0.4.1 fixture path. Regenerated on GPU via
+# scripts/_regenerate_v041_4variant_fixture.py (commit 8). Until then
+# the per-test skip below auto-skips the suite.
+BASELINE_PATH = (
+    Path(__file__).parent.parent / "fixtures"
+    / "calibration_v041_4variant_baseline.json"
+)
 TOLERANCE = 1e-6
 
 
@@ -33,10 +66,13 @@ TOLERANCE = 1e-6
 def baseline() -> dict:
     if not BASELINE_PATH.exists():
         pytest.skip(
-            f"calibration baseline not present at {BASELINE_PATH}. "
-            "Generate via the snippet at the bottom of "
-            "docs/internal/v040_cutover_audit.md and commit before "
-            "running this test."
+            f"v0.4.1 calibration baseline not present at "
+            f"{BASELINE_PATH.name}. Regenerate on a GPU box via "
+            "``python scripts/_regenerate_v041_4variant_fixture.py`` "
+            "and commit the produced JSON. The v0.4.1 formula change "
+            "(see L-033 / docs/methodology/normalization.md) makes the "
+            "pre-v0.4.1 fixture incompatible — pdn values shift by "
+            "factor √T̄_d."
         )
     with BASELINE_PATH.open(encoding="utf-8") as f:
         return json.load(f)
@@ -46,27 +82,17 @@ def baseline() -> dict:
 def cutover_result() -> dict:
     """Run family() through the new HFEngine pipeline with identical
     inputs to the baseline-generation script. Returns the to_json_dict
-    payload for byte-comparison."""
+    payload for byte-comparison.
+
+    Kwargs come from ``_v041_4variant_spec.build_run_kwargs()`` —
+    same source as ``scripts/_regenerate_v041_4variant_fixture.py`` to
+    eliminate "did the regen script run the same call?" risk.
+    """
     import lmdiff
     from lmdiff.report.json_report import to_json_dict
+    from tests.integration._v041_4variant_spec import build_run_kwargs
 
-    result = lmdiff.family(
-        base="meta-llama/Llama-2-7b-hf",
-        variants={
-            "yarn": "NousResearch/Yarn-Llama-2-7b-128k",
-            "long": "togethercomputer/LLaMA-2-7B-32K",
-            "code": "codellama/CodeLlama-7b-hf",
-            "math": "EleutherAI/llemma_7b",
-        },
-        probes="lm_eval:hellaswag+arc_challenge+gsm8k+mmlu_college_computer_science+longbench_2wikimqa",
-        n_probes=100,
-        max_new_tokens=16,
-        task_overrides={
-            "gsm8k": {"max_new_tokens": 256},
-            "longbench_2wikimqa": {"max_new_tokens": 128},
-        },
-        seed=42,
-    )
+    result = lmdiff.family(**build_run_kwargs())
     payload = to_json_dict(result)
     payload.pop("generated_at", None)  # timestamp would always differ
     return payload
@@ -130,22 +156,71 @@ def test_magnitudes_normalized_match(baseline, cutover_result):
         ) < TOLERANCE, v
 
 
-def test_per_domain_normalized_match(baseline, cutover_result):
+def test_fixture_domain_status_matches_spec(baseline):
+    """The fixture's own validity classification must match what the
+    spec encodes. CPU-only guard: if a future regeneration changes
+    validity behaviour (a different ``min_valid_fraction``, a new
+    context-window fallback), this fails fast instead of silently
+    reshaping which cells below get a numeric vs a ``None``
+    assertion."""
+    assert baseline["domain_status"] == EXPECTED_DOMAIN_STATUS
+
+
+def test_run_domain_status_matches_spec(cutover_result):
+    """Same contract, against the live run."""
+    assert cutover_result["domain_status"] == EXPECTED_DOMAIN_STATUS
+
+
+@pytest.mark.parametrize(("variant", "domain"), MEASURED_CELLS)
+def test_per_domain_normalized_match(baseline, cutover_result, variant, domain):
     """v0.3.2 added magnitudes_per_domain_normalized; verify the cutover
-    preserves it field-for-field."""
-    for v in baseline["variant_names"]:
-        for d in baseline["magnitudes_per_domain_normalized"][v]:
-            b = baseline["magnitudes_per_domain_normalized"][v][d]
-            c = cutover_result["magnitudes_per_domain_normalized"][v][d]
-            assert abs(b - c) < TOLERANCE, (v, d, b, c)
+    preserves it field-for-field on every measurable cell."""
+    b = baseline["magnitudes_per_domain_normalized"][variant][domain]
+    c = cutover_result["magnitudes_per_domain_normalized"][variant][domain]
+    assert b is not None, f"spec says {variant}/{domain} is measured, fixture has None"
+    assert c is not None, f"spec says {variant}/{domain} is measured, run produced None"
+    assert abs(b - c) < TOLERANCE, (variant, domain, b, c)
 
 
-def test_share_per_domain_match(baseline, cutover_result):
-    for v in baseline["variant_names"]:
-        for d in baseline["share_per_domain"][v]:
-            b = baseline["share_per_domain"][v][d]
-            c = cutover_result["share_per_domain"][v][d]
-            assert abs(b - c) < TOLERANCE, (v, d, b, c)
+@pytest.mark.parametrize(("variant", "domain"), MEASURED_CELLS)
+def test_share_per_domain_match(baseline, cutover_result, variant, domain):
+    b = baseline["share_per_domain"][variant][domain]
+    c = cutover_result["share_per_domain"][variant][domain]
+    assert b is not None, f"spec says {variant}/{domain} is measured, fixture has None"
+    assert c is not None, f"spec says {variant}/{domain} is measured, run produced None"
+    assert abs(b - c) < TOLERANCE, (variant, domain, b, c)
+
+
+@pytest.mark.parametrize(("variant", "domain"), UNMEASURED_CELLS)
+def test_unmeasured_cells_are_none(baseline, cutover_result, variant, domain):
+    """``variant_only`` / ``out_of_range`` cells carry ``None``, not a
+    number and not 0.0 — the sentinel distinguishes "not measured" from
+    "measured zero drift". Before the v0.4.1 ``min_valid_fraction``
+    floor these were ``partial`` and carried shares built on 9 of 100
+    probes."""
+    for field in ("share_per_domain", "magnitudes_per_domain_normalized"):
+        b = baseline[field][variant][domain]
+        c = cutover_result[field][variant][domain]
+        assert b is None, (
+            f"{field}[{variant}][{domain}]: fixture should be None for "
+            f"status {EXPECTED_DOMAIN_STATUS[variant][domain]}, got {b}"
+        )
+        assert c is None, (
+            f"{field}[{variant}][{domain}]: run should be None for "
+            f"status {EXPECTED_DOMAIN_STATUS[variant][domain]}, got {c}"
+        )
+
+
+@pytest.mark.parametrize("variant", ALL_VARIANTS)
+def test_share_rows_sum_to_one_over_measured_cells(cutover_result, variant):
+    """Excluding a domain renormalizes the rest — the surviving cells
+    must still form a distribution."""
+    row = cutover_result["share_per_domain"][variant]
+    total = sum(x for x in row.values() if x is not None)
+    assert abs(total - 1.0) < 1e-9, (
+        f"share_per_domain[{variant}] sums to {total}, expected 1.0 over "
+        f"non-None cells"
+    )
 
 
 def test_probe_count_and_distribution_match(baseline, cutover_result):

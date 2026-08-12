@@ -50,6 +50,7 @@ class MockEngine:
         seed: int = 42,
         n_layers: int = 12,
         hidden_dim: int = 768,
+        max_context: Optional[int] = None,
     ) -> None:
         self._config = config or Config(model="mock_model")
 
@@ -67,6 +68,7 @@ class MockEngine:
         self._seed = seed
         self._n_layers = n_layers
         self._hidden_dim = hidden_dim
+        self._max_context = max_context
         self._tokenizer_id = self._mock_tokenizer_id()
         self._closed = False
 
@@ -98,6 +100,7 @@ class MockEngine:
             seed=self._seed,
             n_layers=self._n_layers,
             hidden_dim=self._hidden_dim,
+            max_context=self._max_context,
         )
 
     def _mock_tokenizer_id(self) -> str:
@@ -116,6 +119,16 @@ class MockEngine:
         """Default Protocol behaviour — compare ``tokenizer_id``. Two
         MockEngines built from the same ``Config.model`` agree."""
         return self.tokenizer_id == other.tokenizer_id
+
+    def max_context_length(self) -> Optional[int]:
+        """Return the per-instance ``max_context`` constructor arg.
+
+        Defaults to ``None`` (unknown / unlimited) — tests that don't
+        care about validity get the no-op behaviour. Tests that do care
+        pass an explicit int to exercise the v0.4.1 validity framework.
+        v0.4.1.
+        """
+        return self._max_context
 
     # ── Required methods ──────────────────────────────────────────────
 

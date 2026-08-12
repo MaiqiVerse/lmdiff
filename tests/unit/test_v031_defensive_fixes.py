@@ -76,7 +76,7 @@ class TestSaveAutocreatesParentDir:
         geo.save(str(target))
         assert target.exists()
         d = json.loads(target.read_text(encoding="utf-8"))
-        assert d["schema_version"] == "5"
+        assert d["schema_version"] == "6"
 
     def test_existing_parent_dir_no_error(self, tmp_path):
         # exist_ok=True semantics — re-running into the same dir is fine.

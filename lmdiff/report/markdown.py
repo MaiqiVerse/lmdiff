@@ -125,6 +125,7 @@ def _build_summary(findings: tuple, n_probes: int, n_domains: int) -> list[str]:
         DirectionOutlierFinding,
         MostLikeBaseFinding,
         SpecializationPeakFinding,
+        UndifferentiatedFinding,
     )
 
     one_liner = _compose_one_liner(findings, n_probes=n_probes, n_domains=n_domains)
@@ -139,6 +140,7 @@ def _build_summary(findings: tuple, n_probes: int, n_domains: int) -> list[str]:
         (DirectionClusterFinding, "Direction cluster"),
         (DirectionOutlierFinding, "Direction outlier"),
         (SpecializationPeakFinding, "Specialization peak"),
+        (UndifferentiatedFinding, "No dominant domain"),
     ]
     bullets: list[str] = []
     for f in findings:
@@ -166,8 +168,11 @@ def _build_share_table(
     lines.append(sep)
     for v in variants:
         row_share = share.get(v, {})
+        # v0.4.1: skip None entries (out_of_range / variant_only) when
+        # finding the peak — `max` over None vs float would raise.
+        valid_share = {d: s for d, s in row_share.items() if s is not None}
         peak_dom = (
-            max(row_share, key=lambda d: row_share.get(d, 0.0)) if row_share else "—"
+            max(valid_share, key=lambda d: valid_share[d]) if valid_share else "—"
         )
         cells: list[str] = []
         for d in domains:

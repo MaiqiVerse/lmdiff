@@ -157,6 +157,27 @@ class MinimalEngine:
         normalization."""
         return len(text.encode("utf-8"))
 
+    def max_context_length(self) -> Optional[int]:
+        """Largest sequence length this engine can score without truncation.
+
+        Default returns ``None`` (unknown / unlimited). Custom backends
+        with a known limit override ``_max_context_impl`` to expose it
+        — e.g. an API engine that knows its provider's hard cap, or a
+        local model wrapper that reads a config field. v0.4.1
+        measurement validity framework consumes this to flag
+        out-of-context probes.
+        """
+        return self._max_context_impl()
+
+    def _max_context_impl(self) -> Optional[int]:
+        """Default: ``None`` (unknown / unlimited). Override to expose
+        the engine's max scoreable sequence length. Returning an int
+        enables validity filtering in the family pipeline; ``None``
+        keeps every probe valid for this engine.
+        v0.4.1.
+        """
+        return None
+
     # ── Required methods ──────────────────────────────────────────────
 
     def score(self, prompt: str, continuation: str) -> ScoreResult:

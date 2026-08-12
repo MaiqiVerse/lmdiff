@@ -316,6 +316,7 @@ def _build_summary(findings: tuple, n_probes: int, n_domains: int) -> str:
         DirectionOutlierFinding,
         MostLikeBaseFinding,
         SpecializationPeakFinding,
+        UndifferentiatedFinding,
     )
 
     one_liner = _compose_one_liner(findings, n_probes=n_probes, n_domains=n_domains)
@@ -327,6 +328,7 @@ def _build_summary(findings: tuple, n_probes: int, n_domains: int) -> str:
         (DirectionClusterFinding, "Direction cluster"),
         (DirectionOutlierFinding, "Direction outlier"),
         (SpecializationPeakFinding, "Specialization peak"),
+        (UndifferentiatedFinding, "No dominant domain"),
     ]
 
     items: list[str] = []

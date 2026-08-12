@@ -142,7 +142,7 @@ class TestSchemaV5RoundTrip:
         geo = _make_geo()
         geo.share_per_domain = _compute_share_per_domain(geo)
         d = to_json_dict(geo)
-        assert d["schema_version"] == "5"
+        assert d["schema_version"] == "6"
         assert "share_per_domain" in d
         assert d["share_per_domain"]["v1"]["a"] == pytest.approx(1.0)
 
@@ -155,8 +155,8 @@ class TestSchemaV5RoundTrip:
         assert restored.share_per_domain == geo.share_per_domain
         assert restored.variant_names == geo.variant_names
 
-    def test_schema_version_constant_is_v5(self):
-        assert SCHEMA_VERSION == "5"
+    def test_schema_version_constant_is_v6(self):
+        assert SCHEMA_VERSION == "6"
 
 
 # ── v4 backward compat: load with DeprecationWarning + synthesise ──
@@ -184,7 +184,9 @@ class TestV4BackwardCompat:
         assert len(deprecations) >= 1
         msg = str(deprecations[0].message)
         assert "v4" in msg
-        assert "v0.4.0" in msg
+        # Warning text was updated for v0.4.1 — references the new
+        # version + L-033 instead of the old v0.4.0 hard-fail line.
+        assert "v0.4.1" in msg
         assert "share_per_domain" in msg
 
     def test_v4_synthesises_share_per_domain(self):
@@ -205,7 +207,7 @@ class TestV4BackwardCompat:
             restored = geo_result_from_json_dict(v4)
         # Round-trip the in-memory v5 to disk: it now writes v5.
         round_trip = to_json_dict(restored)
-        assert round_trip["schema_version"] == "5"
+        assert round_trip["schema_version"] == "6"
         assert "share_per_domain" in round_trip
 
 

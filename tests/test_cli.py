@@ -38,8 +38,13 @@ class TestHelp:
         result = runner.invoke(app, ["compare", "--help"])
         assert result.exit_code == 0
         plain = _plain(result.output)
-        assert "MODEL_A" in plain
-        assert "MODEL_B" in plain
+        # Case-folded: typer renders positional-argument metavars as
+        # ``MODEL_A`` up to 0.24.x and as ``model_a`` / ``{model_a}`` from
+        # 0.27.x onward. The parameter *name* is the stable contract; its
+        # letter case is a rendering detail of the help formatter.
+        plain_lower = plain.lower()
+        assert "model_a" in plain_lower
+        assert "model_b" in plain_lower
         assert "verbose" in plain
         assert "--dtype" in plain
 
@@ -111,7 +116,7 @@ class TestCompareJsonMock:
 
         assert result.exit_code == 0
         parsed = json.loads(result.output)
-        assert parsed["schema_version"] == "5"
+        assert parsed["schema_version"] == "6"
         assert parsed["results"][0]["name"] == "behavioral_distance"
 
     def test_missing_probes_fails(self):

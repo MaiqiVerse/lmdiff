@@ -315,6 +315,30 @@ class Engine(Protocol):
         """
         return self.tokenizer_id == other.tokenizer_id
 
+    def max_context_length(self) -> Optional[int]:
+        """Largest sequence length this engine can score without truncation.
+
+        Returns ``None`` when the limit is unknown — the caller treats
+        every probe as valid in that case (no measurement-validity
+        filtering applied for this engine).
+
+        Used by the v0.4.1 measurement validity framework
+        (``lmdiff/_validity.py``) to flag probes whose tokenized length
+        exceeds the engine's trained context window. Long-context probes
+        on a Llama-2-7B base (4096) produce per-token CE that reflects
+        catastrophic-failure noise rather than real per-token drift; the
+        validity framework drops those probes from per-domain
+        aggregations (see ``docs/methodology/normalization.md``).
+
+        Default implementation returns ``None``. ``HFEngine`` overrides
+        to read ``model.config.max_position_embeddings`` (with fallbacks
+        for ``n_positions`` / ``max_seq_len``); ``MinimalEngine`` exposes
+        a ``_max_context_impl`` hook for subclasses; ``MockEngine``
+        accepts a constructor arg for tests.
+        v0.4.1.
+        """
+        return None
+
     # Optional methods (gated by `capabilities`)
 
     def hidden_states(
@@ -916,6 +940,30 @@ class HFEngine:
             return False
         from lmdiff.tokenizer_utils import tokenizers_equivalent
         return tokenizers_equivalent(self._tokenizer, other_tok)
+
+    def max_context_length(self) -> Optional[int]:
+        """Read the model's max sequence length from its HF config.
+
+        Fallback chain (v0.4.1 Q9.7): ``max_position_embeddings``
+        (Llama / most modern models) → ``n_positions`` (GPT-2 family)
+        → ``max_seq_len`` (some custom configs) → ``None``.
+
+        For Yarn-128K and similar RoPE-extrapolation models, the
+        ``max_position_embeddings`` field reports the model's claimed
+        capacity (131072 for Yarn-128K). Quality may degrade past the
+        original training distribution, but for validity-framework
+        purposes — measuring "can the model score this without hard
+        crash / catastrophic failure" — the claimed capacity is the
+        right cutoff. Quality-degradation flags (sliding-window
+        Mistral, RoPE extrapolation Yarn) are deferred to v0.5.0+
+        per Q9.9.
+        """
+        cfg = self._model.config
+        for attr in ("max_position_embeddings", "n_positions", "max_seq_len"):
+            val = getattr(cfg, attr, None)
+            if val is not None:
+                return int(val)
+        return None
 
     def __del__(self) -> None:  # pragma: no cover - finalizer best-effort
         try:
