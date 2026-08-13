@@ -402,3 +402,58 @@ def test_A_report_drift_totals_exclude_unmeasured(result):
         assert EXCLUDED_DOMAIN not in drift[v]
     totals = _per_variant_total_drift(drift)
     assert set(totals) == set(result.variant_names)
+
+
+# ── per_X duplication guard (L-035) ──────────────────────────────────
+
+
+def test_pdn_field_and_method_agree(result):
+    """``magnitudes_per_domain_normalized`` (field, computed by
+    ``_compute_per_domain_normalized``) and
+    ``magnitudes_per_task_normalized()`` (method) are two
+    implementations of one formula. They must not drift.
+
+    They already did once: Q9.10 corrected the field to Formula A and
+    the method kept computing Formula B until a later pass caught it
+    (L-035), because a grep for the field's name does not find a method
+    called ``per_task``. Then v0.4.1 made the field validity-aware and
+    the method was not, so the method drew a populated column for an
+    excluded domain.
+
+    Collapsing them into one implementation is not free — the method
+    exists so the v0.2.x ChangeGeometry path works without a
+    pre-populated field — so this pins their agreement instead. If a
+    third divergence is introduced, it fails here rather than in a
+    figure nobody re-rendered.
+
+    Sentinels differ by design: the field uses ``None``, the method uses
+    ``NaN``. Both mean "not measured".
+    """
+    from lmdiff.geometry import _compute_per_domain_normalized
+
+    field = _compute_per_domain_normalized(
+        list(result.variant_names),
+        result.change_vectors,
+        result.probe_domains,
+        result.avg_tokens_per_probe,
+        domain_status=result.domain_status,
+    )
+    method = result.magnitudes_per_task_normalized()
+
+    assert set(field) == set(method)
+    for v in field:
+        assert set(field[v]) == set(method[v]), v
+        for d, fv in field[v].items():
+            mv = method[v][d]
+            if fv is None:
+                assert math.isnan(mv), (
+                    f"{v}/{d}: field says unmeasured (None), method says {mv}"
+                )
+            else:
+                assert not math.isnan(mv), (
+                    f"{v}/{d}: field says {fv}, method says unmeasured (NaN)"
+                )
+                assert fv == pytest.approx(mv, abs=1e-12), (
+                    f"{v}/{d}: field {fv} != method {mv} — the two "
+                    f"implementations of the pdn formula have drifted"
+                )
