@@ -6,7 +6,7 @@ from lmdiff.probes.loader import ProbeSet
 from lmdiff.tasks.base import Task
 from lmdiff.tasks.evaluators import ContainsAnswer
 
-V01_PATH = Path(__file__).parent.parent / "lmdiff" / "probes" / "v01.json"
+V01_PATH = Path(__file__).resolve().parents[2] / "lmdiff" / "probes" / "v01.json"
 
 
 @pytest.mark.slow

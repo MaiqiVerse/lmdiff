@@ -18,7 +18,7 @@ from lmdiff.config import Config
 from lmdiff.geometry import ChangeGeometry, GeoResult
 from lmdiff.probes.loader import Probe, ProbeSet
 
-V01_PATH = Path(__file__).parent.parent / "lmdiff" / "probes" / "v01.json"
+V01_PATH = Path(__file__).resolve().parents[2] / "lmdiff" / "probes" / "v01.json"
 
 
 # ── Mock engine factory ─────────────────────────────────────────────────

@@ -12,7 +12,7 @@ from lmdiff.metrics.output.token_kl import TokenKL
 from lmdiff.probes.loader import ProbeSet
 from lmdiff.report.terminal import print_report
 
-V01_PATH = Path(__file__).parent.parent / "lmdiff" / "probes" / "v01.json"
+V01_PATH = Path(__file__).resolve().parents[2] / "lmdiff" / "probes" / "v01.json"
 
 
 class TestDiffReport:
