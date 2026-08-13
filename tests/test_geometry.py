@@ -2029,6 +2029,25 @@ class TestValidityAwareAggregation:
         assert "long-context" in all_plain
         assert "long-context" not in all_filtered
 
+    # ── magnitudes_per_task_normalized ──
+
+    def test_per_task_normalized_matches_the_field_on_excluded_cells(self):
+        """The method and the field are documented as the same formula,
+        so they must agree about which cells are real. Through v0.4.1 the
+        method ignored domain_status and its docstring said to "prefer
+        the field" — viz/normalized_magnitude.py called the method anyway
+        and drew a populated column for an excluded domain."""
+        vals = self._geo(self._EXCLUDED).magnitudes_per_task_normalized()
+        for v in ("A", "B"):
+            assert math.isnan(vals[v]["long-context"])
+            for d in ("math", "code"):
+                assert not math.isnan(vals[v][d])
+
+    def test_per_task_normalized_without_status_unchanged(self):
+        a = self._geo().magnitudes_per_task_normalized()
+        b = self._geo({}).magnitudes_per_task_normalized()
+        assert a == b
+
     def test_complementarity_without_status_unchanged(self):
         a = self._geo().complementarity("A", "B", threshold=0.1)
         b = self._geo({}).complementarity("A", "B", threshold=0.1)

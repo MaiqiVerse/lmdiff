@@ -510,12 +510,23 @@ class GeoResult:
           the same number.
 
         Domains with zero probes render NaN. None domains coalesce to
-        "unknown". The method does NOT consult ``domain_status`` — it
-        recomputes over every probe in ``change_vectors`` (which the
-        global NaN filter already restricts to valid probes from the
-        v0.4.1 pipeline path); domain-level None tagging happens only
-        on the field, not on the method's output. Validity-aware
-        consumers should prefer the field.
+        "unknown".
+
+        .. versionchanged:: 0.4.2
+           The method now consults ``domain_status`` and renders excluded
+           (``variant_only`` / ``out_of_range``) cells as NaN, matching
+           the field's ``None``. Through v0.4.1 it did not, and its
+           docstring said so — telling callers to "prefer the field" for
+           validity-aware use. ``viz/normalized_magnitude.py`` called the
+           method anyway and drew a fully-populated long-context column
+           for domains the same run reported as ``n/a`` everywhere else.
+
+           A documented trap is still a trap. Two accessors for one
+           quantity that disagree about which cells are real is the same
+           duplication that let this method keep computing the superseded
+           formula after the field was corrected (L-035); making them
+           agree removes the trap instead of asking every consumer to
+           remember which one is safe.
 
         Requires probe_domains (schema v3+); ``avg_tokens_per_probe``
         is no longer required by Formula A (kept as a soft
@@ -532,6 +543,10 @@ class GeoResult:
                 f"probe_domains length {len(self.probe_domains)} != n_probes {self.n_probes}"
             )
 
+        from lmdiff._validity import is_measured
+
+        status = getattr(self, "domain_status", None)
+
         # Group probe indices by resolved domain key.
         by_domain: dict[str, list[int]] = {}
         for idx, d in enumerate(self.probe_domains):
@@ -545,7 +560,7 @@ class GeoResult:
             for domain, indices in by_domain.items():
                 sub = vec[indices]
                 n_task = len(indices)
-                if n_task <= 0:
+                if n_task <= 0 or not is_measured(status, name, domain):
                     per_task[domain] = float("nan")
                 else:
                     # Formula A: sqrt(mean(δ²)). Units: nats/token.

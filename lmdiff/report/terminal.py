@@ -460,7 +460,11 @@ def _domain_drift_table(result: "GeoResult", domains: list[str]) -> dict[str, di
     if not result.probe_domains:
         return {}
     try:
-        return result.domain_heatmap()
+        heat = result.domain_heatmap()
+        from lmdiff._validity import filter_measured_cells
+        return filter_measured_cells(
+            getattr(result, "domain_status", None), heat,
+        )
     except (ValueError, AttributeError):
         return {}
 

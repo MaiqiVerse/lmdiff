@@ -69,12 +69,22 @@ def _fmt_pct(share: float) -> str:
 
 
 def _domain_drift(result: "GeoResult") -> dict[str, dict[str, float]]:
+    """Per-variant per-domain raw drift, validity-filtered.
+
+    ``domain_heatmap()`` is deliberately validity-unaware. Rendering it
+    unfiltered put a number in the drift table for the same cell the
+    share table two rows above reported as ``n/a`` — one report
+    contradicting itself. Filtered through the shared predicate so
+    "measured" means the same thing in every consumer.
+    """
     if not result.probe_domains:
         return {}
     try:
-        return result.domain_heatmap()
+        heat = result.domain_heatmap()
     except (ValueError, AttributeError):
         return {}
+    from lmdiff._validity import filter_measured_cells
+    return filter_measured_cells(getattr(result, "domain_status", None), heat)
 
 
 def _per_variant_total_drift(drift: dict[str, dict[str, float]]) -> dict[str, float]:
