@@ -17,6 +17,8 @@ from lmdiff._validity import (
     EngineValidity,
     ProbeValidity,
     compute_domain_status,
+    filter_measured_cells,
+    is_measured,
 )
 
 
@@ -323,3 +325,77 @@ class TestMinValidFractionFloor:
         assert compute_domain_status([], "base", "var") == "out_of_range"
         with pytest.raises(ValueError, match="min_valid_fraction"):
             compute_domain_status([], "base", "var", min_valid_fraction=5.0)
+
+
+# ── Shared consumer-side filter (v0.4.2) ─────────────────────────────
+
+
+_STATUS = {
+    "yarn": {"code": "full", "long-context": "variant_only", "math": "partial"},
+    "math": {"code": "full", "long-context": "out_of_range", "math": "full"},
+}
+
+
+class TestIsMeasured:
+    def test_full_and_partial_are_measured(self):
+        assert is_measured(_STATUS, "yarn", "code") is True
+        assert is_measured(_STATUS, "yarn", "math") is True
+
+    def test_variant_only_and_out_of_range_are_not(self):
+        assert is_measured(_STATUS, "yarn", "long-context") is False
+        assert is_measured(_STATUS, "math", "long-context") is False
+
+    def test_absent_status_map_means_everything_measured(self):
+        """Pre-v0.4.1 results (v0.2.x, v1-v5 loads) carry no status;
+        every cell in them is a real measurement."""
+        for empty in (None, {}):
+            assert is_measured(empty, "yarn", "long-context") is True
+
+    def test_unknown_key_defaults_to_measured(self):
+        """A consumer whose domain list outruns the status map degrades
+        to pre-v0.4.1 behaviour rather than silently blanking cells."""
+        assert is_measured(_STATUS, "yarn", "unlisted-domain") is True
+        assert is_measured(_STATUS, "unlisted-variant", "code") is True
+
+
+class TestFilterMeasuredCells:
+    def test_single_row_form(self):
+        row = {"code": 1.0, "long-context": 2.0, "math": 3.0}
+        assert filter_measured_cells(_STATUS, row, "yarn") == {
+            "code": 1.0, "math": 3.0,
+        }
+
+    def test_nested_form_filters_each_row_against_its_own_status(self):
+        nested = {
+            "yarn": {"code": 1.0, "long-context": 2.0},
+            "math": {"code": 3.0, "long-context": 4.0},
+        }
+        assert filter_measured_cells(_STATUS, nested) == {
+            "yarn": {"code": 1.0},
+            "math": {"code": 3.0},
+        }
+
+    def test_cells_are_removed_not_nulled(self):
+        """Removal rather than None is the point: consumers that
+        aggregate (mean / std / max / set membership) then exclude them
+        by construction instead of each needing its own skip. Nulling
+        is what made the specialization z-score wrong rather than
+        merely mis-displayed."""
+        row = {"code": 1.0, "long-context": 2.0}
+        out = filter_measured_cells(_STATUS, row, "yarn")
+        assert "long-context" not in out
+        assert None not in out.values()
+
+    def test_empty_status_is_identity(self):
+        row = {"code": 1.0, "long-context": 2.0}
+        for empty in (None, {}):
+            assert filter_measured_cells(empty, row, "yarn") == row
+
+    def test_does_not_mutate_input(self):
+        row = {"code": 1.0, "long-context": 2.0}
+        filter_measured_cells(_STATUS, row, "yarn")
+        assert row == {"code": 1.0, "long-context": 2.0}
+
+    def test_all_cells_excluded_yields_empty_row(self):
+        row = {"long-context": 2.0}
+        assert filter_measured_cells(_STATUS, row, "math") == {}
