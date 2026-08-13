@@ -1509,22 +1509,38 @@ class TestAvgTokensPerProbe:
 
     def test_legacy_mock_yields_empty_avg_tokens(self, monkeypatch):
         # _make_mock_engine doesn't configure tokenizer.encode → MagicMock
-        # default returns a MagicMock from .encode(); len(MagicMock()) is 0.
-        # So avg_tokens_per_probe is all-zero and magnitudes_normalized is
-        # skipped (denom=0). Existing tests rely on this graceful degradation.
+        # default returns a MagicMock from .encode(); len(MagicMock()) is 0,
+        # so avg_tokens_per_probe is all-zero.
+        #
+        # v0.4.2: this no longer suppresses magnitudes_normalized. Through
+        # v0.4.1 the single-domain fallback divided by
+        # sqrt(n · mean_tokens), so all-zero tokens gave denom=0 and the
+        # field was skipped — graceful degradation that was a side effect
+        # of the formula, not a decision. Formula A is ‖δ‖/sqrt(n) and
+        # needs no token data at all, so the value is computable and is
+        # now computed. Results with NO avg_tokens_per_probe (v1/v2 JSON)
+        # still yield {} via the outer guard.
         result = _build_two_variant_geo(
             monkeypatch,
             base_of_a=[3.0, 4.0, 5.0], self_a=[1.0, 2.0, 3.0],
             base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
         )
         assert result.avg_tokens_per_probe == (0.0, 0.0, 0.0)
-        assert result.magnitudes_normalized == {}
+        assert set(result.magnitudes_normalized) == {"A", "B"}
+        for v in ("A", "B"):
+            assert result.magnitudes_normalized[v] == pytest.approx(
+                result.magnitudes[v] / math.sqrt(3), abs=1e-9,
+            )
 
 
 class TestMagnitudesNormalized:
     def test_formula_correctness(self, monkeypatch):
-        # 3 probes × 5 tokens each → mean_tokens = 5, denom = sqrt(3 * 5).
-        # δ_A = [2, 2, 2] → ‖δ_A‖ = sqrt(12); normalized = sqrt(12)/sqrt(15).
+        # v0.4.2 / Formula A: with one domain the overall normalized
+        # magnitude IS that domain's pdn = sqrt(mean(δ²)) = ‖δ‖/sqrt(n),
+        # so token count drops out. 3 probes, δ_A = [2, 2, 2] →
+        # ‖δ_A‖ = sqrt(12); normalized = sqrt(12)/sqrt(3) = 2.
+        # Through v0.4.1 this was sqrt(12)/sqrt(3 * 5) — the Formula B
+        # shape, on a different scale from every multi-domain run.
         outputs_a = ["a0", "a1", "a2"]
         engine_a = _mock_engine_with_real_tokenizer(
             "A", outputs_a, self_ce=[1.0, 2.0, 3.0], tokens_per_probe=5,
@@ -1547,13 +1563,15 @@ class TestMagnitudesNormalized:
             prompts=["p0", "p1", "p2"],
         )
         result = cg.analyze()
-        expected = math.sqrt(12) / math.sqrt(3 * 5)
+        expected = math.sqrt(12) / math.sqrt(3)
         assert result.magnitudes_normalized["A"] == pytest.approx(expected, abs=1e-9)
         assert result.magnitudes["A"] == pytest.approx(math.sqrt(12), abs=1e-9)
 
     def test_uniform_lengths_proportional_to_raw(self, monkeypatch):
-        # Uniform L → normalized = raw / sqrt(n*L), uniform scale; ratio of
-        # normalized magnitudes equals ratio of raw magnitudes.
+        # Formula A: normalized = raw / sqrt(n), independent of L. The
+        # property under test is unchanged — the ratio of normalized
+        # magnitudes equals the ratio of raw magnitudes — but the scale
+        # no longer depends on prompt length.
         outputs_a = ["a0", "a1", "a2"]
         outputs_b = ["b0", "b1", "b2"]
         L = 7
@@ -1588,7 +1606,7 @@ class TestMagnitudesNormalized:
         )
         result = cg.analyze()
 
-        denom = math.sqrt(3 * L)
+        denom = math.sqrt(3)  # Formula A: n only, not n·L
         for v in ("A", "B"):
             assert result.magnitudes_normalized[v] == pytest.approx(
                 result.magnitudes[v] / denom, abs=1e-9,

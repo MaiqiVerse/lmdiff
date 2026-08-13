@@ -768,8 +768,17 @@ def run_family_pipeline(
         )
     elif avg_tokens_per_probe:
         # Single-domain fallback — same as ChangeGeometry.analyze.
-        mean_tokens = float(np.mean(avg_tokens_per_probe))
-        denom = math.sqrt(n_valid * mean_tokens) if mean_tokens > 0 else 0.0
+        # Single-domain fallback, Formula A. With one domain the overall
+        # normalized magnitude IS that domain's pdn, and
+        #   pdn = sqrt(mean(δ²)) = sqrt(Σδ²)/sqrt(n) = ‖δ‖/sqrt(n)
+        # so the token count drops out entirely. Through v0.4.1 this
+        # branch still divided by sqrt(n · mean_tokens) — the Formula B
+        # shape, units nats/token^1.5 — so a single-domain run reported a
+        # number on a different scale from every multi-domain run. No
+        # narrative consequence at the time because no shipped experiment
+        # was single-domain, which is exactly why it survived the v0.4.1
+        # formula change.
+        denom = math.sqrt(n_valid) if n_valid > 0 else 0.0
         if denom > 0:
             magnitudes_normalized = {
                 name: magnitudes[name] / denom for name in variant_names

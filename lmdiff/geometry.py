@@ -147,8 +147,17 @@ class GeoResult:
     overall magnitude.
 
     Without per-domain breakdown (``probe_domains`` empty), falls back
-    to the bulk per-token formula ``raw / sqrt(n_probes × mean_tokens)``
-    so single-domain experiments still get a comparable number.
+    to ``‖δ‖ / sqrt(n_probes)`` — which is Formula A's ``sqrt(mean(δ²))``
+    written out, since with one domain the overall value *is* that
+    domain's pdn. Single-domain experiments therefore land on the same
+    scale as multi-domain ones.
+
+    .. versionchanged:: 0.4.2
+       This branch used ``raw / sqrt(n_probes × mean_tokens)`` through
+       v0.4.1 — the Formula B shape, units ``nats/token^1.5`` — so a
+       single-domain run was reported on a different scale from every
+       multi-domain run. It survived the Q9.10 correction because no
+       shipped experiment is single-domain.
 
     Empty when ``avg_tokens_per_probe`` is empty (no token data).
 
@@ -1012,8 +1021,17 @@ class ChangeGeometry:
                 mag_per_domain_norm,
             )
         elif avg_tokens_per_probe:
-            mean_tokens = float(np.mean(avg_tokens_per_probe))
-            denom = math.sqrt(n_valid * mean_tokens) if mean_tokens > 0 else 0.0
+            # Single-domain fallback, Formula A. With one domain the overall
+            # normalized magnitude IS that domain's pdn, and
+            #   pdn = sqrt(mean(δ²)) = sqrt(Σδ²)/sqrt(n) = ‖δ‖/sqrt(n)
+            # so the token count drops out entirely. Through v0.4.1 this
+            # branch still divided by sqrt(n · mean_tokens) — the Formula B
+            # shape, units nats/token^1.5 — so a single-domain run reported a
+            # number on a different scale from every multi-domain run. No
+            # narrative consequence at the time because no shipped experiment
+            # was single-domain, which is exactly why it survived the v0.4.1
+            # formula change.
+            denom = math.sqrt(n_valid) if n_valid > 0 else 0.0
             if denom > 0:
                 magnitudes_normalized = {
                     name: magnitudes[name] / denom for name in variant_names
