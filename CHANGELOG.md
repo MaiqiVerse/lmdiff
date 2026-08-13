@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.4.2] - 2026-08-13
+
+Presentation-layer patch. v0.4.1 made the framework decline to report what it cannot measure; v0.4.2 makes every output path actually honour that. No numeric change to `share_per_domain`, `magnitudes_per_domain_normalized`, or `change_vectors`; no schema change; no fixture regeneration.
+
+Found by driving all fourteen user-facing output paths against a result containing excluded cells — something no part of the release process did. Four of them were wrong.
+
+### Fixed
+
+- **``GeoResult.to_html()`` raised ``TypeError`` on any run with an excluded domain.** ``row_share.get(d, 0.0)`` returns ``None`` when the value *is* ``None`` (the default only covers missing keys), so ``max`` compared ``None`` against ``float``. The v0.4.1 fix for exactly this landed in the markdown and terminal share tables but not html, which carries its own copy. **HTML report generation has been broken since v0.4.1 shipped, for the scenario that release is about.**
+- **``magnitudes_specialization_zscore()`` included excluded domains in its mean and std**, so an unmeasurable domain shifted every *other* z-score in the row. This is the one defect where the numbers were wrong rather than presented wrong: on the 7-variant calibration ``temp_1.5`` read +1.53 on long-context — its strongest apparent specialization — on a domain the same result reports as ``None``. Excluded cells are now absent from the statistic, not hidden at draw time. Every surviving cell's value changes.
+- **``complementarity()`` could admit an excluded domain into its affected-set decomposition**, changing ``overlap_domains`` / ``unique_*_domains`` in the returned value. Does not misfire on the current calibration; filtered rather than left to that coincidence.
+- **The drift tables in all three report renderers printed values for cells the share table two rows above reported as ``n/a``** — one report contradicting itself.
+- **``magnitudes_per_task_normalized()`` ignored ``domain_status``**, and said so in its own docstring while directing callers to "prefer the field". ``viz/normalized_magnitude.py`` called the method anyway and drew a fully-populated column for an excluded domain. The method and the field now agree about which cells are real.
+- **``change_size`` asserted "long probes dominate" on data where they contribute 0.0–3.3 %.** The gate tested whether long-context probes *existed*; after the v0.4.1 floor, 9 of 100 survive. It now tests the magnitude the claim depends on (``LONG_CONTEXT_DOMINANCE_PCT``), and that single predicate gates all four consumers — hatch, hatch label, panel title, subtitle, bottom-line — so the figure can no longer describe a hatch it did not draw.
+- **Single-domain runs were normalized on a different scale from multi-domain runs.** The fallback still used Formula B's ``‖δ‖ / √(n · mean_tokens)``; under Formula A a single domain's value is ``‖δ‖ / √n`` and the token count drops out. Survived the Q9.10 correction because no shipped experiment is single-domain.
+
+### Changed
+
+- **One shared vocabulary for the pdn quantity** (``lmdiff._validity.PDN_AXIS_LABEL`` / ``PDN_UNITS`` / ``PDN_DESCRIPTION`` / ``PDN_FORMULA``). ``‖δ‖/√tok`` and "per-√token normalized" were duplicated across six modules and *all six* kept describing Formula B after Q9.10 replaced it — every column header named a quantity the column no longer contained.
+- **``lmdiff._validity.filter_measured_cells`` / ``is_measured``** — one predicate for "is this cell a real measurement", replacing what would have been six copies. Cells are removed rather than nulled, so consumers that aggregate exclude them by construction.
+- **``change_size`` picks the longest-prompt domain dynamically** instead of hardcoding ``"long-context"``, adopted from ``normalization_effect``. Works on probe sets that label the domain differently.
+
+### Deprecated
+
+- **``normalization_effect`` (paper figure 07)** — emits ``DeprecationWarning``; removed in v0.5.0 with the rest of the paper tier. It plots the same two quantities as the applied-tier ``change_size`` with fewer panels, and has been the poorer of two near-duplicates since before v0.4.1.
+
+### Notes
+
+- **New regression suite** ``tests/unit/test_surface_validity.py``: four independent assertions per surface — renders, formula description matches the shared constant, no value shown for an unmeasured cell, and derived statistics aggregate over measured cells only. The last is the one that catches the z-score class of defect. Registry covers 4 text surfaces and 11 figures, and fails when a renderer is added without being registered.
+- The suite was validated by mutation — each fix reverted in turn to confirm the suite fails. One assertion initially passed with its fix reverted, because a second guard covered it; see LESSONS L-040.
+- **``tests/test_*.py`` migrated into ``tests/unit/`` and ``tests/integration/``.** Verified as a pure move (1287 collected before and after), and the L-034 trap is measurably closed: unit + integration now sum to the whole tree.
+- 1075 tests pass (was 1032 in v0.4.1).
+
 ## [0.4.1] - 2026-08-12
 
 ### Changed (breaking)

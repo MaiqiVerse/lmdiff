@@ -1,6 +1,6 @@
 """Release-metadata smoke tests — pinned to the current release.
 
-Updated for v0.4.1 (PR #19 measurement validity + pdn correction).
+Updated for v0.4.2 (validity-aware consumers + surface regression suite).
 Bumping the version in ``pyproject.toml`` / ``lmdiff/__init__.py``
 requires updating the pinned strings here in the same commit; older
 versions are still checked as CHANGELOG history entries.
@@ -19,7 +19,7 @@ import lmdiff
 
 
 _ROOT = Path(__file__).resolve().parents[2]
-_CURRENT_VERSION = "0.4.1"
+_CURRENT_VERSION = "0.4.2"
 
 
 def test_lmdiff_dunder_version_is_current():
@@ -61,7 +61,7 @@ def test_changelog_retains_release_history():
     """Past release headings must remain in the CHANGELOG so the
     history isn't lost on each bump."""
     text = (_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    for past in ("0.4.0", "0.3.2"):
+    for past in ("0.4.1", "0.4.0", "0.3.2"):
         assert re.search(rf"^## \[{re.escape(past)}\]", text, re.MULTILINE), (
             f"CHANGELOG.md missing historical [{past}] heading"
         )
