@@ -570,15 +570,39 @@ class GeoResult:
         remaining domain magnitudes are all equal (std == 0) or only one
         domain is finite, that variant's z-scores are all 0.0.
 
+        .. versionchanged:: 0.4.2
+           Domains the validity framework excluded (``domain_status`` of
+           ``variant_only`` / ``out_of_range``) are treated the same way —
+           absent from mean and std, emitted as NaN. Before this they
+           entered the statistic, so an unmeasurable domain shifted every
+           *other* z-score in the row. Output keys are unchanged, so
+           consumers keyed on ``(variant, domain)`` still line up.
+
         Returns:
             ``{variant_name: {domain: z_score}}`` with the same
             ``(variant, domain)`` keys as ``magnitudes_per_task_normalized()``.
         """
+        from lmdiff._validity import is_measured
+
+        status = getattr(self, "domain_status", None)
         per_domain = self.magnitudes_per_task_normalized()
         out: dict[str, dict[str, float]] = {}
         for variant, domain_vals in per_domain.items():
             domains = list(domain_vals.keys())
-            arr = np.asarray([domain_vals[d] for d in domains], dtype=float)
+            # v0.4.2: cells the validity framework excluded enter as NaN
+            # so the existing finite-mask drops them from mean and std.
+            # Skipping them only at render time would leave every *other*
+            # z-score in the row computed against a mean and std that
+            # include an unmeasurable domain — the statistic itself wrong,
+            # not merely its presentation.
+            arr = np.asarray(
+                [
+                    domain_vals[d] if is_measured(status, variant, d)
+                    else float("nan")
+                    for d in domains
+                ],
+                dtype=float,
+            )
             mask = np.isfinite(arr)
             if mask.sum() <= 1:
                 # 0 or 1 finite values → no spread to z-score against.
@@ -615,7 +639,16 @@ class GeoResult:
         if v2 not in self.variant_names:
             raise ValueError(f"unknown variant: {v2!r}")
 
-        heatmap = self.domain_heatmap()
+        from lmdiff._validity import filter_measured_cells
+
+        # v0.4.2: this aggregates rather than displays — the affected-set
+        # decomposition below turns per-domain magnitudes into set
+        # membership, so an unmeasurable domain that clears the threshold
+        # changes overlap_domains / unique_*_domains in the returned
+        # value. Filtering here, not at a caller.
+        heatmap = filter_measured_cells(
+            getattr(self, "domain_status", None), self.domain_heatmap(),
+        )
         mag_v1 = self.magnitudes.get(v1, 0.0)
         mag_v2 = self.magnitudes.get(v2, 0.0)
 

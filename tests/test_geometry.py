@@ -1922,3 +1922,116 @@ class TestMagnitudesSpecializationZscore:
         )
         with pytest.raises(ValueError):
             result.magnitudes_specialization_zscore()
+
+
+# ── v0.4.2: validity-aware aggregation (not just display) ────────────
+
+
+class TestValidityAwareAggregation:
+    """Excluded (variant, domain) cells must be absent from derived
+    *statistics*, not merely skipped when drawing them.
+
+    The distinction is the whole point. On the v0.4.1 7-variant
+    calibration the specialization z-score was computed over all five
+    domains including the excluded long-context one, so an unmeasurable
+    domain entered every row's mean and std and shifted every *other*
+    z-score in that row. ``temp_1.5`` read +1.53 on long-context — its
+    strongest apparent specialization — on a domain the same result
+    reports as ``None`` in ``share_per_domain``.
+    """
+
+    def _geo(self, domain_status=None) -> GeoResult:
+        g = GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=6,
+            magnitudes={"A": 5.0, "B": 10.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 0.0}, "B": {"A": 0.0, "B": 1.0}},
+            change_vectors={
+                "A": [3.0, 4.0, 1.0, 1.0, 9.0, 9.0],
+                "B": [1.0, 1.0, 3.0, 4.0, 9.0, 9.0],
+            },
+            per_probe={"A": {}, "B": {}},
+            metadata={},
+            probe_domains=("math", "math", "code", "code",
+                           "long-context", "long-context"),
+            avg_tokens_per_probe=(10.0,) * 6,
+        )
+        if domain_status is not None:
+            g.domain_status = domain_status
+        return g
+
+    _EXCLUDED = {
+        "A": {"math": "full", "code": "full", "long-context": "out_of_range"},
+        "B": {"math": "full", "code": "full", "long-context": "variant_only"},
+    }
+
+    # ── z-score ──
+
+    def test_excluded_domain_is_nan_in_zscore_output(self):
+        zs = self._geo(self._EXCLUDED).magnitudes_specialization_zscore()
+        for v in ("A", "B"):
+            assert math.isnan(zs[v]["long-context"])
+
+    def test_output_keys_are_unchanged(self):
+        """Excluded cells stay in the mapping as NaN so consumers keyed
+        on (variant, domain) still line up."""
+        plain = self._geo().magnitudes_specialization_zscore()
+        filtered = self._geo(self._EXCLUDED).magnitudes_specialization_zscore()
+        assert set(plain) == set(filtered)
+        for v in plain:
+            assert set(plain[v]) == set(filtered[v])
+
+    def test_every_other_cell_moves(self):
+        """If the excluded domain were merely hidden at render time, the
+        surviving cells would be untouched. They must all shift, because
+        the mean and std they are measured against changed."""
+        plain = self._geo().magnitudes_specialization_zscore()
+        filtered = self._geo(self._EXCLUDED).magnitudes_specialization_zscore()
+        for v in ("A", "B"):
+            for d in ("math", "code"):
+                assert plain[v][d] != pytest.approx(filtered[v][d]), (
+                    f"{v}/{d} unchanged — excluded domain still in the statistic"
+                )
+
+    def test_surviving_cells_are_a_proper_zscore_over_measured_only(self):
+        """Two measured domains, z-scored against each other, give
+        exactly +1 and -1 (population std)."""
+        zs = self._geo(self._EXCLUDED).magnitudes_specialization_zscore()
+        for v in ("A", "B"):
+            vals = sorted(
+                zs[v][d] for d in ("math", "code")
+            )
+            assert vals[0] == pytest.approx(-1.0)
+            assert vals[1] == pytest.approx(+1.0)
+
+    def test_no_domain_status_is_unchanged(self):
+        """Legacy results (v0.2.x, v1-v5 loads) carry no status and must
+        behave exactly as before."""
+        a = self._geo().magnitudes_specialization_zscore()
+        b = self._geo({}).magnitudes_specialization_zscore()
+        assert a == b
+
+    # ── complementarity ──
+
+    def test_complementarity_excludes_unmeasured_from_affected_sets(self):
+        """This aggregates too: per-domain magnitudes become set
+        membership, so an excluded domain clearing the threshold would
+        change overlap / unique in the returned value."""
+        plain = self._geo().complementarity("A", "B", threshold=0.1)
+        filtered = self._geo(self._EXCLUDED).complementarity(
+            "A", "B", threshold=0.1,
+        )
+        all_plain = set(plain.overlap_domains) | set(plain.unique_v1_domains) \
+            | set(plain.unique_v2_domains)
+        all_filtered = set(filtered.overlap_domains) \
+            | set(filtered.unique_v1_domains) | set(filtered.unique_v2_domains)
+        assert "long-context" in all_plain
+        assert "long-context" not in all_filtered
+
+    def test_complementarity_without_status_unchanged(self):
+        a = self._geo().complementarity("A", "B", threshold=0.1)
+        b = self._geo({}).complementarity("A", "B", threshold=0.1)
+        assert a.overlap_domains == b.overlap_domains
+        assert a.unique_v1_domains == b.unique_v1_domains
+        assert a.unique_v2_domains == b.unique_v2_domains
