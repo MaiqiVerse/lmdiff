@@ -36,6 +36,13 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-028: hotfix release scope should stay minimal even when a broader fix is architecturally cleaner
 - L-029: for multi-variant runs of large models, immediate engine release beats caching even at the cost of reload time
 - L-030: cross-engine equivalence tests must span every code path the new engine introduces, not only the production-canonical inputs
+- L-031: public kwargs documented as "reserved for future" tend to mask bugs that can't surface until the kwarg is real
+- L-032: when porting orchestration logic, preserve the resource-lifetime contract — not just the function signature
+- L-033: self-consistent ad-hoc fixes evade validation
+- L-034: verification scope must equal CI scope
+- L-035: similar names hide duplicate implementations; search by what code does, not what it is called
+- L-036: a partial-validity state needs a floor, or it fires on unrepresentative survivors
+- L-037: a correctness fix can push values across thresholds elsewhere in the system
 
 ---
 
@@ -891,7 +898,7 @@ Companion to L-029 (release aggressively). L-029 said "release after use" — Fi
 
 **Failure mode:** when mockup and implementation come from the same formula, validation only confirms implementation-matches-spec, not spec-matches-truth. The √T-correction was a happy accident that incidentally suppressed long-context dominance by dividing out the dimensional inflation — but for the wrong mechanism. The real cause (long-context probes are invalid measurements when base model context window is smaller than probe length) was invisible to the formula and to the testing regime.
 
-Lab critique 三个字 "没什么根据" ("no basis") triggered an audit chain that revealed:
+A three-word lab critique — "no basis" — triggered an audit chain that revealed:
 (a) **dimensional inconsistency** (δ already per-token, √T̄ over-corrects, yielding units of `nats/token^1.5`);
 (b) **self-consistent error in mockup-implementation pair** (the v6 §13 mockup numbers and the v0.3.2 PR #11 implementation both came from the same formula, so passing calibration tests proved nothing about correctness);
 (c) **deeper measurement validity issue underneath** (long-context probes outside the base context window are catastrophic-failure noise, not signal — any per-token aggregator surfaces them as drift).
@@ -915,6 +922,237 @@ When defending a metric in response to external critique, the **first action** i
 
 Source:
 - v0.3.2 PR #11 (lmdiff, `share_per_domain` formula)
-- Lab feedback 2026-05-11 ("√T 没什么根据")
+- Lab feedback 2026-05-11 ("the √T has no basis")
 - Audit chain documented in PHASE_PLAN_v6.md Update 5 Y.1-Y.4
 - Fix: v0.4.1 (Phase 2 commit 4.1)
+
+**Recurrence — 2026-08-12, inside the v0.4.1 cycle, one layer up.**
+
+The release that fixed L-033 reproduced it. PHASE_PLAN_v6.md Update 5 Y.4
+specified the `partial` tie-break; `lmdiff/_validity.py` implemented it; the
+unit tests passed. None of that was evidence the rule was right, because
+the design document is what defined the code. Agreement between spec and
+implementation is circular whenever the spec is the code's source.
+
+Same failure as the v0.3.2 mockup-and-formula case, relocated from
+"mockup vs implementation" to "design doc vs implementation." It broke the
+same way it did the first time — real fixture data. The regenerated
+7-variant fixture showed `partial` on 9 valid probes out of 100, which was
+correct per §2.1 and wrong per §8.4 of the same document; the two sections
+had contradicted each other since they were written, and no test could
+surface it because both were upstream of every test. See L-036.
+
+**Generalized rule:** agreement between any two artifacts derived from the
+same source is not validation, regardless of how far apart in the process
+they sit — mockup and formula, design doc and implementation, spec and test.
+Validation requires an input the source did not produce. Design docs are
+therefore not exempt from L-033's "external ground truth" requirement; they
+are one of the artifacts it applies to.
+
+## L-034: verification scope must equal CI scope
+
+**Date:** 2026-08-12
+**Phase:** 2 commit 4.1 (v0.4.1)
+**Severity:** Roughly half the suite went unverified for the whole
+implementation phase. Caught by CI, not by the seven green reports that
+preceded it.
+
+**Symptom:** CC ran `pytest tests/unit/` (502 tests) as its per-commit gate
+and reported green seven consecutive times. CI runs `pytest tests/` (984 at
+the time) and failed with six errors in top-level `tests/test_*.py` files —
+schema-version assertions that predate the `tests/unit/` directory and were
+never migrated into it.
+
+**Root cause:** Both the instruction and the execution assumed `tests/unit/`
+was the canonical location for unit tests. It is the canonical location for
+*new* ones; the repository still carries an older generation of test files
+at `tests/` top level from before the split. Nothing about running
+`pytest tests/unit/` signals that a second population exists — it prints a
+pass count and exits 0, and a pass count with no denominator looks the same
+whether it covers 100 % or 51 % of the suite.
+
+**Rule:** before claiming tests pass, run the command CI runs. Not a
+superset-by-intuition, not the directory that "should" hold them — the
+literal command from the workflow file. If a faster subset is wanted for
+inner-loop iteration, that is fine, but the claim "tests pass" belongs only
+to the CI-scope run.
+
+**Corollary:** a pass count is not a coverage claim. `502 passed` and
+`984 passed` are indistinguishable as success signals; only comparing the
+count against the expected total distinguishes them. When a suite's size is
+known, assert it.
+
+**Where applied:** verification scope for the remainder of PR #19 was fixed
+at `pytest tests/`, and every subsequent report in that PR quoted the full
+count. `.github/workflows/test.yml` runs `pytest tests/ -q`.
+
+**Diagnostic signature:** local green, CI red, on the same commit, with
+failures in files the local command never collected. Compare the collected
+count between the two commands before debugging any individual failure.
+
+**Tracked follow-up:** migrating the top-level `tests/test_*.py` files into
+`tests/unit/` or `tests/integration/` would remove the trap at its source.
+Deferred to v0.4.2+ — deliberately not done inside a release PR, per L-028.
+
+## L-035: similar names hide duplicate implementations; search by what code does, not what it is called
+
+**Date:** 2026-08-12
+**Phase:** 2 commit 4.1 (v0.4.1)
+**Severity:** A formula correction landed in one of two places. The second
+kept computing the superseded formula and would have shipped that way.
+
+**Symptom:** v0.4.1 replaced the per-domain normalization formula (Q9.10
+Formula A). `magnitudes_per_domain_normalized` — the *field*, computed in
+`_compute_per_domain_normalized` — was updated. `magnitudes_per_task_normalized()`
+— a *method* on `GeoResult` — independently implemented the same computation
+and was not, until a later pass caught it (commit `358148c`).
+
+**Root cause:** the two names differ by one word in the middle
+(`domain` / `task`) and by being a field versus a method. A grep for
+`magnitudes_per_domain` finds one of them. A grep for the *computation* —
+`sqrt`, `sum`, `avg_tokens`, the shape of the expression — finds both. The
+search that felt exhaustive was keyed on the identifier, and the identifier
+is exactly what differed.
+
+**Rule:** when changing a formula, search by what the code does, not by what
+it is called: the operations, the variables consumed, the return shape. Name-
+based search finds the callers you already knew about. Then remove the
+duplication so the next change has one edit point rather than two — a second
+implementation that agrees today is a second implementation that can disagree
+tomorrow.
+
+**Generalizes past formulas:** any invariant expressed in more than one place
+has this failure mode. The same release hit it again in the visualization
+layer, where drift-magnitude bin edges lived both in the `BoundaryNorm` and
+in the legend's literal label strings, and the Formula A rescale updated
+neither. Fixed by deriving the legend from the edge constants
+(`_DRIFT_BIN_EDGES`), so the two cannot desync.
+
+**Diagnostic signature:** a formula change whose effect appears in some
+outputs but not others; or two accessors with parallel names whose values
+agree on old data and diverge after a change to one.
+
+**Tracked follow-up:** audit `lmdiff/` for other `per_X` field/method pairs
+with duplicated computation. Deferred to v0.4.2+.
+
+## L-036: a partial-validity state needs a floor, or it fires on unrepresentative survivors
+
+**Date:** 2026-08-12
+**Phase:** 2 commit 4.1 (v0.4.1)
+**Severity:** The state was correct by its own definition and wrong by
+intent. Shipped in the first regenerated fixture; caught before release.
+
+**Symptom:** v0.4.1's four-state validity classification (`full` / `partial` /
+`variant_only` / `out_of_range`) let `partial` fire on 9 valid probes out of
+100. Those 9 produced a 27.6 % long-context share for `temp_1.5` and 18.4 %
+for `chat`, plotted beside domains measured on all 100 probes, distinguished
+only by a hatch pattern.
+
+**Root cause:** `compute_domain_status` returned `partial` whenever the
+valid-for-both count was non-zero and not total. With no floor, the effective
+threshold is `1/n` — one surviving probe out of a hundred still yields a
+plotted share. `1/n` is invisible at the call site and drifts silently with
+probe count, so nothing in the code or the tests marked it as a decision at
+all.
+
+**The larger half of the problem was not sample size.** 9 probes is thin, but
+the 9 survivors were the *short left tail* of the length distribution
+(`T_i` min 1202, median 7849, max 19161) — they survived precisely because
+they were the probes least representative of what the domain tests. A
+long-context domain measured on its nine shortest prompts is not a small
+measurement of long-context capability; it is a measurement of something
+else. Selection bias in which items survive a validity filter is the
+dangerous part; small-n is the visible part.
+
+**Rule:** any "some data is valid" classification needs a threshold below
+which it degrades to "not measurable", and that threshold must be a
+documented, overridable parameter rather than an implicit `1/n`. When the
+filter's survivors are selected by a property correlated with the thing being
+measured — length, difficulty, recency — assume the surviving subset is
+biased and say so, rather than treating it as a smaller random sample.
+
+**Where applied:** `_validity.DEFAULT_MIN_VALID_FRACTION = 0.5`, passed
+through `compute_domain_status` and `run_family_pipeline`. Below the floor a
+domain degrades to `variant_only` (when the variant alone clears it) or
+`out_of_range`, and both `share` and `pdn` become `None`.
+`min_valid_fraction=0.0` reproduces pre-floor behaviour exactly and is
+unit-tested as the degenerate case. Derivation, including the honest note
+that 0.5 is a round majority-rule choice defensible only relative to `1/n`,
+is in `docs/methodology/normalization.md` §"Minimum valid fraction".
+
+**Companion to L-033's recurrence.** The under-specified tie-break that
+produced this was written in PHASE_PLAN_v6.md Update 5 Y.4 and contradicted
+by §8.4 of the same design document. Neither the implementation matching Y.4
+nor the passing unit tests could surface the contradiction, because both
+derived from the document. Real fixture data did. See the Recurrence section
+of L-033.
+
+**Diagnostic signature:** a "partial" / "degraded" / "best-effort" state that
+reports a number without reporting how much data it rests on. Check what
+fraction of the population it fired on, and check whether the survivors
+differ systematically from those dropped.
+
+## L-037: a correctness fix can push values across thresholds elsewhere in the system
+
+**Date:** 2026-08-12
+**Phase:** 2 commit 4.1 (v0.4.1)
+**Severity:** A fix manufactured a false claim in the release whose entire
+thesis is not overstating what the data supports. Nothing automated detected
+it.
+
+**Symptom:** adding the `min_valid_fraction` floor (L-036) was strictly a
+correction — it stopped a nine-probe subset from contributing a share. But
+dropping the long-context column renormalized every remaining share upward,
+and `chat`'s peak domain moved from 29.9 % to 32.0 %. `SpecializationPeakFinding`
+fires above 30 %. That gate had been silently protecting the variant with the
+second-weakest specialization in the set; the fix pushed it across, and the
+framework began asserting "chat specializes in math" — on a 2.5 pp lead over
+the runner-up.
+
+**Root cause:** the change was numerically correct at every step. What moved
+was not a value's correctness but its *position relative to a constant
+defined elsewhere*, in a module with no dependency on the one that changed.
+`_findings.py` had no reason to be re-examined when `_validity.py` gained a
+floor.
+
+**What failed to catch it:** all 140 calibration assertions passed. `pytest
+tests/` passed. Every numeric assertion was satisfied because every number
+was right. It surfaced only when the showcase figure was re-rendered and
+read by eye — and the same underlying change had simultaneously invalidated
+that figure's magnitude bins, where the Formula A rescale left 26 of 28
+cells in the top bin and the pane carried no information at all.
+
+Neither defect had a test that could have caught it, and this is structural
+rather than an oversight: **both are thresholds on presentation, not on
+values.** A test can assert that a number is 32.0 %; asserting that 32.0 %
+does not warrant the sentence "chat specializes in math" requires encoding
+the editorial judgement itself. Until that judgement is a named constant,
+there is nothing to assert against.
+
+**Rule:** after any change that rescales, renormalizes, filters, or reweights
+a reported quantity, enumerate every threshold downstream of it — display
+bins, finding gates, warning triggers, colour scales, severity cutoffs — and
+re-derive each one rather than assuming it still holds. "The numbers all
+moved by a constant factor" is precisely the condition under which
+threshold-crossing is most likely and least visible.
+
+**Corollary:** the enumeration is only possible if the thresholds are
+findable. Both of this incident's thresholds were bare literals — `0.30` in a
+comparison, `0.025 / 0.05 / 0.10 / 0.20` in a list — with no comment tying
+them to the quantity they gate. Named constants carrying their derivation
+are what make the audit tractable; that is why v0.4.1 ships
+`_SPECIALIZATION_PEAK_MARGIN`, `_DRIFT_BIN_EDGES`, and
+`DEFAULT_MIN_VALID_FRACTION` with the reasoning written at the definition
+and in `docs/methodology/normalization.md`.
+
+**Where applied:** `SpecializationPeakFinding` now requires a 5 pp margin over
+the runner-up alongside the 30 % floor, and emits `UndifferentiatedFinding`
+below it rather than falling silent — silence is indistinguishable from "not
+measured". `_DRIFT_BIN_EDGES` was converted with the formula (×10, the same
+×2 ladder one decade up) rather than re-fitted, and the legend is now derived
+from the constants so the two cannot desync (see L-035).
+
+**Diagnostic signature:** a correctness fix, all tests green, and a
+downstream report that reads differently than before in a way nobody
+specified. Re-render every figure and re-read every generated sentence after
+a rescaling change; the assertion suite will not do it for you.
