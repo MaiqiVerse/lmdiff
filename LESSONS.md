@@ -898,7 +898,7 @@ Companion to L-029 (release aggressively). L-029 said "release after use" — Fi
 
 **Failure mode:** when mockup and implementation come from the same formula, validation only confirms implementation-matches-spec, not spec-matches-truth. The √T-correction was a happy accident that incidentally suppressed long-context dominance by dividing out the dimensional inflation — but for the wrong mechanism. The real cause (long-context probes are invalid measurements when base model context window is smaller than probe length) was invisible to the formula and to the testing regime.
 
-Lab critique 三个字 "没什么根据" ("no basis") triggered an audit chain that revealed:
+A three-word lab critique — "no basis" — triggered an audit chain that revealed:
 (a) **dimensional inconsistency** (δ already per-token, √T̄ over-corrects, yielding units of `nats/token^1.5`);
 (b) **self-consistent error in mockup-implementation pair** (the v6 §13 mockup numbers and the v0.3.2 PR #11 implementation both came from the same formula, so passing calibration tests proved nothing about correctness);
 (c) **deeper measurement validity issue underneath** (long-context probes outside the base context window are catastrophic-failure noise, not signal — any per-token aggregator surfaces them as drift).
@@ -922,7 +922,7 @@ When defending a metric in response to external critique, the **first action** i
 
 Source:
 - v0.3.2 PR #11 (lmdiff, `share_per_domain` formula)
-- Lab feedback 2026-05-11 ("√T 没什么根据")
+- Lab feedback 2026-05-11 ("the √T has no basis")
 - Audit chain documented in PHASE_PLAN_v6.md Update 5 Y.1-Y.4
 - Fix: v0.4.1 (Phase 2 commit 4.1)
 
