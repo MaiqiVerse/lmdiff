@@ -23,6 +23,8 @@ and markdown renderers (v6 §12.6).
 """
 from __future__ import annotations
 
+from lmdiff._validity import PDN_AXIS_LABEL, PDN_DESCRIPTION
+
 import base64
 import io
 import math
@@ -429,9 +431,9 @@ def _build_drift_table(
         '\n    <h3>How big is each move</h3>'
         '\n    <table>'
         '\n      <caption>per-domain drift magnitude (raw ‖δ‖); rightmost'
-        ' column is per-√token normalized (comparable across runs)</caption>'
+        f' column is {PDN_DESCRIPTION}</caption>'
         f'\n      <thead><tr><th>variant</th>{head_cells}'
-        '<th>‖δ‖/√tok</th></tr></thead>'
+        f'<th>{escape(PDN_AXIS_LABEL)}</th></tr></thead>'
         f'\n      <tbody>{"".join(rows)}</tbody>'
         '\n    </table>'
     )
@@ -663,7 +665,7 @@ def render(
     domains = _ordered_domains(result)
     drift = _domain_drift(result)
     # See markdown.render() — the per-variant total switched from RMS-of-
-    # per-domain raw (not comparable across runs) to per-√token normalized.
+    # per-domain raw (not comparable across runs) to per-token normalized.
     norm_totals = dict(result.magnitudes_normalized or {})
     share = tables_local.get("share", {})
     cosine = tables_local.get("cosine", {})

@@ -6,6 +6,8 @@ from the longest-prompt domain; normalized bars are unannotated.
 """
 from __future__ import annotations
 
+from lmdiff._validity import PDN_FORMULA, PDN_UNITS
+
 from pathlib import Path
 
 from lmdiff.experiments.family import DEFAULT_DOMAIN_ORDER
@@ -88,7 +90,7 @@ def plot_normalization_effect(
     ax_norm.bar(x, norm_vals, color=colors, edgecolor="black", linewidth=0.6)
     ax_norm.set_xticks(x)
     ax_norm.set_xticklabels(variants, fontsize=10)
-    ax_norm.set_ylabel("‖δ‖ / √(N · ⟨tok⟩)", fontsize=10)
+    ax_norm.set_ylabel(f"{PDN_FORMULA}  [{PDN_UNITS}]", fontsize=10)
     ax_norm.set_title("Per-token normalized magnitude", fontsize=10, pad=8)
     ax_norm.grid(axis="y", linestyle=":", alpha=0.4)
 

@@ -254,6 +254,34 @@ def compute_domain_status(
     return "partial"
 
 
+# ── Shared presentation vocabulary ───────────────────────────────────
+#
+# One definition per user-visible description of the pdn quantity, so a
+# formula change has one edit point instead of six. Through v0.4.1 the
+# string ``‖δ‖/√tok`` and the phrase "per-√token normalized" were
+# duplicated across markdown, html, terminal, change_size,
+# normalized_magnitude and normalization_effect. Q9.10 replaced Formula B
+# (``sqrt(Σδ²/ΣT)``, units nats/token^1.5) with Formula A
+# (``sqrt(mean(δ²))``, units nats/token) and every one of those six
+# literals kept describing the superseded formula — the column header
+# named a quantity the column no longer contained.
+#
+# Same reasoning as ``viz.drift_share._DRIFT_BIN_EDGES``: if the formula
+# moves, these move with it, and nothing restates them locally.
+
+#: Compact column header for magnitudes_per_domain_normalized.
+PDN_AXIS_LABEL = "‖δ‖/tok"
+
+#: Units, for axis labels and colorbars.
+PDN_UNITS = "nats/token"
+
+#: One-line description for table captions and figure subtitles.
+PDN_DESCRIPTION = "per-token normalized — comparable across runs"
+
+#: The formula itself, for methodology blocks and colorbar labels.
+PDN_FORMULA = "√(mean(δ²))"
+
+
 # ── Consumer-side filtering ──────────────────────────────────────────
 
 #: Statuses whose (variant, domain) cells carry a real measurement and
@@ -324,6 +352,10 @@ def filter_measured_cells(
 
 __all__ = [
     "DEFAULT_MIN_VALID_FRACTION",
+    "PDN_AXIS_LABEL",
+    "PDN_DESCRIPTION",
+    "PDN_FORMULA",
+    "PDN_UNITS",
     "MEASURED_STATUSES",
     "EngineValidity",
     "ProbeValidity",

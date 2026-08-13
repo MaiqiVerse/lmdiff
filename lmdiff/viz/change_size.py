@@ -6,7 +6,7 @@ Two horizontal-bar charts side-by-side:
 
   - Left:  raw ‖δ‖ with a hatched overlay showing the long-context
     contribution (a length artifact, not a real-drift artefact)
-  - Right: ‖δ‖ per √token (after L-022 per-token normalization)
+  - Right: per-token normalized magnitude (Q9.10 Formula A)
 
 Bottom-line panel: per-token-normalized ranking + a length-bias
 caveat. The caveat text is **data-driven** — it only references
@@ -15,6 +15,8 @@ that domain. Runs without long-context probes get a generic
 "raw vs per-token" note instead, so we never describe absent data.
 """
 from __future__ import annotations
+
+from lmdiff._validity import PDN_FORMULA, PDN_UNITS
 
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -163,7 +165,7 @@ def render_change_size(
     ax_norm.set_yticklabels(order, fontsize=12, fontweight="bold")
     ax_norm.invert_yaxis()
     ax_norm.set_xlim(0, norm_max * 1.25)
-    ax_norm.set_xlabel("‖δ‖ per √token", fontsize=10)
+    ax_norm.set_xlabel(f"{PDN_FORMULA}  [{PDN_UNITS}]", fontsize=10)
     ax_norm.set_title("After normalization — comparable across domains",
                       fontsize=11, color="#444", pad=10)
     for s in ("top", "right"):
