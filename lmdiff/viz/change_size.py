@@ -9,10 +9,20 @@ Two horizontal-bar charts side-by-side:
   - Right: per-token normalized magnitude (Q9.10 Formula A)
 
 Bottom-line panel: per-token-normalized ranking + a length-bias
-caveat. The caveat text is **data-driven** — it only references
-``long_context_domain`` when the run actually contains probes from
-that domain. Runs without long-context probes get a generic
-"raw vs per-token" note instead, so we never describe absent data.
+caveat. Every long-context claim the figure makes — hatch, hatch
+label, panel title, subtitle, bottom-line text — is gated on the
+single :data:`LONG_CONTEXT_DOMINANCE_PCT` predicate, so the figure
+cannot describe a hatch it did not draw. Runs where the longest
+domain does not actually dominate get a generic "raw vs per-token"
+note instead, so we never describe absent data.
+
+.. versionchanged:: 0.4.2
+   The gate was ``mask_long.any()`` — whether long-context probes
+   *existed*. After the v0.4.1 validity floor, 9 of 100 survive against
+   a 4096-token base and contribute 0.0-3.3 % of raw ‖δ‖², so the
+   figure asserted domination on a 3 % contribution while the hatch it
+   described was suppressed by a separate 5 % rule. Existence is not
+   sufficiency (L-036).
 """
 from __future__ import annotations
 
@@ -45,16 +55,52 @@ def _color_for(variant: str, idx: int) -> str:
     return palette[idx % len(palette)]
 
 
+#: Minimum share of raw ‖δ‖² the longest-prompt domain must contribute
+#: before this figure asserts that long probes dominate the raw
+#: magnitude — and therefore before it draws the hatched overlay, labels
+#: it, or says so in the title, subtitle, and bottom-line panel.
+#:
+#: This is a **presentation threshold, not a derived quantity.** Its one
+#: real job is that the four consumers agree: the figure must not draw a
+#: hatch it does not describe, nor describe one it does not draw. 5 % is
+#: reused because it is where the hatch label already suppressed itself
+#: (``long_portion > raw_max * 0.05``), so adopting it as the single
+#: predicate changes no rendering that was previously self-consistent.
+#:
+#: Why a threshold at all rather than ``mask_long.any()``. Through
+#: v0.4.1 the gate tested whether long-context probes *existed*. After
+#: the v0.4.1 validity floor, 9 of 100 survive against a 4096-token base
+#: and contribute 0.0–3.3 % of raw ‖δ‖² — so the figure asserted
+#: domination on a 3 % contribution, under a subtitle describing a hatch
+#: that the 5 % rule had already suppressed. Existence is not
+#: sufficiency; the predicate must test the magnitude the claim depends
+#: on. Same error as the pre-floor ``partial`` state (L-036).
+#:
+#: The claim is not retired, because it is not generally false: against
+#: a long-context-capable base all 100 probes are valid and raw ‖δ‖ is
+#: dominated by them exactly as before. It is now made only when the
+#: data in hand supports it.
+LONG_CONTEXT_DOMINANCE_PCT: float = 5.0
+
+
 def render_change_size(
     result: "GeoResult",
     out_path: str | Path,
     *,
     variant_order: list[str] | None = None,
     findings: tuple | None = None,  # noqa: ARG001 (reserved for future use)
-    long_context_domain: str = "long-context",
+    long_context_domain: str | None = None,
     dpi: int = 180,
 ) -> Path:
-    """Render the raw-vs-normalized magnitude bars figure."""
+    """Render the raw-vs-normalized magnitude bars figure.
+
+    ``long_context_domain`` names the domain whose length dominance the
+    left pane illustrates. ``None`` (default) picks the domain with the
+    longest mean prompt from ``avg_tokens_per_probe`` — adopted from
+    ``viz/normalization_effect.py``, which did this dynamically while
+    this module hardcoded ``"long-context"``. The dynamic pick is
+    correct on probe sets that label the domain differently.
+    """
     import numpy as np
     import matplotlib as mpl
     import matplotlib.pyplot as plt
@@ -76,18 +122,40 @@ def render_change_size(
     norm = {v: float(norm_map.get(v, 0.0)) for v in variants}
 
     domains_all = np.asarray(result.probe_domains)
+
+    # Dynamic longest-prompt domain (adopted from normalization_effect),
+    # overridable for callers that know which domain they mean.
+    if long_context_domain is None and domains_all.size and result.avg_tokens_per_probe:
+        toks = np.asarray(result.avg_tokens_per_probe, dtype=float)
+        mean_tok: dict[str, float] = {}
+        for d in set(domains_all.tolist()):
+            sel = domains_all == d
+            if sel.any():
+                mean_tok[d] = float(toks[sel].mean())
+        long_context_domain = max(mean_tok, key=mean_tok.get) if mean_tok else "long-context"
+    elif long_context_domain is None:
+        long_context_domain = "long-context"
+
     if domains_all.size:
         mask_long = domains_all == long_context_domain
     else:
         mask_long = np.zeros(0, dtype=bool)
-    has_long_context = bool(mask_long.any())
+
     pct_long: dict[str, float] = {}
     for v in variants:
         denom = float((cv[v] ** 2).sum())
-        if denom <= 0 or not has_long_context:
+        if denom <= 0 or not mask_long.any():
             pct_long[v] = 0.0
         else:
             pct_long[v] = float(100.0 * (cv[v][mask_long] ** 2).sum() / denom)
+
+    # THE predicate. Sufficiency, not existence — and the single gate for
+    # all four consumers (hatch, hatch label, panel title, subtitle,
+    # bottom-line text), so the figure cannot describe a hatch it did not
+    # draw. See LONG_CONTEXT_DOMINANCE_PCT.
+    long_context_dominates = bool(
+        pct_long and max(pct_long.values()) >= LONG_CONTEXT_DOMINANCE_PCT
+    )
 
     # Order the bars by per-token-normalized magnitude (descending).
     order = sorted(variants, key=lambda v: -norm[v])
@@ -125,7 +193,7 @@ def render_change_size(
         c = _color_for(v, k)
         ax_raw.barh(k, raw[v], color=c, edgecolor="#333", linewidth=0.6)
         long_portion = raw[v] * pct_long[v] / 100.0
-        if long_portion > 0:
+        if long_context_dominates and long_portion > 0:
             ax_raw.barh(
                 k, long_portion,
                 color=c, alpha=0.4, hatch="///",
@@ -133,7 +201,7 @@ def render_change_size(
             )
         ax_raw.text(raw[v] + raw_max * 0.02, k, f"{raw[v]:.1f}",
                     va="center", fontsize=11, fontweight="bold")
-        if long_portion > raw_max * 0.05:
+        if long_context_dominates and long_portion > 0:
             ax_raw.text(long_portion / 2, k,
                         f"{long_context_domain}\n{pct_long[v]:.1f}%",
                         va="center", ha="center", fontsize=8,
@@ -146,7 +214,7 @@ def render_change_size(
     ax_raw.set_xlabel("‖δ‖ raw", fontsize=10)
     ax_raw.set_title(
         ("Before normalization — long probes dominate"
-         if has_long_context
+         if long_context_dominates
          else "Raw magnitude (length-weighted)"),
         fontsize=11, color="#444", pad=10,
     )
@@ -174,7 +242,7 @@ def render_change_size(
 
     fig.text(0.07, 0.94, "How far has each variant moved from base?",
              fontsize=20, fontweight="bold", color="#222")
-    if has_long_context:
+    if long_context_dominates:
         subtitle = (
             f"Hatched portion = share dominated by {long_context_domain} "
             "probes (a length artifact, not real drift)"
@@ -187,7 +255,7 @@ def render_change_size(
     fig.text(0.07, 0.895, subtitle,
              fontsize=11, color="#555", style="italic")
 
-    if has_long_context:
+    if long_context_dominates:
         legend_text = (
             "Longer raw bars don't mean larger real change — they mean "
             "longer probes. Per-token normalization (right) shows the "
@@ -207,7 +275,7 @@ def render_change_size(
     ax_takeaway.text(0.0, 1.0, "Bottom line",
                      fontsize=14, fontweight="bold", color="#222",
                      transform=ax_takeaway.transAxes, va="top")
-    if has_long_context:
+    if long_context_dominates:
         bottom_text = (
             f"{long_context_domain} probes are\n"
             "much longer than the\n"
