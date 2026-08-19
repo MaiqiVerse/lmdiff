@@ -25,7 +25,7 @@ deliberately later — AA.6.
 
 ## 0. Headline findings
 
-Five things the investigation turned up that change the shape of the work.
+Six things the investigation turned up that change the shape of the work.
 
 **0.1 — `Config` already serializes.** `Config.to_dict()` and
 `Config.from_dict()` exist at `_config.py:555` and `:566`, with a
@@ -60,7 +60,15 @@ Omission fails to pin, and this is the parameter whose default most
 recently changed meaning. §10.6, including the precedence rule and the
 Z.5 bookkeeping.
 
-**0.5 — emission is not a one-line `safe_dump`.** The worked example
+**0.5 — moving arrays out of line makes the artifact a bundle.** §1.2
+recommends `__ref__` rather than inlining megabytes of float literals.
+§1.4 states what that costs: what must travel, what error a dangling
+reference raises and when, and why a missing sidecar is **not**
+`reproducible: false`. That last point corrected a defect in §5's
+criterion. Vacuous in practice today — no shipped experiment carries an
+array — but it changes what "attach" means, so §10.1 covers it too.
+
+**0.6 — emission is not a one-line `safe_dump`.** The worked example
 needs comments to be unambiguous, `yaml.safe_dump` cannot emit them, and
 the annotated output must still round-trip or AA.2's "runnable" decision
 breaks. §3.3 gives the four-step emitter and the self-check that guards
@@ -157,6 +165,68 @@ serialize to a list of pairs, which is correct but reads poorly. Minor;
 noted for completeness.
 
 ---
+
+### 1.4 What `__ref__` costs, and the tension it creates
+
+`__ref__` means an emitted config can be a YAML *plus sidecar array
+files*. That sits against the "the artifact travels alone" argument used
+in §3.3 to reject comment-free emission. The tension is real and needs
+resolving rather than noting.
+
+**The resolution is that the two move different things.** The comment-free
+fallback moves *explanation* out of the artifact into report prose that
+may not travel with it — and explanation is what makes the artifact
+self-describing. `__ref__` moves *bulk payload* into a sibling file that
+is part of the same artifact. A tensor is not explanation; no reader
+learns anything from four hundred thousand float literals. So the
+principle is narrower than "one file": **everything needed to understand
+the run is in the YAML; everything needed to re-run it is in the
+bundle.**
+
+**The artifact is therefore a bundle, and the schema should say so.**
+
+```
+report.runconfig.yaml            # always
+report.runconfig.d/              # only when a __ref__ exists
+  soft_prompts.npy
+  steering.l10.npy
+```
+
+For every experiment lmdiff has actually run, `report.runconfig.d/` does
+not exist and the bundle is exactly one file. The tension is real in
+principle and currently vacuous in practice — worth stating plainly so
+nobody designs elaborate machinery for a case that has never occurred.
+
+**Copy-edit-run: what has to be on disk.** The YAML and, if it names any
+`__ref__`, the sibling directory. Copying the YAML alone is safe when it
+contains no `__ref__` — which the reader can see by looking, since
+`__ref__` is a visible key rather than an implicit dependency. That
+visibility is the reason to prefer a key over, say, an out-of-band
+convention: the file states its own completeness.
+
+**A `__ref__` that no longer resolves: fail at load, before any weights.**
+The loader resolves every `__ref__` during parse and validation, not
+lazily at first use. Error names the YAML path, the filesystem path
+tried, and that the run cannot proceed:
+
+```
+RunConfigError: soft_prompts references 'report.runconfig.d/soft_prompts.npy'
+  (resolved to /abs/path/...), which does not exist.
+  The run config was emitted as a bundle; the sidecar directory must
+  travel with the YAML.
+```
+
+Lazy resolution would surface this after a 14 GB model load, which is the
+difference between a two-second failure and a five-minute one.
+
+**Does a missing reference mean `reproducible: false`? No — and §5's
+criterion as written says otherwise, which is a defect in §5.** See the
+sharpened criterion there. Briefly: `reproducible` is a property of the
+*configuration*, decided at emission and permanent; a missing sidecar is a
+property of *this copy on this disk*, discovered at load and fixed by
+obtaining the file. Conflating them would require a loader to rewrite
+`reproducible: true` → `false` in a file it is only reading, which is
+incoherent.
 
 ## 2. Call-level parameters
 
@@ -373,11 +443,29 @@ non_serializable:
     reason: in-memory model object, not a resolvable identifier
 ```
 
-**Criterion for setting it:** a value that cannot be reconstructed from
-the file alone. Not "awkward to serialize" — `soft_prompts` is awkward and
-is still fully reproducible. The distinction matters, because the
-temptation will be to use `reproducible: false` for anything inconvenient,
-and that would make the flag meaningless.
+**Criterion for setting it:** a value that **no possible file could
+express**. Not "awkward to serialize" — `soft_prompts` is awkward and
+fully reproducible. Not "the payload is missing" either — see below. The
+temptation will be to reach for `reproducible: false` whenever something
+is inconvenient, and that would make the flag meaningless.
+
+An earlier draft of this section said "cannot be reconstructed from the
+file alone", which is wrong and worth recording as a correction: under
+that wording a `__ref__` config would be non-reproducible, since the YAML
+alone is indeed not enough. §1.4 is what surfaced it.
+
+**`reproducible` is a property of the configuration; a missing sidecar is
+a property of the copy.** They differ in three ways that matter:
+
+| | `reproducible: false` | missing `__ref__` target |
+|---|---|---|
+| decided | at **emission**, by the emitter | at **load**, by the loader |
+| lifetime | permanent — no file will ever express an in-memory object | contingent — fixed by obtaining the sidecar |
+| remedy | none; re-run from Python | copy the bundle |
+
+Conflating them would require a loader to rewrite `reproducible: true` →
+`false` in a file it is only reading, which is incoherent. A missing
+sidecar raises `RunConfigError` (§1.4); it does not mutate a field.
 
 `reproducible` lives in the executable section, not `provenance`, because
 it determines whether the file can run at all. A loader seeing `false`
@@ -578,6 +666,28 @@ and `metadata` keeps its copy for existing readers.
 A user holding only the HTML has everything. A user holding only the
 JSON has the numbers and is told, in `provenance`, which version produced
 them — which is the question the JSON alone needs to answer.
+
+**What "attach" means when the artifact is a bundle.** §1.4 establishes
+that a config carrying `__ref__` is a YAML plus a sidecar directory. That
+changes each option differently, and the differences favour the
+recommendation:
+
+| option | with a bundle |
+|---|---|
+| sidecar YAML | already a sibling file; the `.d/` directory joins it. No change in kind |
+| embedded in HTML | **cannot embed a `.npy`.** The HTML carries the YAML text, and any `__ref__` it names is unresolvable from the HTML alone |
+| field in the JSON | same problem, plus the overlap objection above |
+
+So the HTML embed is *self-describing but not always self-executing* —
+a reader can always see what the run was, and can re-run it only when the
+config carries no `__ref__`. For every experiment lmdiff has run to date
+that is every config, so the practical answer today is "always".
+
+The honest way to express that is in the embed itself: when a `__ref__`
+is present, the HTML block carries a line saying the config is part of a
+bundle and names the directory. A reader then knows to go find it rather
+than discovering it from a load error. That costs one conditional line
+and removes the only case where the embedded copy would silently mislead.
 
 ### 10.2 What identifies a probe set?
 
