@@ -4034,7 +4034,7 @@ For traceability, everything consciously pushed out of v0.4.1:
 | Visual separation of `variant_only` / `out_of_range` | v0.5.0 | Pointless until `variant_only` cells carry data |
 | `variant_only_metrics` population | v0.5.0 | Requires a variant-vs-variant distance design |
 | `effective_context_length()` + `degraded` | v0.5.0 | Needs a fifth state and share-display rules |
-| `min_valid_fraction` on the public API | v0.5.0+ | Stops at `run_family_pipeline`; no user has asked |
+| `min_valid_fraction` on the public API | **superseded — lands in v0.4.3** | Deferred on the grounds that no user had asked. The run-config schema is now asking: AA.3 requires every value-affecting parameter to be written explicitly, and this is the parameter whose default most recently changed meaning (implicit `1/n` → explicit `0.5`), which is what decides whether long-context reads 27.6 % or `—`. See `v043_runconfig_design.md` §10.6 |
 | Single-domain fallback still using the old formula (`_pipeline.py:721`, `geometry.py:937`) | v0.4.2 | No narrative consequence in the single-domain case |
 | `tests/test_*.py` → `tests/unit/` migration | v0.4.2 | Housekeeping; the split caused a real miss (L-034) |
 | Method/field duplication audit across other `per_X` patterns | v0.4.2 | One instance found and fixed; unknown whether others exist |

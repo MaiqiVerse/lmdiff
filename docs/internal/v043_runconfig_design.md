@@ -16,7 +16,7 @@ deliberately later — AA.6.
 4. [The provenance block](#4-the-provenance-block)
 5. [The escape hatch](#5-the-escape-hatch)
 6. [Emission — where, when, what triggers it](#6-emission)
-7. [Round-trip guarantee and how it is tested](#7-round-trip-guarantee)
+7. [Round-trip guarantee, and the `steering` defect](#7-round-trip-guarantee)
 8. [Forward compatibility with commits 4.3 and 4.5](#8-forward-compatibility)
 9. [Migration and existing artifacts](#9-migration)
 10. [Open questions with recommendations](#10-open-questions)
@@ -25,7 +25,7 @@ deliberately later — AA.6.
 
 ## 0. Headline findings
 
-Four things the investigation turned up that change the shape of the work.
+Five things the investigation turned up that change the shape of the work.
 
 **0.1 — `Config` already serializes.** `Config.to_dict()` and
 `Config.from_dict()` exist at `_config.py:555` and `:566`, with a
@@ -45,16 +45,26 @@ field-by-field identity. Verified by `v043_roundtrip_check.py`, stage A.
 YAML imposes no constraint that JSON did not.
 
 **0.3 — `steering` fails the identity check, and the serializer is not at
-fault.** This is the audit's substantive finding, and it is a
-**pre-existing bug outside this commit's scope**. Detail in §7.2. Not
-fixed here, per the audit constraints; recommendation is there.
+fault.** The comparator is. `_values_equal` does not recurse into
+dataclasses, which is a **general shape** — any future sub-spec holding an
+array inherits it — and it reaches past serialization into
+`is_runtime_only_modification_of`, causing redundant model loads.
+Pre-existing, outside this commit. Diagnosis §7.2, generality §7.3,
+remedy and sequencing §7.4. Not fixed here, per the audit constraints.
 
-**0.4 — [QUESTION] AA.2's worked example contains a parameter the public
-API cannot accept.** `min_valid_fraction` appears in the settled example
-YAML as executable configuration. It is not a parameter of `family()` or
-`compare()` — it stops at `run_family_pipeline`, and Z.5 defers exposing
-it to v0.5.0+. Two settled decisions collide. Detail and options in
-§10.6; flagging rather than designing around it, per the instruction.
+**0.4 — `min_valid_fraction` must be plumbed onto the public API.**
+AA.2's settled example lists it as executable configuration; it is not a
+parameter of `family()` or `compare()`. Raised as a collision between two
+settled decisions and **resolved in favour of AA.3**: add the kwarg.
+Omission fails to pin, and this is the parameter whose default most
+recently changed meaning. §10.6, including the precedence rule and the
+Z.5 bookkeeping.
+
+**0.5 — emission is not a one-line `safe_dump`.** The worked example
+needs comments to be unambiguous, `yaml.safe_dump` cannot emit them, and
+the annotated output must still round-trip or AA.2's "runnable" decision
+breaks. §3.3 gives the four-step emitter and the self-check that guards
+it.
 
 ---
 
@@ -175,10 +185,11 @@ executable configuration.**
 | `engine` | **neither** | an injected object, not a value. Test seam; has no YAML representation and should not acquire one |
 | `progress` | runtime detail | affects display only, never a number |
 
-**`min_valid_fraction` is the exception, and it is a problem.** It
-affects computed values as directly as anything on this list — it is what
-turns a domain's share to `None` — but it is not a parameter of either
-public entry point. See §10.6.
+**`min_valid_fraction` is the exception.** It affects computed values as
+directly as anything on this list — it is what turns a domain's share to
+`None` — but it is not currently a parameter of either public entry point.
+Resolved in §10.6: it is added to `family()` and `compare()` in this
+commit, with precedence *explicit call argument > default*.
 
 ---
 
@@ -288,6 +299,41 @@ writing the example.
 *`task_overrides` duplicates `max_new_tokens` at two levels* and the
 precedence is not visible in the file. Same remedy.
 
+### 3.3 Templated emission, and what it costs
+
+`yaml.safe_dump` cannot emit comments. The two clarifications §3.2 calls
+for — annotating `decode.seed: null` with the family seed it inherits,
+and marking which `max_new_tokens` wins — are therefore not reachable
+from a straight dump. Emission has to be templated, or dump-then-annotate.
+
+**The constraint that makes this non-trivial: the annotated output must
+still be valid YAML that the loader reads back unchanged.** A
+comment-bearing artifact that no longer round-trips would break AA.2's
+settled "the emitted YAML is runnable" decision — which is the whole
+premise of one schema rather than two. Comments are safe by construction
+(YAML ignores them), but hand-assembled or templated output is not
+automatically well-formed: key ordering, quoting of strings that look
+like numbers or booleans, multi-line strings in `system_prompt`, and
+unicode all become the emitter's problem rather than PyYAML's.
+
+**Consequence for the implementation estimate: emission is not a one-line
+`safe_dump`.** It is:
+
+1. build the ordered mapping (§3.1),
+2. dump it,
+3. inject comments at known keys,
+4. **re-parse the result and assert it equals the pre-dump mapping.**
+
+Step 4 is the guard, and it is cheap — one `safe_load` and one `==`. It
+should be an assertion in the emitter, not only a test, because the
+failure mode is silent: an artifact that looks right and no longer loads.
+
+A defensible alternative is to emit comment-free YAML and put the
+precedence explanation in the report prose beside it, which keeps
+emission to a single `safe_dump`. That trades a self-explanatory artifact
+for a simpler emitter. I would not take it — the artifact's value is that
+it travels alone — but it is the fallback if step 3 proves fiddly.
+
 ---
 
 ## 4. The provenance block
@@ -361,7 +407,7 @@ attaches. If §10.1 chooses the JSON-embedded option, this changes.
 
 ---
 
-## 7. Round-trip guarantee
+## 7. Round-trip guarantee, and the `steering` defect
 
 ### 7.1 The test
 
@@ -414,11 +460,67 @@ defect, not a correctness one, and no shipped experiment uses steering.
 `soft_prompts` is unaffected: a bare `ndarray` hits the numpy branch
 directly.
 
-**Recommendation, not applied here** (audit constraint): add a
-dataclass branch to `_values_equal`, recursing field-by-field, and a unit
-test for the equal-but-distinct steering case. Two lines and a test. It
-should land **before** the round-trip identity test, or that test will
-fail on a correct serializer and invite someone to "fix" the serializer.
+### 7.3 This is a general shape, not a `SteeringSpec` quirk
+
+`_values_equal` not recursing into dataclasses is a gap in the
+*comparator*, and `SteeringSpec` is merely the only sub-spec that
+currently holds an array. **Any future sub-spec with an array field
+inherits the bug on the day it is added**, silently, and its symptom will
+be a redundant model load that nobody attributes to a comparator.
+
+The classification comment at `_config.py:44` already anticipates future
+fields ("revisit when adding new fields") and applies a default-to-strict
+policy for the *reuse* question. It does not anticipate this: a field can
+be correctly classified as weight-affecting and still be compared wrongly.
+
+The `soft_prompts` case shows the boundary — a bare `ndarray` hits
+`_values_equal`'s numpy branch directly and works. The gap is specifically
+**numpy nested inside a dataclass**.
+
+### 7.4 Which remedy, and where it lands
+
+**Remedy: add a dataclass branch to `_values_equal`**, recursing
+field-by-field, rather than defining `__eq__` on each spec.
+
+Two reasons. First, one edit covers every present and future sub-spec,
+where per-spec `__eq__` is a list that must be maintained — and an
+unmaintained list is how this project has repeatedly acquired drift
+(L-035). Second, `_values_equal` is already the project's designated
+"compare things that may contain arrays" helper, with the numpy, dict and
+sequence branches sitting right there; a dataclass branch belongs beside
+them. Overriding `__eq__` on frozen dataclasses would also change
+hashing semantics, which is a larger blast radius than the problem
+warrants.
+
+Cost: roughly
+
+```python
+if is_dataclass(a) and is_dataclass(b):
+    if type(a) is not type(b):
+        return False
+    return all(_values_equal(getattr(a, f.name), getattr(b, f.name))
+               for f in fields(a))
+```
+
+placed before the trailing `try: return a == b`, plus a unit test for the
+equal-but-distinct steering case and one asserting
+`is_runtime_only_modification_of` is `True` for it.
+
+**Where it lands: its own small PR, before the implementation PR.**
+
+It is a pre-existing defect in `_config.py` with a consequence
+(`is_runtime_only_modification_of`) entirely outside run-config
+serialization. Bundling it into the implementation PR would put a fix for
+engine-reuse behaviour inside a commit whose subject is a YAML schema,
+where a reviewer looking at schema design is least likely to scrutinise
+it. It also has its own regression test, which wants its own mutation
+check (L-040), and that is cleaner to do in isolation.
+
+The ordering constraint is the load-bearing part either way: **it must
+land before the round-trip identity test.** In the other order, the
+identity test fails on a correct serializer, and the natural reading of
+that failure is "the serializer loses `steering`" — inviting a fix to the
+wrong component.
 
 ---
 
@@ -546,50 +648,80 @@ reasons unrelated to either format.
 
 **What each governs, and what a consumer does on disagreement:**
 
-| number | governs | on mismatch |
+| number | governs | changes when |
 |---|---|---|
-| `lmdiff_schema` | run-config grammar | **refuse** if higher than the loader knows — an unknown key may be load-bearing |
-| `geo_schema` | GeoResult field shape | existing v1–v6 upgrade paths, unchanged |
-| `provenance.lmdiff` | numeric semantics | **warn and proceed** (AA.3) — re-running old configs on new versions is the point |
+| `lmdiff_schema` | run-config grammar — which keys exist and what they mean | a key is added, removed, or re-interpreted |
+| `geo_schema` | GeoResult field shape | a result field is added or its meaning changes (6 times so far) |
+| `provenance.lmdiff` | numeric semantics | every release |
 
-The distinction between the first and third is the useful part:
-`lmdiff_schema` mismatch means *I cannot read this file*;
-`provenance.lmdiff` mismatch means *I can read it and the numbers may
-differ.* One is a parse error, the other is a caveat.
+**What a consumer does when they disagree.** `lmdiff_schema` is the only
+one that is asymmetric, and that asymmetry is the point:
 
-### 10.6 [QUESTION] `min_valid_fraction` is in the settled example but not on the public API
+| condition | behaviour | why |
+|---|---|---|
+| `lmdiff_schema` **>** loader's | **refuse**, naming the file's version and the loader's | an unknown key may be load-bearing. Silently ignoring it can change results, which is the failure AA.3 exists to prevent |
+| `lmdiff_schema` **<** loader's | **accept and upgrade**, warning once if any default had to be supplied | old configs continuing to run is the artifact's entire value. A newer loader knows what the older grammar meant |
+| `lmdiff_schema` **==** loader's | proceed silently | — |
+| `geo_schema` mismatch | existing v1–v6 upgrade paths, unchanged | out of scope for this commit; the run config does not read the GeoResult |
+| `provenance.lmdiff` differs | **warn and proceed** (AA.3) | re-running an old config on a new version is legitimate and common; doing it silently is not |
 
-AA.2's example lists `min_valid_fraction: 0.5` as executable
-configuration, and AA.3 requires every parameter affecting a computed
-value to be written explicitly. `min_valid_fraction` unambiguously
-affects computed values — it is what turns a domain's share to `None`.
+The distinction between the first row and the last is what someone will
+need: **`lmdiff_schema` too high means *I cannot read this file*;
+`provenance.lmdiff` differing means *I can read it and the numbers may
+differ.*** One is a parse error, the other is a caveat. Conflating them
+either blocks a legitimate re-run or silently accepts a file it does not
+understand.
 
-But it is not a parameter of `family()` or `compare()`. It stops at
-`run_family_pipeline` (v0.4.1 commit 1), and PHASE_PLAN Z.5 defers
-exposing it publicly to v0.5.0+ with the note *"no user has asked"*.
+Note that `provenance` is dropped on load (AA.2), so the version warning
+must be emitted *while* parsing, before the block is discarded — a small
+ordering constraint on the loader that is easy to get wrong.
 
-So the schema would emit a key that no public entry point can consume,
-and a loader would have to either drop it — breaking AA.3's guarantee for
-the one parameter whose default most recently changed meaning — or reach
-past the public API into `_pipeline`.
+### 10.6 `min_valid_fraction` — resolved: plumb it onto the public API
 
-Three options, none of which I should pick unilaterally:
+**The collision.** AA.2's settled example lists `min_valid_fraction: 0.5`
+as executable configuration, and AA.3 requires every parameter affecting
+a computed value to be written explicitly. It unambiguously affects
+computed values — it is what turns a domain's share to `None`. But it is
+not a parameter of `family()` or `compare()`; it stops at
+`run_family_pipeline` (v0.4.1 commit 1), and PHASE_PLAN Z.5 deferred
+exposing it publicly to v0.5.0+ on the grounds that no user had asked.
 
-1. **Plumb `min_valid_fraction` onto `family()`/`compare()` in v0.4.3.**
-   Small (one kwarg, two call sites, passthrough), makes the schema
-   honest, and pulls a v0.5.0 item forward. Scope expansion.
-2. **Emit it under `provenance`** rather than as executable config.
-   Honest about the current API, but it is not provenance — it is an
-   input, and a loader ignoring it silently changes results if the
-   default moves. This is precisely the failure AA.3 exists to prevent.
-3. **Omit it entirely** until v0.5.0 exposes it. Simplest, and leaves the
-   artifact under-specified for exactly the parameter with the most
-   recent history of changing meaning.
+**Resolution: add `min_valid_fraction` to `family()` and `compare()` in
+v0.4.3.**
 
-I lean to (1) — it is the only option that does not knowingly weaken a
-settled guarantee, and the cost is genuinely one kwarg. But it expands
-scope, and the instruction is to stop rather than design around a
-collision between settled decisions.
+AA.3 exists because omission fails to pin. `min_valid_fraction` is the
+parameter whose default most recently changed meaning in this project —
+from an implicit `1/n` to an explicit `0.5` — and that change is what
+decides whether long-context reads 27.6 % or `—`. A config artifact that
+cannot pin it fails at exactly the case it was built for.
+
+Of the three options considered, it is the only one that does not
+knowingly weaken a settled guarantee. Emitting it under `provenance`
+would misfile an input as a runtime fact and let a loader silently ignore
+it — precisely the failure AA.3 prevents. Omitting it leaves the artifact
+under-specified for the one parameter with a documented history of
+changing meaning.
+
+**Not really scope expansion.** Z.5's deferral rested on "no user has
+asked". The schema is now asking. The cost is one kwarg on two functions
+plus a passthrough to `run_family_pipeline`, which already accepts it.
+
+**Precedence follows the seed pattern** (L-031): explicit call argument >
+default. There is no per-variant tier here — unlike `DecodeSpec.seed`,
+`min_valid_fraction` is a property of the run, not of a variant — so the
+chain is two levels, not three:
+
+```
+family(min_valid_fraction=0.6)   ->  0.6
+family()                         ->  DEFAULT_MIN_VALID_FRACTION (0.5)
+```
+
+Emission always writes the effective value, defaulted or not, per AA.3.
+
+**Plan bookkeeping.** PHASE_PLAN Z.5's row *"`min_valid_fraction` on the
+public API → v0.5.0+"* is superseded by this commit. Its stated reason no
+longer holds, and the row should say so rather than being deleted — the
+deferral was correct when made.
 
 ---
 
