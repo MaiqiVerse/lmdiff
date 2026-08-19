@@ -16,7 +16,7 @@ from lmdiff.tasks.capability_radar import (
 from lmdiff.tasks.evaluators import ContainsAnswer, ExactMatch
 from lmdiff.report.terminal import print_radar
 
-V01_PATH = Path(__file__).parent.parent / "lmdiff" / "probes" / "v01.json"
+V01_PATH = Path(__file__).resolve().parents[2] / "lmdiff" / "probes" / "v01.json"
 
 
 def _make_probes(domains: dict[str, int]) -> ProbeSet:

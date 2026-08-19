@@ -6,6 +6,8 @@ The "absolute" view that complements the row-normalized z-score in
 """
 from __future__ import annotations
 
+from lmdiff._validity import PDN_FORMULA, PDN_UNITS
+
 from pathlib import Path
 
 from lmdiff.experiments.family import DEFAULT_DOMAIN_ORDER, TASK_TO_DOMAIN
@@ -89,7 +91,7 @@ def plot_normalized_magnitude_heatmap(
                  fontsize=11, pad=10)
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.04)
-    cbar.set_label("‖δ‖ / √(n · ⟨tok⟩)", fontsize=9)
+    cbar.set_label(f"{PDN_FORMULA}  [{PDN_UNITS}]", fontsize=9)
     cbar.ax.tick_params(labelsize=8)
 
     threshold = vmax * 0.55

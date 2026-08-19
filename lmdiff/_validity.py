@@ -254,9 +254,112 @@ def compute_domain_status(
     return "partial"
 
 
+# ── Shared presentation vocabulary ───────────────────────────────────
+#
+# One definition per user-visible description of the pdn quantity, so a
+# formula change has one edit point instead of six. Through v0.4.1 the
+# string ``‖δ‖/√tok`` and the phrase "per-√token normalized" were
+# duplicated across markdown, html, terminal, change_size,
+# normalized_magnitude and normalization_effect. Q9.10 replaced Formula B
+# (``sqrt(Σδ²/ΣT)``, units nats/token^1.5) with Formula A
+# (``sqrt(mean(δ²))``, units nats/token) and every one of those six
+# literals kept describing the superseded formula — the column header
+# named a quantity the column no longer contained.
+#
+# Same reasoning as ``viz.drift_share._DRIFT_BIN_EDGES``: if the formula
+# moves, these move with it, and nothing restates them locally.
+
+#: Compact column header for magnitudes_per_domain_normalized.
+PDN_AXIS_LABEL = "‖δ‖/tok"
+
+#: Units, for axis labels and colorbars.
+PDN_UNITS = "nats/token"
+
+#: One-line description for table captions and figure subtitles.
+PDN_DESCRIPTION = "per-token normalized — comparable across runs"
+
+#: The formula itself, for methodology blocks and colorbar labels.
+PDN_FORMULA = "√(mean(δ²))"
+
+
+# ── Consumer-side filtering ──────────────────────────────────────────
+
+#: Statuses whose (variant, domain) cells carry a real measurement and
+#: may be displayed, aggregated, or ranked.
+MEASURED_STATUSES: frozenset[str] = frozenset({"full", "partial"})
+
+
+def is_measured(
+    domain_status: Optional[dict],
+    variant: str,
+    domain: str,
+) -> bool:
+    """True iff this (variant, domain) cell carries a real measurement.
+
+    ``domain_status`` may be ``None`` or empty — results predating the
+    v0.4.1 validity framework (v0.2.x ``ChangeGeometry``, v1–v5 loads)
+    have no status at all, and every cell in them is measured. An
+    unknown (variant, domain) key likewise defaults to measured, so a
+    consumer working from a domain list that outruns the status map
+    degrades to pre-v0.4.1 behaviour rather than silently blanking.
+    """
+    if not domain_status:
+        return True
+    return domain_status.get(variant, {}).get(domain, "full") in MEASURED_STATUSES
+
+
+def filter_measured_cells(
+    domain_status: Optional[dict],
+    per_domain: dict,
+    variant: Optional[str] = None,
+) -> dict:
+    """Drop cells the validity framework excluded from a per-domain map.
+
+    Accepts either shape:
+
+    - ``{domain: value}`` — pass ``variant`` to say whose row it is.
+    - ``{variant: {domain: value}}`` — pass ``variant=None`` and every
+      row is filtered against its own status.
+
+    Why this exists as one function. ``domain_heatmap()`` and
+    ``magnitudes_per_task_normalized()`` are deliberately
+    validity-unaware: they are raw accessors and other callers want them
+    that way. Every *consumer* that turns them into a user-facing claim
+    has to apply the same predicate, and by v0.4.2 that was six copies
+    across ``_findings.py``, three report renderers, and three viz
+    modules. Six copies of a predicate is six chances for one to drift —
+    which is exactly how ``magnitudes_per_task_normalized`` kept
+    computing the superseded formula after the field was corrected
+    (L-035). One predicate, one edit point.
+
+    Cells are *removed* from the returned dict rather than set to
+    ``None``. Consumers that aggregate (mean, std, max, set membership)
+    then exclude them by construction instead of needing their own
+    NaN-skip — the distinction that made the specialization z-score
+    wrong rather than merely mis-displayed.
+    """
+    if variant is not None:
+        return {
+            d: v for d, v in per_domain.items()
+            if is_measured(domain_status, variant, d)
+        }
+    return {
+        v: {d: val for d, val in row.items()
+            if is_measured(domain_status, v, d)}
+        for v, row in per_domain.items()
+    }
+
+
 __all__ = [
     "DEFAULT_MIN_VALID_FRACTION",
+    "PDN_AXIS_LABEL",
+    "PDN_DESCRIPTION",
+    "PDN_FORMULA",
+    "PDN_UNITS",
+    "MEASURED_STATUSES",
     "EngineValidity",
     "ProbeValidity",
     "compute_domain_status",
+    "filter_measured_cells",
+    "is_measured",
 ]

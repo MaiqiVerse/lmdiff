@@ -22,6 +22,8 @@ point:
 """
 from __future__ import annotations
 
+from lmdiff._validity import PDN_AXIS_LABEL, PDN_DESCRIPTION
+
 import math
 import os
 from datetime import datetime, timezone
@@ -69,12 +71,22 @@ def _fmt_pct(share: float) -> str:
 
 
 def _domain_drift(result: "GeoResult") -> dict[str, dict[str, float]]:
+    """Per-variant per-domain raw drift, validity-filtered.
+
+    ``domain_heatmap()`` is deliberately validity-unaware. Rendering it
+    unfiltered put a number in the drift table for the same cell the
+    share table two rows above reported as ``n/a`` — one report
+    contradicting itself. Filtered through the shared predicate so
+    "measured" means the same thing in every consumer.
+    """
     if not result.probe_domains:
         return {}
     try:
-        return result.domain_heatmap()
+        heat = result.domain_heatmap()
     except (ValueError, AttributeError):
         return {}
+    from lmdiff._validity import filter_measured_cells
+    return filter_measured_cells(getattr(result, "domain_status", None), heat)
 
 
 def _per_variant_total_drift(drift: dict[str, dict[str, float]]) -> dict[str, float]:
@@ -197,10 +209,10 @@ def _build_drift_table(
     lines = ["## How big is each move", ""]
     lines.append(
         "_per-domain drift magnitude (raw ‖δ‖); rightmost column is "
-        "per-√token normalized — comparable across runs_"
+        f"{PDN_DESCRIPTION}_"
     )
     lines.append("")
-    header = "| variant | " + " | ".join(domains) + " | ‖δ‖/√tok |"
+    header = "| variant | " + " | ".join(domains) + f" | {PDN_AXIS_LABEL} |"
     sep = "|---|" + "---|" * (len(domains) + 1)
     lines.append(header)
     lines.append(sep)
@@ -362,7 +374,7 @@ def render(
     domains = _ordered_domains(result)
     drift = _domain_drift(result)
     # The previous "total" column was an RMS of per-domain raw ‖δ‖ — not
-    # comparable across runs. Use ``magnitudes_normalized`` (per-√token)
+    # comparable across runs. Use ``magnitudes_normalized`` (per-token)
     # which matches the right pane of ``change_size_bars.png`` and the
     # v6 §14.4 spec for cross-run-comparable magnitude.
     norm_totals = dict(result.magnitudes_normalized or {})

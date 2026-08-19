@@ -5,6 +5,8 @@ Default output is 7 figures named ``01_…`` through ``07_…``. Pass
 """
 from __future__ import annotations
 
+import warnings
+
 from pathlib import Path
 from typing import Callable
 
@@ -28,6 +30,31 @@ FIGURE_REGISTRY: dict[str, tuple[str, Callable]] = {
     "pca_raw":              ("05_pca_scatter_raw.png",        plot_pca_scatter_raw),
     "pca_normalized":       ("06_pca_scatter_normalized.png", plot_pca_scatter_normalized),
     "normalization_effect": ("07_normalization_effect.png",   plot_normalization_effect),
+}
+
+
+#: Figures scheduled for removal, mapped to their deprecation message.
+#:
+#: ``normalization_effect`` plots exactly the two quantities
+#: ``viz/change_size.py`` plots — raw ``‖δ‖`` and ``magnitudes_normalized``
+#: per variant, both annotated with the longest domain's share of raw
+#: ``‖δ‖²`` — with vertical bars instead of horizontal and without the
+#: ranking or domain↔dataset panels. It has been the poorer of two
+#: near-duplicates since before v0.4.1, which the v0.4.2 surface sweep
+#: surfaced; the v0.4.1 validity floor additionally left its
+#: "long probes dominate" framing without a subject on short-context
+#: bases. Removal rides along with the rest of the paper tier in v0.5.0
+#: rather than as a one-off, so it gets the same one-minor-cycle notice
+#: every other removal gets.
+_DEPRECATED_FIGURES: dict[str, str] = {
+    "normalization_effect": (
+        "viz figure 'normalization_effect' is deprecated since v0.4.2 and "
+        "will be removed in v0.5.0 with the rest of the paper tier. It "
+        "duplicates the applied-tier 'change_size' figure "
+        "(lmdiff.viz.change_size.render_change_size), which plots the same "
+        "raw-vs-normalized comparison with a ranking panel and a "
+        "validity-aware length-bias caveat. Use that instead."
+    ),
 }
 
 
@@ -76,6 +103,8 @@ def plot_family_figures(
     rendered: dict[str, Path] = {}
     import sys
     for key in keys:
+        if key in _DEPRECATED_FIGURES:
+            warnings.warn(_DEPRECATED_FIGURES[key], DeprecationWarning, stacklevel=2)
         filename, fn = FIGURE_REGISTRY[key]
         path = out_dir / filename
         kwargs: dict = {"dpi": dpi}

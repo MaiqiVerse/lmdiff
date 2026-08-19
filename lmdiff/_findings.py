@@ -174,8 +174,9 @@ def _per_domain_drift(result: "GeoResult") -> dict[str, dict[str, float]]:
     base context window.
 
     Cells whose ``domain_status`` is ``variant_only`` / ``out_of_range``
-    are dropped. Missing status defaults to ``full`` so legacy results
-    (v0.2.x ChangeGeometry, v1–v5 loads) are unaffected.
+    are dropped via the shared :func:`lmdiff._validity.filter_measured_cells`
+    predicate — the same one the report and viz layers use, so the
+    definition of "measured" cannot drift between consumers.
     """
     if not result.probe_domains:
         return {}
@@ -184,17 +185,11 @@ def _per_domain_drift(result: "GeoResult") -> dict[str, dict[str, float]]:
     except (ValueError, AttributeError):
         return {}
 
-    status = getattr(result, "domain_status", None) or {}
-    if not status:
-        return heat
-    return {
-        variant: {
-            domain: value
-            for domain, value in per_dom.items()
-            if status.get(variant, {}).get(domain, "full") in ("full", "partial")
-        }
-        for variant, per_dom in heat.items()
-    }
+    from lmdiff._validity import filter_measured_cells
+
+    return filter_measured_cells(
+        getattr(result, "domain_status", None), heat,
+    )
 
 
 def _flatten_drift_cells(

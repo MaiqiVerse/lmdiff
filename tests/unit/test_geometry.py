@@ -18,7 +18,7 @@ from lmdiff.config import Config
 from lmdiff.geometry import ChangeGeometry, GeoResult
 from lmdiff.probes.loader import Probe, ProbeSet
 
-V01_PATH = Path(__file__).parent.parent / "lmdiff" / "probes" / "v01.json"
+V01_PATH = Path(__file__).resolve().parents[2] / "lmdiff" / "probes" / "v01.json"
 
 
 # ── Mock engine factory ─────────────────────────────────────────────────
@@ -1509,22 +1509,38 @@ class TestAvgTokensPerProbe:
 
     def test_legacy_mock_yields_empty_avg_tokens(self, monkeypatch):
         # _make_mock_engine doesn't configure tokenizer.encode → MagicMock
-        # default returns a MagicMock from .encode(); len(MagicMock()) is 0.
-        # So avg_tokens_per_probe is all-zero and magnitudes_normalized is
-        # skipped (denom=0). Existing tests rely on this graceful degradation.
+        # default returns a MagicMock from .encode(); len(MagicMock()) is 0,
+        # so avg_tokens_per_probe is all-zero.
+        #
+        # v0.4.2: this no longer suppresses magnitudes_normalized. Through
+        # v0.4.1 the single-domain fallback divided by
+        # sqrt(n · mean_tokens), so all-zero tokens gave denom=0 and the
+        # field was skipped — graceful degradation that was a side effect
+        # of the formula, not a decision. Formula A is ‖δ‖/sqrt(n) and
+        # needs no token data at all, so the value is computable and is
+        # now computed. Results with NO avg_tokens_per_probe (v1/v2 JSON)
+        # still yield {} via the outer guard.
         result = _build_two_variant_geo(
             monkeypatch,
             base_of_a=[3.0, 4.0, 5.0], self_a=[1.0, 2.0, 3.0],
             base_of_b=[2.0, 5.0, 1.0], self_b=[1.0, 3.0, 4.0],
         )
         assert result.avg_tokens_per_probe == (0.0, 0.0, 0.0)
-        assert result.magnitudes_normalized == {}
+        assert set(result.magnitudes_normalized) == {"A", "B"}
+        for v in ("A", "B"):
+            assert result.magnitudes_normalized[v] == pytest.approx(
+                result.magnitudes[v] / math.sqrt(3), abs=1e-9,
+            )
 
 
 class TestMagnitudesNormalized:
     def test_formula_correctness(self, monkeypatch):
-        # 3 probes × 5 tokens each → mean_tokens = 5, denom = sqrt(3 * 5).
-        # δ_A = [2, 2, 2] → ‖δ_A‖ = sqrt(12); normalized = sqrt(12)/sqrt(15).
+        # v0.4.2 / Formula A: with one domain the overall normalized
+        # magnitude IS that domain's pdn = sqrt(mean(δ²)) = ‖δ‖/sqrt(n),
+        # so token count drops out. 3 probes, δ_A = [2, 2, 2] →
+        # ‖δ_A‖ = sqrt(12); normalized = sqrt(12)/sqrt(3) = 2.
+        # Through v0.4.1 this was sqrt(12)/sqrt(3 * 5) — the Formula B
+        # shape, on a different scale from every multi-domain run.
         outputs_a = ["a0", "a1", "a2"]
         engine_a = _mock_engine_with_real_tokenizer(
             "A", outputs_a, self_ce=[1.0, 2.0, 3.0], tokens_per_probe=5,
@@ -1547,13 +1563,15 @@ class TestMagnitudesNormalized:
             prompts=["p0", "p1", "p2"],
         )
         result = cg.analyze()
-        expected = math.sqrt(12) / math.sqrt(3 * 5)
+        expected = math.sqrt(12) / math.sqrt(3)
         assert result.magnitudes_normalized["A"] == pytest.approx(expected, abs=1e-9)
         assert result.magnitudes["A"] == pytest.approx(math.sqrt(12), abs=1e-9)
 
     def test_uniform_lengths_proportional_to_raw(self, monkeypatch):
-        # Uniform L → normalized = raw / sqrt(n*L), uniform scale; ratio of
-        # normalized magnitudes equals ratio of raw magnitudes.
+        # Formula A: normalized = raw / sqrt(n), independent of L. The
+        # property under test is unchanged — the ratio of normalized
+        # magnitudes equals the ratio of raw magnitudes — but the scale
+        # no longer depends on prompt length.
         outputs_a = ["a0", "a1", "a2"]
         outputs_b = ["b0", "b1", "b2"]
         L = 7
@@ -1588,7 +1606,7 @@ class TestMagnitudesNormalized:
         )
         result = cg.analyze()
 
-        denom = math.sqrt(3 * L)
+        denom = math.sqrt(3)  # Formula A: n only, not n·L
         for v in ("A", "B"):
             assert result.magnitudes_normalized[v] == pytest.approx(
                 result.magnitudes[v] / denom, abs=1e-9,
@@ -1922,3 +1940,135 @@ class TestMagnitudesSpecializationZscore:
         )
         with pytest.raises(ValueError):
             result.magnitudes_specialization_zscore()
+
+
+# ── v0.4.2: validity-aware aggregation (not just display) ────────────
+
+
+class TestValidityAwareAggregation:
+    """Excluded (variant, domain) cells must be absent from derived
+    *statistics*, not merely skipped when drawing them.
+
+    The distinction is the whole point. On the v0.4.1 7-variant
+    calibration the specialization z-score was computed over all five
+    domains including the excluded long-context one, so an unmeasurable
+    domain entered every row's mean and std and shifted every *other*
+    z-score in that row. ``temp_1.5`` read +1.53 on long-context — its
+    strongest apparent specialization — on a domain the same result
+    reports as ``None`` in ``share_per_domain``.
+    """
+
+    def _geo(self, domain_status=None) -> GeoResult:
+        g = GeoResult(
+            base_name="base",
+            variant_names=["A", "B"],
+            n_probes=6,
+            magnitudes={"A": 5.0, "B": 10.0},
+            cosine_matrix={"A": {"A": 1.0, "B": 0.0}, "B": {"A": 0.0, "B": 1.0}},
+            change_vectors={
+                "A": [3.0, 4.0, 1.0, 1.0, 9.0, 9.0],
+                "B": [1.0, 1.0, 3.0, 4.0, 9.0, 9.0],
+            },
+            per_probe={"A": {}, "B": {}},
+            metadata={},
+            probe_domains=("math", "math", "code", "code",
+                           "long-context", "long-context"),
+            avg_tokens_per_probe=(10.0,) * 6,
+        )
+        if domain_status is not None:
+            g.domain_status = domain_status
+        return g
+
+    _EXCLUDED = {
+        "A": {"math": "full", "code": "full", "long-context": "out_of_range"},
+        "B": {"math": "full", "code": "full", "long-context": "variant_only"},
+    }
+
+    # ── z-score ──
+
+    def test_excluded_domain_is_nan_in_zscore_output(self):
+        zs = self._geo(self._EXCLUDED).magnitudes_specialization_zscore()
+        for v in ("A", "B"):
+            assert math.isnan(zs[v]["long-context"])
+
+    def test_output_keys_are_unchanged(self):
+        """Excluded cells stay in the mapping as NaN so consumers keyed
+        on (variant, domain) still line up."""
+        plain = self._geo().magnitudes_specialization_zscore()
+        filtered = self._geo(self._EXCLUDED).magnitudes_specialization_zscore()
+        assert set(plain) == set(filtered)
+        for v in plain:
+            assert set(plain[v]) == set(filtered[v])
+
+    def test_every_other_cell_moves(self):
+        """If the excluded domain were merely hidden at render time, the
+        surviving cells would be untouched. They must all shift, because
+        the mean and std they are measured against changed."""
+        plain = self._geo().magnitudes_specialization_zscore()
+        filtered = self._geo(self._EXCLUDED).magnitudes_specialization_zscore()
+        for v in ("A", "B"):
+            for d in ("math", "code"):
+                assert plain[v][d] != pytest.approx(filtered[v][d]), (
+                    f"{v}/{d} unchanged — excluded domain still in the statistic"
+                )
+
+    def test_surviving_cells_are_a_proper_zscore_over_measured_only(self):
+        """Two measured domains, z-scored against each other, give
+        exactly +1 and -1 (population std)."""
+        zs = self._geo(self._EXCLUDED).magnitudes_specialization_zscore()
+        for v in ("A", "B"):
+            vals = sorted(
+                zs[v][d] for d in ("math", "code")
+            )
+            assert vals[0] == pytest.approx(-1.0)
+            assert vals[1] == pytest.approx(+1.0)
+
+    def test_no_domain_status_is_unchanged(self):
+        """Legacy results (v0.2.x, v1-v5 loads) carry no status and must
+        behave exactly as before."""
+        a = self._geo().magnitudes_specialization_zscore()
+        b = self._geo({}).magnitudes_specialization_zscore()
+        assert a == b
+
+    # ── complementarity ──
+
+    def test_complementarity_excludes_unmeasured_from_affected_sets(self):
+        """This aggregates too: per-domain magnitudes become set
+        membership, so an excluded domain clearing the threshold would
+        change overlap / unique in the returned value."""
+        plain = self._geo().complementarity("A", "B", threshold=0.1)
+        filtered = self._geo(self._EXCLUDED).complementarity(
+            "A", "B", threshold=0.1,
+        )
+        all_plain = set(plain.overlap_domains) | set(plain.unique_v1_domains) \
+            | set(plain.unique_v2_domains)
+        all_filtered = set(filtered.overlap_domains) \
+            | set(filtered.unique_v1_domains) | set(filtered.unique_v2_domains)
+        assert "long-context" in all_plain
+        assert "long-context" not in all_filtered
+
+    # ── magnitudes_per_task_normalized ──
+
+    def test_per_task_normalized_matches_the_field_on_excluded_cells(self):
+        """The method and the field are documented as the same formula,
+        so they must agree about which cells are real. Through v0.4.1 the
+        method ignored domain_status and its docstring said to "prefer
+        the field" — viz/normalized_magnitude.py called the method anyway
+        and drew a populated column for an excluded domain."""
+        vals = self._geo(self._EXCLUDED).magnitudes_per_task_normalized()
+        for v in ("A", "B"):
+            assert math.isnan(vals[v]["long-context"])
+            for d in ("math", "code"):
+                assert not math.isnan(vals[v][d])
+
+    def test_per_task_normalized_without_status_unchanged(self):
+        a = self._geo().magnitudes_per_task_normalized()
+        b = self._geo({}).magnitudes_per_task_normalized()
+        assert a == b
+
+    def test_complementarity_without_status_unchanged(self):
+        a = self._geo().complementarity("A", "B", threshold=0.1)
+        b = self._geo({}).complementarity("A", "B", threshold=0.1)
+        assert a.overlap_domains == b.overlap_domains
+        assert a.unique_v1_domains == b.unique_v1_domains
+        assert a.unique_v2_domains == b.unique_v2_domains

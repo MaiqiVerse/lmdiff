@@ -23,6 +23,8 @@ and markdown renderers (v6 §12.6).
 """
 from __future__ import annotations
 
+from lmdiff._validity import PDN_AXIS_LABEL, PDN_DESCRIPTION
+
 import base64
 import io
 import math
@@ -285,12 +287,22 @@ def _fmt_pct(share: float) -> str:
 
 
 def _domain_drift(result: "GeoResult") -> dict[str, dict[str, float]]:
+    """Per-variant per-domain raw drift, validity-filtered.
+
+    ``domain_heatmap()`` is deliberately validity-unaware. Rendering it
+    unfiltered put a number in the drift table for the same cell the
+    share table two rows above reported as ``n/a`` — one report
+    contradicting itself. Filtered through the shared predicate so
+    "measured" means the same thing in every consumer.
+    """
     if not result.probe_domains:
         return {}
     try:
-        return result.domain_heatmap()
+        heat = result.domain_heatmap()
     except (ValueError, AttributeError):
         return {}
+    from lmdiff._validity import filter_measured_cells
+    return filter_measured_cells(getattr(result, "domain_status", None), heat)
 
 
 def _per_variant_total_drift(drift: dict[str, dict[str, float]]) -> dict[str, float]:
@@ -362,8 +374,16 @@ def _build_share_table(
     for v in variants:
         row_share = share.get(v, {})
         cells = []
+        # v0.4.2: skip None entries (out_of_range / variant_only) when
+        # finding the peak — ``row_share.get(d, 0.0)`` returns None when
+        # the value *is* None (the default only covers missing keys), so
+        # ``max`` compared None against float and raised. b821b7e fixed
+        # this in markdown and terminal; html has its own copy and was
+        # missed, crashing to_html() for every run with an excluded
+        # domain — the v0.4.1 headline scenario.
+        valid_share = {d: s for d, s in row_share.items() if s is not None}
         peak_dom = (
-            max(row_share, key=lambda d: row_share.get(d, 0.0)) if row_share else None
+            max(valid_share, key=lambda d: valid_share[d]) if valid_share else None
         )
         for d in domains:
             val = row_share.get(d, 0.0)
@@ -411,9 +431,9 @@ def _build_drift_table(
         '\n    <h3>How big is each move</h3>'
         '\n    <table>'
         '\n      <caption>per-domain drift magnitude (raw ‖δ‖); rightmost'
-        ' column is per-√token normalized (comparable across runs)</caption>'
+        f' column is {PDN_DESCRIPTION}</caption>'
         f'\n      <thead><tr><th>variant</th>{head_cells}'
-        '<th>‖δ‖/√tok</th></tr></thead>'
+        f'<th>{escape(PDN_AXIS_LABEL)}</th></tr></thead>'
         f'\n      <tbody>{"".join(rows)}</tbody>'
         '\n    </table>'
     )
@@ -645,7 +665,7 @@ def render(
     domains = _ordered_domains(result)
     drift = _domain_drift(result)
     # See markdown.render() — the per-variant total switched from RMS-of-
-    # per-domain raw (not comparable across runs) to per-√token normalized.
+    # per-domain raw (not comparable across runs) to per-token normalized.
     norm_totals = dict(result.magnitudes_normalized or {})
     share = tables_local.get("share", {})
     cosine = tables_local.get("cosine", {})

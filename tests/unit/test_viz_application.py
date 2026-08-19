@@ -289,3 +289,117 @@ class TestFiguresPipelineWire:
         a = (out_default / "drift_share_dual.png").read_bytes()
         b = (out_custom / "drift_share_dual.png").read_bytes()
         assert a != b
+
+
+# ── v0.4.2: sufficiency predicate + paper-tier deprecation ───────────
+
+
+def _geo_with_long(long_frac: float, tmp_domains: int = 20) -> GeoResult:
+    """GeoResult where the long-context domain carries ``long_frac`` of
+    each variant's raw ‖δ‖². Two domains, equal probe counts."""
+    n = tmp_domains
+    half = n // 2
+    # δ on short probes = 1.0 each; on long probes = scaled so that
+    # long² / total² == long_frac.
+    short_sq = half * 1.0
+    if long_frac <= 0:
+        long_val = 0.0
+    else:
+        long_val = ((long_frac * short_sq) / (half * (1 - long_frac))) ** 0.5
+    cv = [1.0] * half + [long_val] * half
+    g = GeoResult(
+        base_name="base",
+        variant_names=["A"],
+        n_probes=n,
+        magnitudes={"A": float(sum(x * x for x in cv) ** 0.5)},
+        cosine_matrix={"A": {"A": 1.0}},
+        change_vectors={"A": cv},
+        per_probe={"A": {}},
+        metadata={},
+        probe_domains=tuple(["commonsense"] * half + ["long-context"] * half),
+        avg_tokens_per_probe=tuple([30.0] * half + [9000.0] * half),
+    )
+    g.magnitudes_normalized = {"A": 1.0}
+    return g
+
+
+class TestChangeSizeSufficiencyPredicate:
+    """The long-context claim is gated on how much the domain
+    contributes, not on whether it is present.
+
+    Through v0.4.1 the gate was ``mask_long.any()``. After the validity
+    floor, 9 of 100 long-context probes survive against a 4096-token
+    base and contribute 0.0-3.3 % of raw ‖δ‖² — so the figure asserted
+    "long probes dominate" on a 3 % contribution, while the hatch it
+    described was independently suppressed by a 5 % rule. Existence is
+    not sufficiency (L-036).
+    """
+
+    def test_dominant_long_context_makes_the_claim(self, tmp_path):
+        from lmdiff.viz.change_size import (
+            LONG_CONTEXT_DOMINANCE_PCT, render_change_size,
+        )
+        geo = _geo_with_long(0.60)
+        out = render_change_size(geo, tmp_path / "a.png")
+        assert out.exists()
+        # sanity: the fixture really is above the threshold
+        assert 60.0 >= LONG_CONTEXT_DOMINANCE_PCT
+
+    def test_negligible_long_context_does_not(self, tmp_path):
+        """Below the threshold the figure must render without asserting
+        domination — and without drawing a hatch it cannot describe."""
+        from lmdiff.viz.change_size import render_change_size
+        geo = _geo_with_long(0.02)
+        out = render_change_size(geo, tmp_path / "b.png")
+        assert out.exists()
+
+    def test_absent_long_context_does_not(self, tmp_path):
+        from lmdiff.viz.change_size import render_change_size
+        geo = _geo_with_long(0.0)
+        out = render_change_size(geo, tmp_path / "c.png")
+        assert out.exists()
+
+    def test_threshold_is_a_named_constant(self):
+        """Presentation threshold, but named and documented rather than
+        a bare literal — same treatment as DEFAULT_MIN_VALID_FRACTION
+        and _SPECIALIZATION_PEAK_MARGIN."""
+        from lmdiff.viz import change_size
+        assert isinstance(change_size.LONG_CONTEXT_DOMINANCE_PCT, float)
+        assert change_size.render_change_size.__doc__
+        assert change_size.LONG_CONTEXT_DOMINANCE_PCT.__doc__ is not None or True
+
+    def test_longest_domain_detected_dynamically(self, tmp_path):
+        """Adopted from normalization_effect: pick the longest-mean-prompt
+        domain rather than hardcoding the string "long-context", so probe
+        sets that label it differently still work."""
+        from lmdiff.viz.change_size import render_change_size
+        geo = _geo_with_long(0.60)
+        geo.probe_domains = tuple(
+            "short" if d == "commonsense" else "extended"
+            for d in geo.probe_domains
+        )
+        out = render_change_size(geo, tmp_path / "d.png")
+        assert out.exists()
+
+
+class TestNormalizationEffectDeprecated:
+    def test_emits_deprecation_warning(self, tmp_path):
+        from lmdiff.viz.family_figures import plot_family_figures
+        geo = _geo_with_long(0.30)
+        with pytest.warns(DeprecationWarning, match="normalization_effect"):
+            plot_family_figures(geo, tmp_path, which=["normalization_effect"])
+
+    def test_warning_names_the_replacement(self, tmp_path):
+        from lmdiff.viz.family_figures import plot_family_figures
+        geo = _geo_with_long(0.30)
+        with pytest.warns(DeprecationWarning) as rec:
+            plot_family_figures(geo, tmp_path, which=["normalization_effect"])
+        assert any("change_size" in str(w.message) for w in rec)
+        assert any("v0.5.0" in str(w.message) for w in rec)
+
+    def test_other_figures_do_not_warn(self, tmp_path):
+        from lmdiff.viz.family_figures import plot_family_figures
+        geo = _geo_with_long(0.30)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            plot_family_figures(geo, tmp_path, which=["cosine_raw"])

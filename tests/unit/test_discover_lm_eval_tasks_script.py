@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 
-SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "discover_lm_eval_tasks.py"
+SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "discover_lm_eval_tasks.py"
 
 
 @pytest.fixture

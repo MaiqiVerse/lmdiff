@@ -16,6 +16,8 @@ directly so it can be byte-asserted in tests.
 """
 from __future__ import annotations
 
+from lmdiff._validity import PDN_AXIS_LABEL, PDN_DESCRIPTION
+
 import io
 import math
 import os
@@ -460,7 +462,11 @@ def _domain_drift_table(result: "GeoResult", domains: list[str]) -> dict[str, di
     if not result.probe_domains:
         return {}
     try:
-        return result.domain_heatmap()
+        heat = result.domain_heatmap()
+        from lmdiff._validity import filter_measured_cells
+        return filter_measured_cells(
+            getattr(result, "domain_status", None), heat,
+        )
     except (ValueError, AttributeError):
         return {}
 
@@ -595,14 +601,14 @@ def _layer3_drift_table(
     if not variants or not domains or not drift:
         return []
     title = sty("bold", "How big is each move")
-    sub = sty("dim", "  per-domain ‖δ‖ raw; rightmost col is per-√token (comparable)")
+    sub = sty("dim", f"  per-domain ‖δ‖ raw; rightmost col is {PDN_DESCRIPTION}")
     out = [title, sub, ""]
 
     name_w = max(8, max(len(v) for v in variants) + 2)
     domain_w = 9
     total_w = 10
     header_cells = [" " * name_w] + [d[:domain_w].rjust(domain_w) for d in domains] + [
-        sty("dim", "‖δ‖/√tok".rjust(total_w))
+        sty("dim", PDN_AXIS_LABEL.rjust(total_w))
     ]
     out.append("  " + " ".join(header_cells))
 
@@ -764,7 +770,7 @@ def _compact_per_variant(
     for v in variants:
         nt = norm_totals.get(v, float("nan"))
         nt_text = f"{nt:.4f}" if isinstance(nt, (int, float)) and nt == nt else "n/a"
-        out.append(f"  {sty('bold', v)}  ‖δ‖/√tok {sty('bold', nt_text)}")
+        out.append(f"  {sty('bold', v)}  {PDN_AXIS_LABEL} {sty('bold', nt_text)}")
         sh = share.get(v, {})
         if sh:
             top = sorted(sh.items(), key=lambda kv: -kv[1])[:3]
@@ -832,7 +838,7 @@ def render(
 
     drift = _domain_drift_table(result, domains)
     # Per-variant total: switch from RMS-of-per-domain (raw, not
-    # comparable across runs) to per-√token-normalized magnitude. Matches
+    # comparable across runs) to per-token-normalized magnitude. Matches
     # ``change_size_bars.png`` right pane and the markdown report.
     norm_totals = dict(result.magnitudes_normalized or {})
     share = tables.get("share", {}) if tables else {}
