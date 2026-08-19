@@ -160,7 +160,7 @@ def _looks_like_numpy_dict(value: Any) -> bool:
 
 
 def _values_equal(a: Any, b: Any) -> bool:
-    """Equality check that handles numpy arrays and dict-of-arrays.
+    """Equality check that handles numpy arrays wherever they are nested.
 
     Plain ``a == b`` raises ``ValueError`` on numpy arrays with more
     than one element ("The truth value of an array with more than one
@@ -168,6 +168,12 @@ def _values_equal(a: Any, b: Any) -> bool:
     Config field including ones that may hold numpy arrays
     (``soft_prompts``, ``SteeringSpec.vectors``), so this helper
     encodes the safe comparison rules.
+
+    Recurses through ``dict``, ``list``/``tuple`` and **dataclass**
+    values, so an array is compared safely however deeply it is nested.
+    The dataclass branch matters because a sub-spec is the one container
+    whose default ``==`` would re-introduce the ambiguity this helper
+    exists to avoid.
     """
     if a is b:
         return True
@@ -190,6 +196,24 @@ def _values_equal(a: Any, b: Any) -> bool:
         if len(a) != len(b) or type(a) is not type(b):
             return False
         return all(_values_equal(x, y) for x, y in zip(a, b))
+    # Sub-spec instances. Without this branch two dataclasses fall through
+    # to ``a == b``, which is dataclass equality, which compares their
+    # fields with plain ``==`` — and a field holding an array (or a dict
+    # of arrays, as ``SteeringSpec.vectors`` does) raises the ambiguous-
+    # truth ValueError that the trailing ``except`` then swallows into
+    # ``False``. Two value-identical SteeringSpecs compared unequal.
+    #
+    # This is the general shape rather than a SteeringSpec quirk: any
+    # sub-spec that acquires an array field inherits it silently, and the
+    # symptom is a redundant model load nobody attributes to a comparator.
+    # See docs/internal/v043_runconfig_design.md §7.2–§7.4.
+    if is_dataclass(a) and is_dataclass(b):
+        if type(a) is not type(b):
+            return False
+        return all(
+            _values_equal(getattr(a, f.name), getattr(b, f.name))
+            for f in fields(a)
+        )
     try:
         return a == b
     except (ValueError, TypeError):
