@@ -9,3 +9,33 @@ build/
 examples/*_report.json
 discovery*.json
 examples/*_figures/
+
+# ── Experiment debris ────────────────────────────────────────────────
+# Output of local GPU runs and one-off analysis. None of it is
+# reproducible from the repo, and all of it accumulates in the working
+# tree until `git status` is unreadable — which is how the untracked
+# PHASE_PLAN sat unversioned long enough to be a single disk failure
+# from a real problem.
+#
+# Anything here that should survive belongs in tests/fixtures/ (pinned
+# inputs), docs/assets/ (published figures), or examples/ (curated
+# outputs), all of which are tracked.
+
+*.log
+*.tar.gz
+runs/
+_demo_check/
+
+# One-off scripts and scratch at the repo root only. Real scripts live
+# in scripts/ and real tests in tests/, neither of which this matches.
+/run*.py
+/sanity_*.py
+/temp.sh
+
+# Figures rendered into the repo root by a bare `lmdiff plot-geometry`
+# or a scratch render. Published figures live in docs/assets/.
+/*.png
+
+# Family-experiment outputs alongside the curated examples/ ones.
+examples/*_radar.png
+examples/*_diagnostic.json
