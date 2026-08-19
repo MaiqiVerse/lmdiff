@@ -25,7 +25,7 @@ deliberately later — AA.6.
 
 ## 0. Headline findings
 
-Six things the investigation turned up that change the shape of the work.
+Eight things the investigation turned up that change the shape of the work.
 
 **0.1 — `Config` already serializes.** `Config.to_dict()` and
 `Config.from_dict()` exist at `_config.py:555` and `:566`, with a
@@ -68,10 +68,28 @@ reference raises and when, and why a missing sidecar is **not**
 criterion. Vacuous in practice today — no shipped experiment carries an
 array — but it changes what "attach" means, so §10.1 covers it too.
 
-**0.6 — emission is not a one-line `safe_dump`.** The worked example
+**0.6 — `metrics: default` does not satisfy AA.3.** It names something
+that moves. The "provenance pins it" argument fails twice — `provenance`
+is dropped on load, and the same argument would justify omitting
+`min_valid_fraction`, which §10.6 rejects. Expand to the resolved
+five-name list (§3.3). Auditing for other moving pointers found one more:
+**`probes: lm_eval:…` resolves against an optional dependency whose
+version was not in the provenance block**, so `lm_eval` is added to it
+conditionally.
+
+**0.7 — `GeoResult` must carry the emitted YAML, and `geo_schema` goes
+6 → 7.** An earlier draft recommended emitting at `_api.family()` *and*
+embedding in HTML, which cannot both hold: `to_html()` runs long after
+the Configs leave scope, often on a reloaded result. Resolved in §6 —
+`GeoResult` gains one `str` field holding the emitted text verbatim.
+This revises §10.1's "not the JSON": the objection was to a structured
+record competing with `metadata`, and an opaque string cannot disagree
+with itself.
+
+**0.8 — emission is not a one-line `safe_dump`.** The worked example
 needs comments to be unambiguous, `yaml.safe_dump` cannot emit them, and
 the annotated output must still round-trip or AA.2's "runnable" decision
-breaks. §3.3 gives the four-step emitter and the self-check that guards
+breaks. §3.4 gives the four-step emitter and the self-check that guards
 it.
 
 ---
@@ -170,7 +188,7 @@ noted for completeness.
 
 `__ref__` means an emitted config can be a YAML *plus sidecar array
 files*. That sits against the "the artifact travels alone" argument used
-in §3.3 to reject comment-free emission. The tension is real and needs
+in §3.4 to reject comment-free emission. The tension is real and needs
 resolving rather than noting.
 
 **The resolution is that the two move different things.** The comment-free
@@ -334,7 +352,7 @@ task_overrides:
   longbench_2wikimqa:
     max_new_tokens: 128
 seed: 42
-metrics: default
+metrics: [bd, drift, share, direction, specialization_zscore]
 min_valid_fraction: 0.5
 reproducible: true
 
@@ -369,7 +387,71 @@ writing the example.
 *`task_overrides` duplicates `max_new_tokens` at two levels* and the
 precedence is not visible in the file. Same remedy.
 
-### 3.3 Templated emission, and what it costs
+### 3.3 Moving pointers — does `metrics: default` satisfy AA.3?
+
+**No. It should be expanded on emission, for the same reason
+`min_valid_fraction` must be written.**
+
+The tempting argument is that `default` is pinned by
+`provenance.lmdiff`, since the metric set is a function of the version.
+That argument fails twice:
+
+- **`provenance` is dropped on load** (AA.2). The loader never sees it
+  when resolving `metrics: default`, so it pins nothing operationally.
+  And version mismatch is a *warning*, not a refusal (AA.3) — the run
+  proceeds with the new metric set.
+- **The argument is symmetric with the one already rejected.** "Its
+  default is determined by the version, and provenance captures the
+  version" is exactly the case for omitting `min_valid_fraction`, and
+  §10.6 rejects it. Accepting it here would be inconsistent.
+
+The operative test AA.3 sets is: *can a reader determine from the
+artifact what was actually used?* `min_valid_fraction: 0.5` passes.
+`metrics: default` does not.
+
+Expansion is cheap. `_resolve_metrics` (`_api.py:152`) maps `"default"`
+to a hardcoded five-element list:
+
+```yaml
+metrics: [bd, drift, share, direction, specialization_zscore]
+```
+
+Five short names, and the loader already accepts an explicit list, so
+the emitted artifact stays runnable. The worked example in §3.2 should
+read this rather than `default`.
+
+**Other moving pointers.** Auditing the rest of the schema for the same
+shape — a value that names something version-dependent rather than
+stating it:
+
+| key | moving? | treatment |
+|---|---|---|
+| `metrics: default` | **yes** | expand to the resolved list, above |
+| `probes: lm_eval:…` | **yes** | see below — cannot be expanded cheaply |
+| `n_probes`, `max_new_tokens`, `seed`, `task_overrides` | no | literal values |
+| `min_valid_fraction` | no, once §10.6 lands | literal value |
+| every `Config` / sub-spec field | no | literals; defaults expanded per AA.3 |
+
+**`probes` is the one that cannot be fixed by expansion.** An
+`lm_eval:hellaswag+…` identifier resolves against the installed lm-eval,
+which is an *optional* dependency (`lm-eval>=0.4.0`, pyproject extras) —
+so probe text, splits, and ordering can all change under a config that
+looks identical. Expanding it inline means inlining 500 probes, which
+§10.2 rejects on readability grounds and which would dwarf the rest of
+the file.
+
+The remedy is provenance, not expansion: **add `lm_eval` to the
+provenance block whenever the probe spec is an `lm_eval:` identifier.**
+§4 lists six fields; this makes it seven, conditionally. Without it the
+artifact pins the metric set, the seed, and every decode parameter, and
+leaves the actual probe text unpinned — which would be the largest
+remaining hole.
+
+This does not make the `lm_eval:` form reproducible in the strong sense
+(§5) — it makes the mismatch *detectable*, which is the same standard
+§10.2 applies to user-supplied probe sets via content hash.
+
+### 3.4 Templated emission, and what it costs
 
 `yaml.safe_dump` cannot emit comments. The two clarifications §3.2 calls
 for — annotating `decode.seed: null` with the family seed it inherits,
@@ -418,6 +500,7 @@ GeoResult, and nothing else.** The block is not the report.
 | `python` | **yes** | one line, occasionally the answer |
 | `run_id` (ISO timestamp) | **yes** | the only handle for "which run was this" |
 | `geo_schema` | **yes** | disambiguates which loader path produced the companion JSON |
+| `lm_eval` | **conditionally** | only when `probes` is an `lm_eval:` identifier. Probe text, splits and ordering come from that package, so without it the artifact pins everything except the probes themselves (§3.3) |
 | `duration_s` | no | diagnostics, not provenance; varies with hardware and tells you nothing about the numbers |
 | `devices` | no | ditto. A reader wanting this has the run log |
 | `probes_excluded` | **no** | `GeoResult.metadata["n_skipped"]` already holds it |
@@ -428,7 +511,8 @@ cuts: both are already in the artifact this file ships beside.
 Duplicating them creates two copies free to disagree — the failure this
 project has hit three times (L-035).
 
-This trims AA.2's illustrative block from nine fields to six.
+This trims AA.2's illustrative block from nine fields to six, plus
+`lm_eval` when the probe spec needs it.
 
 ---
 
@@ -485,13 +569,45 @@ request is one you will not have when you need it.
 **What it needs.** The emitter requires the `Config` set and the
 call-level parameters. `GeoResult` currently holds neither — it has
 `base_name` (a display string) and `variant_names`, not the objects.
-**This is the one structural addition the commit requires**: either
-`GeoResult` gains a `run_config` field, or emission happens at the
-`_api.family()` level where the inputs are still in scope.
 
-Recommend the latter for v0.4.3 — `_api` already has everything, and it
-avoids widening `GeoResult` before §10.1 settles where the artifact
-attaches. If §10.1 chooses the JSON-embedded option, this changes.
+**The ordering problem.** An earlier draft recommended emitting at
+`_api.family()` and left it there. That does not survive §10.1's HTML
+embed: `to_html()` is a `GeoResult` method, called arbitrarily later —
+often on a result reloaded from JSON in a different process — and by then
+the `Config` objects are long out of scope. Recommending both without
+reconciling them was a gap.
+
+**Resolution: `GeoResult` gains `run_config_yaml: str | None`, and it is
+serialized.**
+
+The emitted YAML text, verbatim, as a single string. Not the `Config`
+objects, and not a structured mirror of them:
+
+- **One `str` field.** No import dependency on `_config`, no new
+  serialization path, nothing for a future field to drift out of sync
+  with — it is the same bytes the sidecar contains, by construction.
+- **`_api.family()` still does the emitting**, where the inputs are in
+  scope. It hands the finished text to `GeoResult`. The producer stays
+  where the data is; the artifact travels with the result.
+- **`to_html()` embeds `self.run_config_yaml`** with no knowledge of
+  `Config` at all.
+
+**This revises §10.1's "not the GeoResult JSON."** That objection was to
+a *structured* configuration record competing with `metadata` field by
+field — two representations of the same values, free to disagree. An
+opaque verbatim string is not a competing representation and cannot
+disagree with itself. And carrying it is the only way `to_html()` on a
+**reloaded** result can embed the config; without it, re-rendering a
+report from a saved JSON silently drops the provenance this commit exists
+to add. That failure mode — an operation that looks like it worked and
+quietly lost something — is the one this project keeps meeting.
+
+**Cost: `geo_schema` 6 → 7.** The loader constructs by explicit key, so
+old readers ignore the field and new readers see `None` on old files;
+no preserving-loader path is needed, unlike 5 → 6. Bumping is still
+right, because the project's convention has been to bump on field
+additions (v3 `probe_domains`, v4 `avg_tokens_per_probe`), and a reader
+should be able to tell from the version whether to expect the field.
 
 ---
 
@@ -631,9 +747,14 @@ three verbatim rather than defining its own.
 
 ## 9. Migration
 
-Emission is purely additive (AA.6): no existing artifact changes, no
-schema version moves, nothing reloads differently. `GeoResult` schema
-stays at 6.
+Emission is additive in behaviour — no existing artifact changes meaning
+and nothing reloads differently — but it is **not** schema-neutral.
+`GeoResult` gains `run_config_yaml` (§6), so `geo_schema` moves 6 → 7.
+
+The upgrade is the cheap kind. The loader constructs by explicit key, so
+a v6 file simply yields `run_config_yaml=None` and a v6 reader ignores
+the new key in a v7 file. No preserving-loader path is needed, unlike
+5 → 6, where the *meaning* of existing fields changed (Q9.8).
 
 The one interaction is `GeoResult.metadata`, which today holds
 `n_total_probes`, `n_skipped`, `bpb_normalized`, `max_new_tokens`,
@@ -655,13 +776,18 @@ are executable configuration and would appear in the run config too.
 inlines it in a `<details>` block, because HTML's whole purpose is to
 survive being emailed as one file, and a sidecar defeats that.
 
-Not the GeoResult JSON. The JSON is consumed programmatically and
-already carries `metadata`; adding a second configuration record there
-creates exactly the two-copies-free-to-disagree problem. **Resolve the
+**The JSON carries the YAML text, but not a structured config record.**
+The distinction matters and §6 works through it: an opaque verbatim
+string cannot disagree with `metadata`, whereas a parallel structured
+record would — that was the real objection. **Resolve the field-level
 overlap by direction of truth**: the run config is the *input* record,
-`metadata` is the *output* record. Where they overlap
-(`max_new_tokens`, probe-set identity) the run config is authoritative
-and `metadata` keeps its copy for existing readers.
+`metadata` is the *output* record. Where they overlap (`max_new_tokens`,
+probe-set identity) the run config is authoritative and `metadata` keeps
+its copy for existing readers.
+
+Carrying it is also what makes `to_html()` work on a reloaded result
+(§6). Without it, re-rendering a report from saved JSON silently drops
+the provenance this commit exists to add.
 
 A user holding only the HTML has everything. A user holding only the
 JSON has the numbers and is told, in `provenance`, which version produced
@@ -688,6 +814,22 @@ is present, the HTML block carries a line saying the config is part of a
 bundle and names the directory. A reader then knows to go find it rather
 than discovering it from a load error. That costs one conditional line
 and removes the only case where the embedded copy would silently mislead.
+
+**What is a `__ref__` relative to, inside an embed?** Nothing — and the
+loader must say so rather than guess. §1.4 defines `__ref__` as relative
+to the YAML *file*; an embed is text inside a document and has no such
+anchor. Resolving it against the HTML's own directory would be a guess
+that silently succeeds when an unrelated file of the right name happens
+to sit there, which is worse than failing.
+
+So: **YAML extracted from an HTML embed is readable but not runnable
+whenever it carries a `__ref__`**, and a loader handed such text refuses
+with the same `RunConfigError` shape as a dangling reference, naming the
+bundle directory recorded at emission. The user's remedy is to fetch the
+sidecar bundle and load the YAML from disk, where the anchor exists. The
+directory name in the embed is a *hint for a human*, not a resolvable
+path — recording it as an absolute path at emission would be worse still,
+since it names a filesystem the reader is probably not on.
 
 ### 10.2 What identifies a probe set?
 
