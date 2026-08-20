@@ -1,8 +1,31 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.3] - 2026-08-20
+
+Every report now carries the call that produced it. A run configuration — the base, the variants, the probe set, the seed, every decode parameter and every value-affecting default — is written as YAML alongside each report and embedded in the HTML.
+
+The motivation is that a report was a container for numbers, not a record of an experiment. Reading `CodeLlama → code 52.1%` gave no way to recover which variants ran, which probes, what `n_probes`, or whether `min_valid_fraction` was defaulted. And "why do I get different numbers than you" had no mechanical answer, which matters here: the meaning of `share_per_domain` changed twice between v0.3.2 and v0.4.1.
+
+**This release emits. It does not yet execute** — a loader that runs one of these files comes later. The schema is designed for both, because the emitted artifact has to be a valid input.
+
+Full reference: [`docs/reference/run-config.md`](docs/reference/run-config.md). Design audit: `docs/internal/v043_runconfig_design.md`.
+
+### Added
+
+- **Run-configuration emission.** `report.md` gets `report.runconfig.yaml` beside it; `to_html` additionally inlines the config in a collapsed `<details>` block, because HTML's purpose is surviving as a single file. Automatic, not opt-in. The sidecar is named after the report's *stem*, so rendering both formats into one directory produces one file — same run, identical content.
+- **`GeoResult.run_config_yaml`** — the emitted text, verbatim. Carried on the result because `to_html` commonly runs on a result reloaded from JSON, long after the `Config` objects have left scope; without it, re-rendering a saved report would silently drop the provenance.
+- **`min_valid_fraction` on `family()` and `compare()`.** It affects computed values as directly as anything on the call — it is what turns a domain's share to `None` — and previously stopped at `run_family_pipeline`, so the artifact would have named a key no public entry point accepted. Precedence is explicit argument, then the default; there is no per-variant tier.
+- **`lmdiff/_runconfig.py`** — schema assembly and the emitter. `__ref__` is reserved for out-of-line array payloads (the mechanism lands later); `reproducible` and `non_serializable` ship per the design's escape-hatch decision, with no current occupant.
+
+### Changed
+
+- **GeoResult schema 6 → 7**, adding `run_config_yaml`. Purely additive: a v1–v6 save loads with the field `None`, and no upgrade path is needed — unlike 5 → 6, where the *meaning* of existing fields changed.
+- **`metrics` is emitted as the resolved list**, never the word `default`. `default` names something that moves between versions, and the artifact exists so a reader can tell what was actually used.
+- **Provenance records `lm_eval` when the probe set is an `lm_eval:` identifier.** That package determines probe text, splits and ordering and is an optional dependency; without it the artifact would pin the metric set, the seed and every decode parameter while leaving the probes themselves unpinned.
 
 ### Fixed
+
+- **HTML and markdown reports rendered a hardcoded `schema_version: 5`.** v0.4.1 bumped the schema to 6 and the literal did not move, so every report has misreported it since. Both now reference `SCHEMA_VERSION`.
 
 - **``_values_equal`` now recurses into dataclasses**, so a numpy array nested inside a sub-spec is compared safely wherever it sits. Previously two sub-spec instances fell through to ``a == b`` — dataclass equality, which compares fields with plain ``==`` — and a field holding an array (or a dict of arrays, as ``SteeringSpec.vectors`` does) raised the ambiguous-truth ``ValueError`` that the trailing ``except`` swallowed into ``False``. Two value-identical ``SteeringSpec`` instances therefore compared **unequal**.
 
