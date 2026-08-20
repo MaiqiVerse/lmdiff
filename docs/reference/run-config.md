@@ -89,7 +89,7 @@ Everything above `provenance` is the run itself.
 
 | key | meaning |
 |---|---|
-| `lmdiff_schema` | grammar version of *this file* — see [Three version numbers](#three-version-numbers) |
+| `lmdiff_schema` | grammar version of *this file*. **Always `1` in v0.4.3** — every file lmdiff writes today carries this value. See [Three version numbers](#three-version-numbers) |
 | `base` | the base configuration |
 | `variants` | `{name: configuration}` |
 | `probes` | probe-set identifier |
@@ -117,8 +117,9 @@ Six fields, plus `lm_eval` when the probe set is an `lm_eval:`
 identifier, because that package determines probe text, splits and
 ordering and is an optional dependency.
 
-**A loader ignores this block entirely.** It records how the run
-happened, not what to do.
+**This block is not configuration.** It records how the run happened,
+not what to do, and a loader — once one exists — will drop it rather
+than act on it.
 
 Deliberately absent: probe-exclusion counts and per-domain status
 summaries. The `GeoResult` beside this file already holds both, exactly,
@@ -137,9 +138,10 @@ fails the moment a default changes, and lmdiff has changed a numeric
 default's effective meaning twice inside two minor versions. Emitted
 files are verbose; hand-written ones may omit anything with a default.
 
-**A version mismatch will warn, not block.** Re-running an old config on
-a newer lmdiff is a legitimate thing to want. Doing it without being told
-is not.
+**A version mismatch is intended to warn rather than block.** Re-running
+an old config on a newer lmdiff is a legitimate thing to want; doing it
+without being told is not. Nothing enforces this yet — there is no
+loader — but the schema is shaped so that it can.
 
 ## `reproducible` and `non_serializable`
 
@@ -152,8 +154,10 @@ non_serializable:
 
 `reproducible: false` means **no possible file could express this
 configuration** — you passed something Python can hold and YAML cannot
-name, such as a model object rather than an identifier. A loader refuses
-and names the offending paths rather than pretending.
+name, such as a model object rather than an identifier. A loader will
+refuse such a file and name the offending paths rather than pretending to
+run it. Today the flag is a marker for a human reader, since nothing
+consumes these files yet.
 
 It does *not* mean "awkward to serialize", and it does not mean a
 referenced file is missing. Nothing in lmdiff currently triggers it.
@@ -199,10 +203,17 @@ yet exist. Tying them would mean every change to result shape invalidated
 every stored run config — backwards for a file whose value is that old
 ones still run.
 
-The distinction that matters when they disagree: **`lmdiff_schema` too
-high means the file cannot be read**; **`provenance.lmdiff` differing
-means it can be read and the numbers may differ.** One is a parse error,
-the other a caveat.
+The distinction matters for what a mismatch will *mean*, once files are
+read back: **`lmdiff_schema` higher than the reader knows means the file
+cannot be interpreted** — an unknown key may be load-bearing, so guessing
+is worse than refusing. **`provenance.lmdiff` differing means the file is
+perfectly readable and the numbers may differ.** One is a parse problem,
+the other a caveat, and conflating them would either block a legitimate
+re-run or silently accept a file nobody understands.
+
+None of that is enforced in v0.4.3, because nothing reads these files
+yet. It is recorded here so the meaning of the numbers is fixed before
+something depends on them.
 
 ## In Python
 
