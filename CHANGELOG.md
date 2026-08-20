@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **``_values_equal`` now recurses into dataclasses**, so a numpy array nested inside a sub-spec is compared safely wherever it sits. Previously two sub-spec instances fell through to ``a == b`` — dataclass equality, which compares fields with plain ``==`` — and a field holding an array (or a dict of arrays, as ``SteeringSpec.vectors`` does) raised the ambiguous-truth ``ValueError`` that the trailing ``except`` swallowed into ``False``. Two value-identical ``SteeringSpec`` instances therefore compared **unequal**.
+
+  The user-visible symptom was **a redundant model load, not a wrong number**. ``steering`` is weight-affecting, so ``Config.is_runtime_only_modification_of`` compared it via this helper and judged two identical Configs incompatible, defeating engine reuse. The error direction was safe — the module's stated default-to-strict policy means being too strict costs reload time, while being too lax would run an engine under the wrong weight transform.
+
+  This is the general shape rather than a ``SteeringSpec`` quirk: any sub-spec that acquires an array field would have inherited it silently. ``soft_prompts`` was unaffected, being a bare ``ndarray`` that hits the numpy branch directly. Found by the v0.4.3 design audit; see ``docs/internal/v043_runconfig_design.md`` §7.2–§7.4.
+
 ## [0.4.2] - 2026-08-13
 
 Presentation-layer patch. v0.4.1 made the framework decline to report what it cannot measure; v0.4.2 makes every output path actually honour that. No numeric change to `share_per_domain`, `magnitudes_per_domain_normalized`, or `change_vectors`; no schema change; no fixture regeneration.
