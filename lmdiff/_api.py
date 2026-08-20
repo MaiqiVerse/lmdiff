@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from lmdiff._config import Config, DecodeSpec
+from lmdiff._validity import DEFAULT_MIN_VALID_FRACTION
 from lmdiff._engine import CapabilityError, Engine, RESERVED_CAPABILITIES
 
 __all__ = ["compare", "family"]
@@ -323,6 +324,61 @@ def _make_validating_engine_factory(
 # ── Public entry points ───────────────────────────────────────────────
 
 
+
+def _attach_run_config(
+    result: "Any",
+    *,
+    base_cfg: Config,
+    variant_cfgs: dict,
+    probes: Any,
+    n_probes: Optional[int],
+    metric_names: list,
+    max_new_tokens: int,
+    task_overrides: Optional[dict],
+    seed: Optional[int],
+    min_valid_fraction: float,
+) -> None:
+    """Emit the run-config YAML and attach it to the result.
+
+    Emission happens here, at the API boundary, because this is the only
+    place the ``Config`` objects and the call-level parameters are both
+    in scope. The *file* is written later by the report writers, which
+    are the only place the output path is known — see the audit §6 for
+    why implementing this as one function gets it wrong.
+
+    Never fatal. A run that produced numbers should not be discarded
+    because provenance could not be serialized; the failure is reported
+    as a warning and ``run_config_yaml`` stays ``None``.
+    """
+    from datetime import datetime, timezone
+
+    try:
+        from lmdiff._runconfig import build_run_config, emit_run_config_yaml
+
+        doc = build_run_config(
+            base=base_cfg,
+            variants=variant_cfgs,
+            probes=probes,
+            n_probes=n_probes,
+            metrics=list(metric_names),
+            max_new_tokens=max_new_tokens,
+            task_overrides=task_overrides,
+            seed=seed,
+            min_valid_fraction=min_valid_fraction,
+            run_id=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+        result.run_config_yaml = emit_run_config_yaml(doc)
+    except Exception as exc:  # noqa: BLE001
+        import warnings
+        warnings.warn(
+            f"could not emit run configuration: {type(exc).__name__}: {exc}. "
+            f"The result is unaffected; the report will carry no "
+            f"run-config artifact.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+
 def compare(
     base: Union[str, Config],
     variant: Union[str, Config],
@@ -335,6 +391,7 @@ def compare(
     engine: Optional[Engine] = None,
     seed: Optional[int] = None,
     progress: Optional[bool] = None,
+    min_valid_fraction: float = DEFAULT_MIN_VALID_FRACTION,
 ) -> "Any":
     """Pairwise behavioral comparison between ``base`` and ``variant``.
 
@@ -397,6 +454,19 @@ def compare(
         pipelines / log redirection. ``True`` forces progress on
         regardless of tty; ``False`` disables it. Override via
         ``LMDIFF_PROGRESS=0`` / ``LMDIFF_PROGRESS=1`` env var.
+    min_valid_fraction : float
+        Floor in ``[0.0, 1.0]`` on the fraction of a domain's probes that
+        must be measurable before that domain reports a
+        ``share_per_domain`` value (v0.4.3+). Defaults to
+        :data:`~lmdiff._validity.DEFAULT_MIN_VALID_FRACTION` (0.5).
+        Domains below the floor are classified ``variant_only`` or
+        ``out_of_range`` and carry ``None`` for both ``share`` and
+        ``pdn``. Pass ``0.0`` to disable the floor, reproducing
+        pre-v0.4.1 behaviour.
+
+        Precedence is two levels — explicit argument, then the default.
+        Unlike ``DecodeSpec.seed`` there is no per-variant tier: the
+        floor is a property of the run, not of a variant.
 
     Notes
     -----
@@ -464,9 +534,22 @@ def compare(
             progress=progress,
             engine_groups=anchor_map,
             seed=seed,
+            min_valid_fraction=min_valid_fraction,
         )
         if probe_info:
             result.metadata.update(probe_info)
+        _attach_run_config(
+            result,
+            base_cfg=base_cfg,
+            variant_cfgs={variant_name: variant_cfg},
+            probes=probes,
+            n_probes=n_probes,
+            metric_names=metric_names,
+            max_new_tokens=max_new_tokens,
+            task_overrides=task_overrides,
+            seed=seed,
+            min_valid_fraction=min_valid_fraction,
+        )
     finally:
         if base_owned:
             try:
@@ -489,6 +572,7 @@ def family(
     engine: Optional[Engine] = None,
     seed: Optional[int] = None,
     progress: Optional[bool] = None,
+    min_valid_fraction: float = DEFAULT_MIN_VALID_FRACTION,
 ) -> "Any":
     """Multi-variant ChangeGeometry against a single ``base``.
 
@@ -560,9 +644,22 @@ def family(
             progress=progress,
             engine_groups=anchor_map,
             seed=seed,
+            min_valid_fraction=min_valid_fraction,
         )
         if probe_info:
             result.metadata.update(probe_info)
+        _attach_run_config(
+            result,
+            base_cfg=base_cfg,
+            variant_cfgs=variant_cfgs,
+            probes=probes,
+            n_probes=n_probes,
+            metric_names=metric_names,
+            max_new_tokens=max_new_tokens,
+            task_overrides=task_overrides,
+            seed=seed,
+            min_valid_fraction=min_valid_fraction,
+        )
     finally:
         if base_owned:
             try:

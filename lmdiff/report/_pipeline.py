@@ -69,7 +69,50 @@ def render(result: "GeoResult", channel: str, **kwargs: Any) -> Any:
     tables = build_tables(result)
 
     renderer = _get_renderer(channel)
-    return renderer.render(result, findings=findings, tables=tables, **kwargs)
+    out = renderer.render(result, findings=findings, tables=tables, **kwargs)
+
+    # Sidecar run-config, written here because this is the one place a
+    # renderer's output path is known. The YAML text itself was produced
+    # at the API boundary, where the Configs were in scope — see the
+    # audit §6 on why emission is two parts.
+    _write_run_config_sidecar(result, kwargs.get("out_path"))
+    return out
+
+
+#: Suffix appended to a report's stem for its run-config sidecar.
+#: ``report.md`` → ``report.runconfig.yaml``.
+RUNCONFIG_SUFFIX = ".runconfig.yaml"
+
+
+def _write_run_config_sidecar(result: "GeoResult", out_path: Any) -> None:
+    """Write ``<report-stem>.runconfig.yaml`` beside a rendered report.
+
+    Automatic rather than opt-in (§6): an artifact you have to remember
+    to request is one you will not have when you need it.
+
+    Silent no-op when the result carries no run config — every result
+    built by anything other than ``family()`` / ``compare()``, and every
+    pre-v7 save. Never fatal: a report that rendered should not fail
+    because its sidecar could not be written.
+    """
+    text = getattr(result, "run_config_yaml", None)
+    if not text or not out_path:
+        return
+    from pathlib import Path
+
+    try:
+        p = Path(out_path)
+        p.with_suffix("").with_name(p.stem + RUNCONFIG_SUFFIX).write_text(
+            text, encoding="utf-8",
+        )
+    except OSError as exc:  # noqa: BLE001
+        import warnings
+        warnings.warn(
+            f"could not write run-config sidecar beside {out_path}: "
+            f"{type(exc).__name__}: {exc}",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
 def _try_extract_findings(result: "GeoResult") -> tuple:

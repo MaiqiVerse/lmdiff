@@ -67,12 +67,12 @@ def _make_geo() -> GeoResult:
 
 
 def test_schema_version_constant_is_v6():
-    assert SCHEMA_VERSION == "6"
+    assert SCHEMA_VERSION == "7"
 
 
 def test_emitted_dict_uses_string_v6():
     payload = to_json_dict(_make_geo())
-    assert payload["schema_version"] == "6"
+    assert payload["schema_version"] == "7"
     assert isinstance(payload["schema_version"], str)
 
 
@@ -170,7 +170,7 @@ def test_v4_loads_with_deprecation_warning():
     assert restored.share_per_domain
     # Reserialise: now writes v5.
     restored_payload = to_json_dict(restored)
-    assert restored_payload["schema_version"] == "6"
+    assert restored_payload["schema_version"] == "7"
     assert "share_per_domain" in restored_payload
 
 
@@ -181,7 +181,7 @@ class TestJsonModuleRender:
     def test_returns_dict(self):
         out = json_mod.render(_make_geo())
         assert isinstance(out, dict)
-        assert out["schema_version"] == "6"
+        assert out["schema_version"] == "7"
 
     def test_writes_file_when_path_given(self, tmp_path):
         out = json_mod.render(_make_geo(), path=tmp_path / "x.json")
@@ -189,4 +189,4 @@ class TestJsonModuleRender:
         assert isinstance(out, dict)
         assert (tmp_path / "x.json").exists()
         text = (tmp_path / "x.json").read_text(encoding="utf-8")
-        assert json.loads(text)["schema_version"] == "6"
+        assert json.loads(text)["schema_version"] == "7"

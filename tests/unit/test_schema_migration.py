@@ -61,7 +61,7 @@ def _v5_payload() -> dict:
 
 class TestSchemaVersion:
     def test_writer_emits_v6(self):
-        assert SCHEMA_VERSION == "6"
+        assert SCHEMA_VERSION == "7"
 
 
 # ── v5 load: preserve, do NOT recompute (Q9.8) ──────────────────────
@@ -243,3 +243,73 @@ class TestV6RoundTrip:
         assert rpv.valid_for("var") is True
         assert rpv.per_engine["base"].max_context == 4096
         assert rpv.per_engine["var"].max_context == 128_000
+
+
+def _minimal_geo() -> GeoResult:
+    """Smallest GeoResult the round-trip needs. Local to the v7 tests so
+    they do not depend on the shape of any earlier test's fixture."""
+    return GeoResult(
+        base_name="base",
+        variant_names=["v1"],
+        n_probes=2,
+        magnitudes={"v1": 1.0},
+        cosine_matrix={"v1": {"v1": 1.0}},
+        change_vectors={"v1": [1.0, 2.0]},
+        per_probe={"v1": {"p0": 1.0, "p1": 2.0}},
+    )
+
+
+# ── v7: run_config_yaml (v0.4.3) ─────────────────────────────────────
+
+
+class TestSchemaV7RunConfig:
+    """v7 adds ``run_config_yaml`` and is purely additive.
+
+    Unlike v5 -> v6, where the *meaning* of ``share_per_domain`` and
+    ``magnitudes_per_domain_normalized`` changed and the loader needed a
+    preserving path (Q9.8), this bump adds one field. A v1-v6 save yields
+    ``None`` and needs no upgrade path.
+    """
+
+    def test_writer_emits_v7(self):
+        from lmdiff.report.json_report import SCHEMA_VERSION
+        assert SCHEMA_VERSION == "7"
+
+    def test_run_config_yaml_round_trips(self):
+        text = "lmdiff_schema: 1\nbase: gpt2\n"
+        r = _minimal_geo()
+        r.run_config_yaml = text
+        restored = geo_result_from_json_dict(to_json_dict(r))
+        assert restored.run_config_yaml == text
+
+    def test_absent_when_not_set(self):
+        restored = geo_result_from_json_dict(to_json_dict(_minimal_geo()))
+        assert restored.run_config_yaml is None
+
+    def test_v6_save_loads_as_none(self):
+        """The compatibility direction that matters: an older save has no
+        such key, and must load rather than raise."""
+        payload = to_json_dict(_minimal_geo())
+        payload["schema_version"] = "6"
+        del payload["run_config_yaml"]
+        restored = geo_result_from_json_dict(payload)
+        assert restored.run_config_yaml is None
+
+    def test_v6_save_still_gets_its_v6_fields(self):
+        """Guard against the trap this bump actually hit: the loader's
+        feature gates are explicit version lists, so a bump that forgets
+        one silently drops a field instead of raising. domain_status came
+        back empty until "7" was added to its gate."""
+        r = _minimal_geo()
+        r.domain_status = {"v1": {"a": "full"}}
+        payload = to_json_dict(r)
+        payload["schema_version"] = "6"
+        restored = geo_result_from_json_dict(payload)
+        assert restored.domain_status == {"v1": {"a": "full"}}
+
+    def test_v7_save_gets_its_v6_fields_too(self):
+        """Same guard in the forward direction."""
+        r = _minimal_geo()
+        r.domain_status = {"v1": {"a": "partial"}}
+        restored = geo_result_from_json_dict(to_json_dict(r))
+        assert restored.domain_status == {"v1": {"a": "partial"}}

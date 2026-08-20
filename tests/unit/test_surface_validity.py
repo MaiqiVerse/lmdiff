@@ -457,3 +457,39 @@ def test_pdn_field_and_method_agree(result):
                     f"{v}/{d}: field {fv} != method {mv} — the two "
                     f"implementations of the pdn formula have drifted"
                 )
+
+
+# ── rendered constants match their source (v0.4.3) ───────────────────
+
+
+@pytest.mark.parametrize("name", ["to_markdown", "to_html"])
+def test_rendered_schema_version_matches_the_constant(result, tmp_path, name):
+    """A rendered literal must still match the constant it reflects.
+
+    ``html.py`` and ``markdown.py`` hardcoded ``_row("schema_version",
+    "5")`` in their methodology blocks, so every report claimed schema 5
+    from v0.4.1 (which shipped 6) onward.
+
+    This survived the v0.4.2 surface sweep because none of R/U/V/A asks
+    the question. R wants no exception, U asks whether a *formula
+    description* names a superseded formula, V asks whether an
+    unmeasured cell shows a value, and A asks whether a statistic
+    aggregates correctly. A stale constant rendered as a literal is none
+    of those — it is a value that was correct when written and silently
+    stopped being so.
+
+    One instance is not enough to justify a fifth question, but it is
+    enough to justify this assertion.
+    """
+    from lmdiff.report.json_report import SCHEMA_VERSION
+
+    text = TEXT_SURFACES[name](result, tmp_path)
+    assert SCHEMA_VERSION in text, (
+        f"{name} does not render the current schema version "
+        f"({SCHEMA_VERSION!r})"
+    )
+    for stale in ("5", "6"):
+        if stale == SCHEMA_VERSION:
+            continue
+        assert f"schema_version</td><td>{stale}<" not in text
+        assert f"| schema_version | {stale} |" not in text

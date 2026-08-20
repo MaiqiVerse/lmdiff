@@ -47,6 +47,32 @@ conflict in stacked work and over-revert.
 lives elsewhere, and a single-file run reports "not caught" when the
 assertion that would have caught it is in another module.
 
+**Choose the mutation per assertion, not per fix.** One fix often needs
+several, because different assertions in the same file defend against
+different failures. "Revert the fix and confirm the tests fail" is too
+coarse wherever a test guards against *overshoot* rather than absence —
+such a test passes under the revert and fails only under a mutation that
+produces the overshoot.
+
+Two worked examples, both from v0.4.3:
+
+- `_values_equal` gaining a dataclass branch. Reverting the branch
+  catches the tests asserting the fix is present, but **not** the
+  type guard — without the branch the fallback `a == b` already returns
+  `False` for mismatched types, so it passes either way. That guard
+  defends against an *over-eager* branch, so it needs the mutation that
+  produces one: removing the branch's type check.
+- `min_valid_fraction` passthrough. Three mutations — dropping it,
+  hardcoding the default, and `x or DEFAULT` coalescing. Only the
+  `0.0` test catches the third, because `0.0` is a legitimate value that
+  a falsy-coalesce silently replaces.
+
+A test that keeps passing under the mutation you assumed relevant is
+testing something other than what you assumed. Some tests are
+mutation-invariant by design — pure regression guards for behaviour that
+holds before *and* after — and those are fine, but say so rather than
+leaving them looking like failures.
+
 Mandatory when the path has more than one protective layer — that is
 exactly when a test goes green on the wrong one.
 

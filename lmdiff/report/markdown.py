@@ -23,6 +23,7 @@ point:
 from __future__ import annotations
 
 from lmdiff._validity import PDN_AXIS_LABEL, PDN_DESCRIPTION
+from lmdiff.report.json_report import SCHEMA_VERSION
 
 import math
 import os
@@ -340,7 +341,7 @@ def _build_methodology(result: "GeoResult", lmdiff_version: str) -> list[str]:
     _row("max_new_tokens", meta.get("max_new_tokens"))
     _row("Base", result.base_name)
     _row("Variants", ", ".join(result.variant_names))
-    _row("schema_version", "5")
+    _row("schema_version", SCHEMA_VERSION)
     _row("lmdiff", lmdiff_version)
     lines.append("")
     return lines
