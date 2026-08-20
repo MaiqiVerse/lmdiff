@@ -16,6 +16,7 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
+from lmdiff._config import _values_equal
 from lmdiff import (
     AdapterSpec,
     Config,
@@ -568,3 +569,75 @@ class TestLazyImport:
         import lmdiff._config as cfg_mod
         importlib.reload(cfg_mod)
         assert "torch" not in sys.modules
+
+
+# ── _values_equal recursion into dataclasses (v0.4.3) ────────────────
+
+
+class TestValuesEqualDataclassRecursion:
+    """``_values_equal`` recurses through dict / list / tuple, and — since
+    v0.4.3 — dataclasses.
+
+    Without the dataclass branch, two sub-spec instances fall through to
+    ``a == b``. That is dataclass equality, which compares fields with
+    plain ``==``; a field holding an array (or a dict of arrays, as
+    ``SteeringSpec.vectors`` does) raises the ambiguous-truth
+    ``ValueError`` that the trailing ``except`` swallows into ``False``.
+    Two value-identical specs therefore compared unequal.
+
+    The consequence reached past comparison: ``steering`` is
+    weight-affecting, so ``is_runtime_only_modification_of`` judged two
+    identical Configs incompatible and reloaded a model needlessly. Safe
+    direction, so a performance defect rather than a wrong number.
+
+    General shape, not a ``SteeringSpec`` quirk — any sub-spec that
+    acquires an array field inherits it. See
+    ``docs/internal/v043_runconfig_design.md`` §7.2–§7.4.
+    """
+
+    @staticmethod
+    def _steering():
+        return SteeringSpec(
+            vectors={"layer_10": np.array([0.5, 0.6], dtype="float32")},
+            scale=2.0,
+            application="add",
+            positions="last",
+        )
+
+    def test_identical_specs_holding_arrays_compare_equal(self):
+        a, b = self._steering(), self._steering()
+        assert a is not b
+        assert _values_equal(a, b) is True
+
+    def test_runtime_reuse_predicate_accepts_identical_steering(self):
+        """The user-visible consequence. Before the fix this was False,
+        so two identical Configs would not share a loaded engine."""
+        a = Config(model="m", steering=self._steering())
+        b = Config(model="m", steering=self._steering())
+        assert a.is_runtime_only_modification_of(b) is True
+        assert b.is_runtime_only_modification_of(a) is True
+
+    def test_different_dataclass_types_compare_unequal(self):
+        """Type guard: recursion must not make two unrelated specs equal
+        merely because their field *values* line up."""
+        a = AdapterSpec(type="lora", path="/x", rank=8)
+        b = QuantSpec(method="int4", bits=8)
+        assert _values_equal(a, b) is False
+
+    def test_differing_array_values_still_compare_unequal(self):
+        """Guard against a branch that returns True too eagerly."""
+        a = self._steering()
+        b = SteeringSpec(
+            vectors={"layer_10": np.array([0.5, 0.7], dtype="float32")},
+            scale=2.0,
+            application="add",
+            positions="last",
+        )
+        assert _values_equal(a, b) is False
+
+    def test_soft_prompts_unaffected(self):
+        """A bare ndarray hits the numpy branch directly and always
+        worked; pinned so the new branch cannot regress it."""
+        a = Config(model="m", soft_prompts=np.array([[1.0, 2.0]], dtype="float32"))
+        b = Config(model="m", soft_prompts=np.array([[1.0, 2.0]], dtype="float32"))
+        assert a.is_runtime_only_modification_of(b) is True
