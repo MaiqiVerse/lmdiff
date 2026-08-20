@@ -203,6 +203,13 @@ yet exist. Tying them would mean every change to result shape invalidated
 every stored run config — backwards for a file whose value is that old
 ones still run.
 
+`lmdiff_schema` is an integer and `geo_schema` is a quoted string. That
+carries no meaning: `geo_schema` mirrors the `schema_version` field of
+the `GeoResult` JSON, which has always been a string, and the run config
+reproduces it as-is so the two artifacts describe the same value the same
+way. Coercing it here would make this file disagree in type with the file
+it is describing.
+
 The distinction matters for what a mismatch will *mean*, once files are
 read back: **`lmdiff_schema` higher than the reader knows means the file
 cannot be interpreted** — an unknown key may be load-bearing, so guessing
