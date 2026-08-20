@@ -26,6 +26,7 @@ from lmdiff import (
     compare,
     family,
 )
+from lmdiff._validity import DEFAULT_MIN_VALID_FRACTION
 from lmdiff._api import (
     _check_capabilities,
     _coerce_to_config,
@@ -449,3 +450,67 @@ class TestNProbesLmEvalSemantics:
         assert result.metadata.get("tasks") == [
             "hellaswag", "arc_challenge", "gsm8k",
         ]
+
+
+# ── min_valid_fraction on the public API (v0.4.3) ────────────────────
+
+
+class TestMinValidFractionPlumbing:
+    """``min_valid_fraction`` reaches the pipeline from both entry points.
+
+    Added in v0.4.3 because the run-config schema must pin it: AA.3
+    requires every value-affecting parameter to be written explicitly,
+    and this is the parameter whose default most recently changed
+    meaning — implicit ``1/n`` to explicit ``0.5`` — which is what
+    decides whether a domain reports a share or ``None``. Until now it
+    stopped at ``run_family_pipeline``, so the artifact could name a key
+    no public entry point accepted. See
+    ``docs/internal/v043_runconfig_design.md`` §10.6.
+
+    Precedence is two levels: explicit argument, then the default. There
+    is no per-variant tier — unlike ``DecodeSpec.seed`` the floor is a
+    property of the run.
+    """
+
+    def test_compare_passes_explicit_value_through(self):
+        engine = MockEngine()
+        with patch("lmdiff._pipeline.run_family_pipeline") as MockPipe:
+            MockPipe.return_value = MagicMock(metadata={})
+            compare("gpt2", "distilgpt2", n_probes=5, engine=engine,
+                    min_valid_fraction=0.75)
+        assert MockPipe.call_args.kwargs["min_valid_fraction"] == 0.75
+
+    def test_family_passes_explicit_value_through(self):
+        engine = MockEngine()
+        with patch("lmdiff._pipeline.run_family_pipeline") as MockPipe:
+            MockPipe.return_value = MagicMock(metadata={})
+            family("gpt2", {"v": "distilgpt2"}, n_probes=5, engine=engine,
+                   min_valid_fraction=0.75)
+        assert MockPipe.call_args.kwargs["min_valid_fraction"] == 0.75
+
+    def test_compare_defaults_to_the_shared_constant(self):
+        engine = MockEngine()
+        with patch("lmdiff._pipeline.run_family_pipeline") as MockPipe:
+            MockPipe.return_value = MagicMock(metadata={})
+            compare("gpt2", "distilgpt2", n_probes=5, engine=engine)
+        assert (MockPipe.call_args.kwargs["min_valid_fraction"]
+                == DEFAULT_MIN_VALID_FRACTION)
+
+    def test_family_defaults_to_the_shared_constant(self):
+        engine = MockEngine()
+        with patch("lmdiff._pipeline.run_family_pipeline") as MockPipe:
+            MockPipe.return_value = MagicMock(metadata={})
+            family("gpt2", {"v": "distilgpt2"}, n_probes=5, engine=engine)
+        assert (MockPipe.call_args.kwargs["min_valid_fraction"]
+                == DEFAULT_MIN_VALID_FRACTION)
+
+    def test_zero_is_passed_through_not_treated_as_falsy(self):
+        """``0.0`` disables the floor and is a legitimate value. A
+        ``min_valid_fraction or DEFAULT`` idiom anywhere in the chain
+        would silently substitute the default."""
+        engine = MockEngine()
+        with patch("lmdiff._pipeline.run_family_pipeline") as MockPipe:
+            MockPipe.return_value = MagicMock(metadata={})
+            family("gpt2", {"v": "distilgpt2"}, n_probes=5, engine=engine,
+                   min_valid_fraction=0.0)
+        assert MockPipe.call_args.kwargs["min_valid_fraction"] == 0.0

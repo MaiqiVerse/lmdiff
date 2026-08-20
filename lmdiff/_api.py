@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from lmdiff._config import Config, DecodeSpec
+from lmdiff._validity import DEFAULT_MIN_VALID_FRACTION
 from lmdiff._engine import CapabilityError, Engine, RESERVED_CAPABILITIES
 
 __all__ = ["compare", "family"]
@@ -335,6 +336,7 @@ def compare(
     engine: Optional[Engine] = None,
     seed: Optional[int] = None,
     progress: Optional[bool] = None,
+    min_valid_fraction: float = DEFAULT_MIN_VALID_FRACTION,
 ) -> "Any":
     """Pairwise behavioral comparison between ``base`` and ``variant``.
 
@@ -397,6 +399,19 @@ def compare(
         pipelines / log redirection. ``True`` forces progress on
         regardless of tty; ``False`` disables it. Override via
         ``LMDIFF_PROGRESS=0`` / ``LMDIFF_PROGRESS=1`` env var.
+    min_valid_fraction : float
+        Floor in ``[0.0, 1.0]`` on the fraction of a domain's probes that
+        must be measurable before that domain reports a
+        ``share_per_domain`` value (v0.4.3+). Defaults to
+        :data:`~lmdiff._validity.DEFAULT_MIN_VALID_FRACTION` (0.5).
+        Domains below the floor are classified ``variant_only`` or
+        ``out_of_range`` and carry ``None`` for both ``share`` and
+        ``pdn``. Pass ``0.0`` to disable the floor, reproducing
+        pre-v0.4.1 behaviour.
+
+        Precedence is two levels — explicit argument, then the default.
+        Unlike ``DecodeSpec.seed`` there is no per-variant tier: the
+        floor is a property of the run, not of a variant.
 
     Notes
     -----
@@ -464,6 +479,7 @@ def compare(
             progress=progress,
             engine_groups=anchor_map,
             seed=seed,
+            min_valid_fraction=min_valid_fraction,
         )
         if probe_info:
             result.metadata.update(probe_info)
@@ -489,6 +505,7 @@ def family(
     engine: Optional[Engine] = None,
     seed: Optional[int] = None,
     progress: Optional[bool] = None,
+    min_valid_fraction: float = DEFAULT_MIN_VALID_FRACTION,
 ) -> "Any":
     """Multi-variant ChangeGeometry against a single ``base``.
 
@@ -560,6 +577,7 @@ def family(
             progress=progress,
             engine_groups=anchor_map,
             seed=seed,
+            min_valid_fraction=min_valid_fraction,
         )
         if probe_info:
             result.metadata.update(probe_info)
