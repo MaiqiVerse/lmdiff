@@ -4021,6 +4021,11 @@ So `degraded` is **an annotation, not an exclusion**. The share is computed and 
 
 **4. v0.2.x removals.** `ModelDiff`, `run_family_experiment`, `InferenceEngine`, `ChangeGeometry`, `lmdiff.config.Config`. All have carried `DeprecationWarning` since v0.4.0, giving users a full minor cycle of notice (Update 4 X.7).
 
+**5. Loader hygiene.** Replace the seven enumerated version gates in
+`geo_result_from_json_dict` with range comparisons (Z.5). Small, and it
+belongs in a release already touching the schema. Its current failure
+mode is silence: a forgotten gate drops a field rather than raising.
+
 Estimated 2–3 weeks. Items 1–3 are one coherent theme — "make variant-only measurement first-class" — and should ship together.
 
 ---
@@ -4038,6 +4043,7 @@ For traceability, everything consciously pushed out of v0.4.1:
 | Single-domain fallback still using the old formula (`_pipeline.py:721`, `geometry.py:937`) | v0.4.2 | No narrative consequence in the single-domain case |
 | `tests/test_*.py` → `tests/unit/` migration | v0.4.2 | Housekeeping; the split caused a real miss (L-034) |
 | Method/field duplication audit across other `per_X` patterns | v0.4.2 | One instance found and fixed; unknown whether others exist |
+| Replace the loader's enumerated version gates with range comparisons | v0.5.0 | `geo_result_from_json_dict` has **seven** gates of the form `sv in ("5", "6", "7")`, each meaning "this version and every later one". Every schema bump must edit all seven, and **omitting one does not raise — it silently drops the field that gate protects.** The 6 → 7 bump hit exactly this: `domain_status` deserialized as `{}` while every version-pin test passed, because those tests assert the version string rather than the payload. Replace with `int(sv) >= n`. **Until that lands, a schema bump must edit every gate and add a payload-level regression test, not only a version-string one.** Same shape as L-037 — a change pushing values past a constant defined elsewhere, with the assertions aimed at the wrong layer |
 | `lmdiff validate-result --base-model` CLI helper | unscheduled | Would let legacy saves be re-classified with the correct context window |
 | Probe sets declaring `required_context_window` | Phase 2 commit 4.3 | Properly a probe-taxonomy concern |
 
