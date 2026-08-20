@@ -33,6 +33,12 @@ Full reference: [`docs/reference/run-config.md`](docs/reference/run-config.md). 
 
   This is the general shape rather than a ``SteeringSpec`` quirk: any sub-spec that acquires an array field would have inherited it silently. ``soft_prompts`` was unaffected, being a bare ``ndarray`` that hits the numpy branch directly. Found by the v0.4.3 design audit; see ``docs/internal/v043_runconfig_design.md`` §7.2–§7.4.
 
+### Notes
+
+- **``torch.__version__`` is a ``str`` subclass, and ``yaml.safe_dump`` represents exact built-in types only** — it raises ``RepresenterError`` rather than falling back to the base type. Every third-party version string in ``provenance`` is ``str()``-coerced on principle, not just the one that failed.
+- **The schema bump surfaced that the JSON loader gates on seven independent version-membership lists**, and omitting one drops a field silently instead of raising. All seven were widened for 6 → 7; the refactor to a single ordered comparison is tracked for v0.5.0 in ``docs/internal/PHASE_PLAN_v6.md`` §Z.4.
+- 1135 tests pass (was 1075 in v0.4.2). Both counts include the 12 tests that require the local Llama-2 4-variant calibration GeoResult; without that fixture — which is CI's situation — the numbers are 1123 and 1063. No GPU was needed at any point in this release.
+
 ## [0.4.2] - 2026-08-13
 
 Presentation-layer patch. v0.4.1 made the framework decline to report what it cannot measure; v0.4.2 makes every output path actually honour that. No numeric change to `share_per_domain`, `magnitudes_per_domain_normalized`, or `change_vectors`; no schema change; no fixture regeneration.
