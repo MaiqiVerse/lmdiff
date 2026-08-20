@@ -226,6 +226,26 @@ class GeoResult:
     schema change when the population logic lands.
     """
 
+    run_config_yaml: str | None = None
+    """The run-configuration YAML for the call that produced this result.
+    v0.4.3.
+
+    The emitted text verbatim — one string, not a structured mirror of
+    the ``Config`` objects. It cannot drift from the sidecar file because
+    it is the same bytes, and it carries no dependency on ``_config``.
+
+    Populated by ``_api.family`` / ``_api.compare``, which are where the
+    Configs and call-level parameters are still in scope. ``None`` for
+    results built any other way, including every pre-v7 save.
+
+    Carried on the result rather than emitted and forgotten because
+    ``to_html`` runs arbitrarily later — commonly on a result reloaded
+    from JSON in a different process — and without this field
+    re-rendering a report from a saved result would silently drop the
+    provenance this exists to add. See
+    ``docs/internal/v043_runconfig_design.md`` §6.
+    """
+
     magnitudes_per_domain_normalized: dict[str, dict[str, float | None]] = field(
         default_factory=dict,
     )

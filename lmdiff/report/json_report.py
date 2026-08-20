@@ -46,7 +46,7 @@ from lmdiff.geometry import (
     _compute_share_per_domain,
 )
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 """Current GeoResult on-disk schema (v0.4.1+).
 
 Reader accepts v1-v6; writer emits v6 exclusively. Per-version notes:
@@ -258,6 +258,7 @@ def _geo_result(r: GeoResult) -> dict[str, Any]:
         "selective_magnitudes": _clean_value(r.selective_magnitudes),
         "share_per_domain": _clean_value(r.share_per_domain),
         "variant_names": list(r.variant_names),
+        "run_config_yaml": getattr(r, "run_config_yaml", None),
         "variant_only_metrics": (
             _clean_value(r.variant_only_metrics)
             if r.variant_only_metrics is not None else None
@@ -285,17 +286,20 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
       the v6 schema, but does NOT recompute the saved pdn / share
       with the v0.4.1 formula. Emits a ``DeprecationWarning``
       directing the user to re-run for v0.4.1 numerics.
-    * v6 (v0.4.1+): full schema. ``probe_validity`` /
+    * v6 (v0.4.1 - v0.4.2): full schema. ``probe_validity`` /
       ``domain_status`` / ``variant_only_metrics`` deserialized.
       ``share_per_domain`` / ``magnitudes_per_domain_normalized`` may
       contain ``None`` for invalid domains.
+    * v7 (v0.4.3+): adds ``run_config_yaml``. Purely additive — a v1-v6
+      save yields ``None`` and needs no upgrade path, unlike v5 -> v6
+      where the *meaning* of existing fields changed (Q9.8).
 
     Numeric ``None`` (JSON ``null``) values in cosine / selective cosine
     matrices are restored to ``float('nan')`` so the in-memory result
     behaves identically whether it came from ``analyze()`` or a round-trip.
     """
     sv = str(d.get("schema_version", "1"))
-    if sv not in ("1", "2", "3", "4", "5", "6"):
+    if sv not in ("1", "2", "3", "4", "5", "6", "7"):
         raise ValueError(f"unsupported GeoResult schema_version: {sv!r}")
 
     def _nan_of(v: Any) -> float:
@@ -331,16 +335,16 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
         per_probe={k: {p: float(val) for p, val in row.items()} for k, row in d["per_probe"].items()},
         metadata=dict(d.get("metadata", {})),
     )
-    if sv in ("2", "3", "4", "5", "6"):
+    if sv in ("2", "3", "4", "5", "6", "7"):
         kwargs["delta_means"] = {k: float(v) for k, v in d.get("delta_means", {}).items()}
         kwargs["selective_magnitudes"] = {
             k: float(v) for k, v in d.get("selective_magnitudes", {}).items()
         }
         kwargs["selective_cosine_matrix"] = _nan_matrix(d.get("selective_cosine_matrix"))
-    if sv in ("3", "4", "5", "6"):
+    if sv in ("3", "4", "5", "6", "7"):
         raw = d.get("probe_domains", [])
         kwargs["probe_domains"] = tuple(raw) if raw else ()
-    if sv in ("4", "5", "6"):
+    if sv in ("4", "5", "6", "7"):
         raw_tokens = d.get("avg_tokens_per_probe", [])
         kwargs["avg_tokens_per_probe"] = (
             tuple(float(x) for x in raw_tokens) if raw_tokens else ()
@@ -348,7 +352,7 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
         kwargs["magnitudes_normalized"] = {
             k: float(v) for k, v in d.get("magnitudes_normalized", {}).items()
         }
-    if sv in ("5", "6"):
+    if sv in ("5", "6", "7"):
         # share_per_domain & pdn may carry None values starting v6;
         # _nullable_float_matrix handles both v5 (always-float) and
         # v6 (float | None).
@@ -361,7 +365,7 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
                 _nullable_float_matrix(raw_pdn)
             )
 
-    if sv == "6":
+    if sv in ("6", "7"):
         # v0.4.1 fields. validity records use the dataclasses from
         # lmdiff._validity; reconstruct them with float coercion.
         from lmdiff._validity import EngineValidity, ProbeValidity
@@ -390,13 +394,18 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
         vom = d.get("variant_only_metrics")
         kwargs["variant_only_metrics"] = vom  # nullable dict, kept as-is
 
+    # v7 (v0.4.3): the emitted run-config YAML, carried verbatim. Absent
+    # from every earlier schema, so a v1-v6 save yields None — no upgrade
+    # path needed, unlike v5 -> v6 where existing fields changed meaning.
+    kwargs["run_config_yaml"] = d.get("run_config_yaml")
+
     result = GeoResult(**kwargs)
 
     # Legacy upgrade paths: v1-v4 didn't have share / pdn at all → must
     # synthesize. v5 → v6: per Q9.8, PRESERVE the saved values; only
     # synthesize the validity stubs that v5 didn't have. v0.4.1 formula
     # numerics are NOT applied to v5 saves.
-    if sv in ("5", "6"):
+    if sv in ("5", "6", "7"):
         if sv == "5":
             _stub_validity_for_v5_load(result)
             warnings.warn(

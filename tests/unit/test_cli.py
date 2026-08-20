@@ -116,7 +116,7 @@ class TestCompareJsonMock:
 
         assert result.exit_code == 0
         parsed = json.loads(result.output)
-        assert parsed["schema_version"] == "6"
+        assert parsed["schema_version"] == "7"
         assert parsed["results"][0]["name"] == "behavioral_distance"
 
     def test_missing_probes_fails(self):
