@@ -4285,3 +4285,87 @@ Not decided here. The commit gets the same audit-then-implement treatment as 4.1
 4. **Does the CLI gain a `--config` flag, or a subcommand?** Affects nothing until execution ships, but the surface should be decided alongside the schema.
 
 5. **Schema versioning.** `lmdiff_schema: 1` is independent of the GeoResult schema version (currently 6) and of the package version. Three version numbers is one too many if they can be collapsed; it is one too few if they cannot.
+
+---
+
+# UPDATE 8 — 2026-08-20: v0.4.3 implementation record
+
+Commit 4.2 shipped as v0.4.3. Sections AB.1 through AB.5, append-only.
+
+The design audit is `docs/internal/v043_runconfig_design.md`; the user-facing schema reference is `docs/reference/run-config.md`. Neither is restated here. This section records what the release taught that the audit could not have known in advance.
+
+---
+
+## AB.1 The design-audit pattern has now paid for itself twice
+
+Update 6 Z.7 argued the audit was worth its cost for 4.1. v0.4.3 is the second data point, and it sharpens *why*.
+
+**Three of the eight headline findings came from read-only scripts rather than from reading code.** A `Config → dict → YAML → dict → Config` round-trip harness and a dry run of the emitter against the seven-variant calibration produced findings that were invisible in the source:
+
+- `_values_equal` returning `False` for two value-identical `SteeringSpec` instances. The code reads correctly. The defect is that dataclass `__eq__` compares fields with `==`, and a field holding an array raises, and the trailing `except` swallows the raise into `False`. Nothing about that is visible without executing it.
+- `torch.__version__` being a `str` **subclass**, which `yaml.safe_dump` refuses to represent. Reading the emitter, the value is a string and the dump is safe. Only running it produces `RepresenterError`.
+- The seven enumerated version gates. Reading `geo_result_from_json_dict`, each gate looks like a correct membership test; it is the *set of them* that is the defect, and that only becomes visible when a bump silently drops a field.
+
+The generalisation: **an audit that only reads source finds design problems and misses interaction problems.** Every one of the three above is an interaction — between a comparator and a container, between a library's type discipline and a third party's subclassing, between a schema bump and a loader. The cost of the scripts was under an hour; two of the three would otherwise have shipped.
+
+Adopted as practice, and written into `CLAUDE.md`: an audit includes throwaway scripts that exercise the paths it is auditing.
+
+---
+
+## AB.2 Ordering constraints between findings are themselves findings
+
+The audit found `_values_equal`'s dataclass blindness (§7.2) and separately specified a `Config → YAML → Config` round-trip suite (AA.4). These were written as independent items. They are not independent, and the dependency runs in the direction that misleads:
+
+**With the comparator defect in place, the round-trip suite fails on a correct serializer.** The `steering` case round-trips perfectly and then compares unequal. The natural reading of that failure — and the reading a fresh implementer would take — is "the serializer loses steering", which is a fix aimed at the wrong component.
+
+This was verified on-branch rather than assumed, by writing the suite first and watching it fail. The resolution is ordering: the comparator fix lands before the suite that depends on it, and the suite's module docstring says why.
+
+The general shape: **when an audit lists a defect and a test that would expose it, the test cannot precede the fix, and the audit should say so.** Otherwise the sequencing is left to whoever implements, who has the least context for it. Two of the seven v0.4.3 commits had this relationship.
+
+---
+
+## AB.3 Three independent version numbers, and what each mismatch means
+
+Settled during the audit, recorded here because it constrains future releases:
+
+| number | versions | moves when |
+|---|---|---|
+| `lmdiff_schema` | the run-config grammar | a key is added, removed, or re-interpreted |
+| `provenance.geo_schema` | the `GeoResult` JSON shape | a result field is added or changes meaning |
+| `provenance.lmdiff` | the numbers themselves | every release |
+
+They change for unrelated reasons at unrelated rates — v0.4.1 moved `geo_schema` 5 → 6 while the run-config grammar did not yet exist. Tying any two together means a change to one invalidates artifacts governed by the other, which is backwards for a file whose entire value is that old ones still run.
+
+The distinction is about what a mismatch will *mean* once a loader exists: **`lmdiff_schema` ahead of the reader means the file cannot be interpreted** — an unknown key may be load-bearing, so guessing is worse than refusing — while **`provenance.lmdiff` differing means the file is perfectly readable and the numbers may differ.** A parse problem and a caveat. Conflating them either blocks a legitimate re-run or silently accepts a file nobody understands.
+
+Nothing enforces this in v0.4.3. It is fixed here so the meaning is settled before something depends on it.
+
+---
+
+## AB.4 The version-gate trap, and why it is tracked rather than lessoned
+
+The 6 → 7 bump required editing seven separate `sv in ("5", "6", "7")` gates in `geo_result_from_json_dict`. Editing the outer one and missing an inner one caused `domain_status` to deserialize as `{}` while every version-pin test passed — those tests assert the version string, not the payload.
+
+Considered for LESSONS.md and rejected. The lesson would be "enumerated version gates do not generalise", and it does not generalise here either: all seven gates live in one function in one file, the fix is mechanical, and it is already scoped. A lesson that applies to exactly one function is a tracking item wearing the wrong hat.
+
+So it is tracked in **Z.4 item 5** and **Z.5**, with the interim rule stated where an implementer will hit it: *until the refactor lands, a schema bump must edit every gate and add a payload-level regression test, not only a version-string one.*
+
+The near-miss worth noting: the reason this was caught at all is that the payload-level assertion existed for other reasons. Version-pin tests that check the version string are a category of test that cannot fail for the reason you want.
+
+---
+
+## AB.5 What shipped, against what AA.8 asked
+
+| AA.8 question | resolution |
+|---|---|
+| Where does the artifact attach? | All three, with distinct jobs. Sidecar beside every report (named after the report *stem*, so both formats in one directory produce one file); inlined in HTML because HTML's purpose is surviving as a single file; and `GeoResult.run_config_yaml` in the JSON, because `to_html` commonly runs on a result reloaded long after the `Config` objects left scope |
+| What identifies a probe set? | The `lm_eval:` identifier string, unchanged, plus `lm_eval` in `provenance` — the package determines probe text, splits and ordering, so pinning the metric set and seed while leaving the probes unpinned would be a false guarantee. Content hashing and user-defined sets defer to commit 4.5 |
+| How much `provenance` is worth recording? | Six fields plus conditional `lm_eval`. Err-toward-less was followed: probe-exclusion counts and per-domain status summaries were **dropped** from the AA.2 sketch, because the `GeoResult` beside the file already holds both exactly, and two copies of one fact are two facts that can disagree |
+| `--config` flag or subcommand? | Deferred with execution. Nothing to flag while nothing loads |
+
+Two decisions not in AA.8, both load-bearing:
+
+- **Defaults are expanded, not omitted.** Every value-affecting parameter is written explicitly whether or not it was passed. Pinning by omission fails the moment a default changes, and this project has changed a numeric default's effective meaning twice inside two minor versions. Emitted files are verbose and that is correct; hand-written ones may omit anything with a default.
+- **`metrics` is the resolved list, never the word `default`.** Considered and rejected: `default` names something that moves between versions, and an artifact whose purpose is telling a reader what was used cannot point at a moving target. The symmetry argument that settles it — the same reasoning already forces `min_valid_fraction: 0.5` to be written out rather than omitted, and `metrics: default` is that omission by another spelling.
+
+Shipped 2026-08-20. 1135 tests pass, 1123 in CI. No GPU was required at any point in this release — the whole of v0.4.3 is serialization, and serialization does not need a model.
