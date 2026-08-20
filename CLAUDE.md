@@ -1,16 +1,19 @@
 # CLAUDE.md
 
 Orientation file. Read it fully — it is short on purpose. Its job is to
-stop you operating on a stale mental model and point you at the two
+stop you operating on a stale mental model and point you at the
 documents that hold the detail:
 
 - **`docs/internal/PHASE_PLAN_v6.md`** — design authority. Phase scope,
-  release plan, and the Update sections (1–7) that record every design
+  release plan, and the Update sections (1–8) that record every design
   decision and why. If a design question is settled anywhere, it is
   settled there.
-- **`LESSONS.md`** — L-001 through L-037. Accumulated engineering
+- **`LESSONS.md`** — L-001 through L-040. Accumulated engineering
   lessons, each written after something cost real time. Grep it before
   debugging anything that feels familiar.
+- **`CONTRIBUTING.md`** — the procedures, in full: test scope, the
+  mutation check, the pre-PR checklist. This file summarises; that one
+  is operative where they overlap.
 
 ## Development environment
 
@@ -32,8 +35,10 @@ once: `pytest tests/unit/` was used as the gate seven times while half
 the suite went uncollected (L-034). A pass count with no denominator
 looks identical whether it covers 100 % or 51 %.
 
-Current: **1075 pass, 8 skipped** (1288 collected including gpu/slow,
-which are deselected by default via `addopts`).
+Current: **1135 pass, 8 skipped.** In CI it is 1123 — the 12-test
+difference is the Llama-2 4-variant calibration `GeoResult`, a local
+artifact rather than a committed fixture, and the tests that need it
+skip cleanly without it. Quote which environment you measured in.
 
 GPU calibration tests need an explicit marker override:
 `pytest tests/integration/test_calibration_regression.py -m ""`.
@@ -48,11 +53,15 @@ abstraction, and the engineering.
 
 ## Current state
 
-- **v0.4.2 shipped** (2026-08-19, on PyPI as `lmdiff-kit`).
-- **Phase 2 in progress.** Next: **commit 4.2 — run-config schema and
-  emission** (PHASE_PLAN Update 7 AA). Design audit first.
-- v0.5.0 is a cross-cutting release, not a phase: v0.2.x removals plus
-  variant-only measurement. See PHASE_PLAN Z.4.
+- **v0.4.3 shipped** (2026-08-20, on PyPI as `lmdiff-kit`).
+- **Phase 2 in progress.** Next: **commit 4.3 — probe taxonomy**
+  (PHASE_PLAN AA.7). Design audit first.
+- Run-config **execution** — a loader for the YAML v0.4.3 emits — is
+  deliberately not scheduled yet: its schema needs `task_type` settled,
+  which is what 4.3 settles.
+- v0.5.0 is a cross-cutting release, not a phase: v0.2.x removals,
+  variant-only measurement, and the loader version-gate refactor.
+  See PHASE_PLAN Z.4.
 
 ## Architecture
 
@@ -66,7 +75,8 @@ user-facing goes through this.
 | `_pipeline.py` | the family pipeline — per-probe loop, prompt assembly, engine lifetime |
 | `_engine.py` | `Engine` Protocol + `HFEngine`. Lazy-imports torch/transformers |
 | `_config.py` | `Config` and sub-specs (v0.3.0+) |
-| `_validity.py` | per-probe validity, `compute_domain_status`, the shared `filter_measured_cells` predicate, and the `PDN_*` label vocabulary |
+| `_validity.py` | per-probe validity, `compute_domain_status`, the `min_valid_fraction` floor, the shared `filter_measured_cells` predicate, and the `PDN_*` label vocabulary |
+| `_runconfig.py` | run-config schema assembly and the YAML emitter (v0.4.3). Emission only — nothing reads these files back yet |
 | `_findings.py` | narrative findings, one definition consumed by every renderer |
 | `geometry.py` | **`GeoResult`** — the central result type. Also holds the deprecated `ChangeGeometry` |
 | `report/`, `viz/` | renderers. Consume `GeoResult`, never engines |
@@ -91,23 +101,34 @@ is **not** wholly legacy — `GeoResult` lives there and is current.
 - **Excluded cells are removed, not nulled.** Consumers that aggregate
   must exclude them by construction — a display-time skip leaves the
   statistic wrong (the v0.4.2 specialization z-score).
+- **Gate a claim on the quantity the claim is about** (L-039). A
+  predicate testing whether something *exists* does not support a
+  statement about whether it *dominates*, and the two agree right up
+  until a filter lands upstream. This has now cost two releases: the
+  `partial` status that fired on 9 surviving probes, and the
+  `change_size` hatch that announced long-probe dominance at 0.0–3.3 %.
 
 ## Working patterns that earned their place
 
 **Design audit before implementation** — for any metric, schema, or
 cross-cutting change. Write the audit, resolve the open questions
-explicitly, get them approved, then implement. v0.4.1 and v0.4.2 both
-worked this way. The failure it prevents: a formula that is
+explicitly, get them approved, then implement. v0.4.1, v0.4.2 and
+v0.4.3 all worked this way. The failure it prevents: a formula that is
 self-consistent with its own spec and measures nothing (L-033).
 
+Write the audit by **running things, not only reading them**. Three of
+the eight headline findings in the v0.4.3 audit came from throwaway
+scripts — a round-trip harness, an emitter dry run — and none of the
+three was visible in the source. See PHASE_PLAN Update 8.
+
 **Mutation-check the regression test** — after writing a test that
-protects a fix, revert *that fix alone* (the predicate, the comparison,
-the filter call — not the commit; commit-level reverts conflict in
-stacked work) and confirm the test fails. If it still passes, the test
-is not testing what you think. Mandatory when a path has more than one
-guard, since that is exactly when a test goes green on the wrong one
-— which happened in v0.4.2 and was invisible to any amount of running
-the test.
+protects a fix, revert *that fix alone* and confirm the test fails.
+Choose the mutation **per assertion, not per fix**: a test guarding
+against *overshoot* passes under the plain revert and fails only under
+the mutation that produces the overshoot (L-040). Mandatory when a path
+has more than one guard, since that is exactly when a test goes green on
+the wrong one. Full procedure, with the worked examples and the reason
+it is a checklist step rather than a tool: `CONTRIBUTING.md`.
 
 **Stop and ask rather than expand scope.** If you hit a design decision
 the plan does not cover, say so and stop. Prefix it `[QUESTION]`.
@@ -118,9 +139,11 @@ not inferred later.
 
 **Verify, do not assert.** "Tests pass", "behaviour preserved", "the
 figure is fine" are claims that need evidence. Render the figure and
-look at it. Snapshot before and after and diff. The v0.4.1 HTML report
-was broken on arrival because nothing in the release process rendered
-one.
+look at it — **every figure individually, never `figures()` as a unit**
+(L-038). Snapshot before and after and diff. The v0.4.1 HTML report was
+broken on arrival because nothing in the release process rendered one,
+and three of the four v0.4.2 defects produced output that was *wrong*
+rather than absent, which no assertion on a computed value could see.
 
 ## Conventions
 
@@ -135,7 +158,8 @@ Instruction-style probes belong in a separate versioned file (L-001).
 
 Behavioural distance, change vectors, and the per-domain normalization
 formula are derived in `docs/methodology/normalization.md`. Read that
-before touching a formula.
+before touching a formula. The run-config schema is documented for users
+in `docs/reference/run-config.md`.
 
 ## When to update LESSONS.md
 
