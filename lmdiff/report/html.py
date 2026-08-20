@@ -24,6 +24,7 @@ and markdown renderers (v6 §12.6).
 from __future__ import annotations
 
 from lmdiff._validity import PDN_AXIS_LABEL, PDN_DESCRIPTION
+from lmdiff.report.json_report import SCHEMA_VERSION
 
 import base64
 import io
@@ -558,7 +559,7 @@ def _build_methodology(result: "GeoResult", lmdiff_version: str) -> str:
     _row("max_new_tokens", meta.get("max_new_tokens"))
     _row("base", result.base_name)
     _row("variants", ", ".join(result.variant_names))
-    _row("schema_version", "5")
+    _row("schema_version", SCHEMA_VERSION)
     _row("lmdiff", lmdiff_version)
 
     return (
