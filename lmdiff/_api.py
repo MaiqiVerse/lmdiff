@@ -324,6 +324,61 @@ def _make_validating_engine_factory(
 # ── Public entry points ───────────────────────────────────────────────
 
 
+
+def _attach_run_config(
+    result: "Any",
+    *,
+    base_cfg: Config,
+    variant_cfgs: dict,
+    probes: Any,
+    n_probes: Optional[int],
+    metric_names: list,
+    max_new_tokens: int,
+    task_overrides: Optional[dict],
+    seed: Optional[int],
+    min_valid_fraction: float,
+) -> None:
+    """Emit the run-config YAML and attach it to the result.
+
+    Emission happens here, at the API boundary, because this is the only
+    place the ``Config`` objects and the call-level parameters are both
+    in scope. The *file* is written later by the report writers, which
+    are the only place the output path is known — see the audit §6 for
+    why implementing this as one function gets it wrong.
+
+    Never fatal. A run that produced numbers should not be discarded
+    because provenance could not be serialized; the failure is reported
+    as a warning and ``run_config_yaml`` stays ``None``.
+    """
+    from datetime import datetime, timezone
+
+    try:
+        from lmdiff._runconfig import build_run_config, emit_run_config_yaml
+
+        doc = build_run_config(
+            base=base_cfg,
+            variants=variant_cfgs,
+            probes=probes,
+            n_probes=n_probes,
+            metrics=list(metric_names),
+            max_new_tokens=max_new_tokens,
+            task_overrides=task_overrides,
+            seed=seed,
+            min_valid_fraction=min_valid_fraction,
+            run_id=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+        result.run_config_yaml = emit_run_config_yaml(doc)
+    except Exception as exc:  # noqa: BLE001
+        import warnings
+        warnings.warn(
+            f"could not emit run configuration: {type(exc).__name__}: {exc}. "
+            f"The result is unaffected; the report will carry no "
+            f"run-config artifact.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+
 def compare(
     base: Union[str, Config],
     variant: Union[str, Config],
@@ -483,6 +538,18 @@ def compare(
         )
         if probe_info:
             result.metadata.update(probe_info)
+        _attach_run_config(
+            result,
+            base_cfg=base_cfg,
+            variant_cfgs={variant_name: variant_cfg},
+            probes=probes,
+            n_probes=n_probes,
+            metric_names=metric_names,
+            max_new_tokens=max_new_tokens,
+            task_overrides=task_overrides,
+            seed=seed,
+            min_valid_fraction=min_valid_fraction,
+        )
     finally:
         if base_owned:
             try:
@@ -581,6 +648,18 @@ def family(
         )
         if probe_info:
             result.metadata.update(probe_info)
+        _attach_run_config(
+            result,
+            base_cfg=base_cfg,
+            variant_cfgs=variant_cfgs,
+            probes=probes,
+            n_probes=n_probes,
+            metric_names=metric_names,
+            max_new_tokens=max_new_tokens,
+            task_overrides=task_overrides,
+            seed=seed,
+            min_valid_fraction=min_valid_fraction,
+        )
     finally:
         if base_owned:
             try:

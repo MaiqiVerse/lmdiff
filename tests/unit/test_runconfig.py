@@ -208,3 +208,93 @@ class TestEmission:
 
     def test_emitted_text_ends_with_a_newline(self):
         assert emit_run_config_yaml(_doc()).endswith("\n")
+
+
+# ── emission wiring (§6, §10.1) ──────────────────────────────────────
+
+
+def _result_with_config(tmp_path):
+    import lmdiff
+    from lmdiff._api import _resolve_metrics
+
+    r = lmdiff.load_result(
+        "tests/fixtures/calibration_v041_7variant_summary.json"
+    )
+    r.run_config_yaml = emit_run_config_yaml(
+        _doc(metrics=_resolve_metrics("default"))
+    )
+    return r
+
+
+class TestSidecarEmission:
+    """Two parts, and implementing it as one function gets it wrong
+    (§6): the API boundary produces the text, where the Configs are in
+    scope; the report writers write the file, where the path is known.
+    """
+
+    def test_sidecar_written_beside_markdown(self, tmp_path):
+        r = _result_with_config(tmp_path)
+        r.to_markdown(str(tmp_path / "report.md"))
+        side = tmp_path / "report.runconfig.yaml"
+        assert side.exists()
+        assert side.read_text(encoding="utf-8") == r.run_config_yaml
+
+    def test_sidecar_written_beside_html(self, tmp_path):
+        r = _result_with_config(tmp_path)
+        r.to_html(str(tmp_path / "rep.html"))
+        assert (tmp_path / "rep.runconfig.yaml").exists()
+
+    def test_no_sidecar_when_result_carries_no_config(self, tmp_path):
+        import lmdiff
+        r = lmdiff.load_result(
+            "tests/fixtures/calibration_v041_7variant_summary.json"
+        )
+        assert r.run_config_yaml is None
+        r.to_markdown(str(tmp_path / "report.md"))
+        assert not (tmp_path / "report.runconfig.yaml").exists()
+
+    def test_no_sidecar_when_rendering_to_a_string(self, tmp_path):
+        """No out_path means no place to put it, not an error."""
+        r = _result_with_config(tmp_path)
+        text = r.to_markdown()
+        assert isinstance(text, str)
+        assert not list(tmp_path.glob("*.runconfig.yaml"))
+
+
+class TestHtmlEmbed:
+    """HTML embeds a copy where markdown gets only a sidecar (§10.1),
+    because HTML's purpose is surviving as one file."""
+
+    def test_html_inlines_the_config(self, tmp_path):
+        r = _result_with_config(tmp_path)
+        r.to_html(str(tmp_path / "r.html"))
+        html = (tmp_path / "r.html").read_text(encoding="utf-8")
+        assert '<details class="runconfig">' in html
+        assert "lmdiff_schema" in html
+
+    def test_markdown_does_not_inline_it(self, tmp_path):
+        r = _result_with_config(tmp_path)
+        r.to_markdown(str(tmp_path / "r.md"))
+        md = (tmp_path / "r.md").read_text(encoding="utf-8")
+        assert "lmdiff_schema" not in md
+
+    def test_bundle_note_only_when_a_ref_is_present(self, tmp_path):
+        """A ``__ref__`` resolves against the YAML *file*; an embed has
+        no such anchor, so the block says so rather than pretending."""
+        from lmdiff.report.html import _build_run_config_block
+
+        r = _result_with_config(tmp_path)
+        assert "part of a" not in _build_run_config_block(r)
+
+        r.run_config_yaml = (
+            "soft_prompts: {__ref__: soft_prompts.npy}\n"
+        )
+        assert "bundle" in _build_run_config_block(r)
+
+    def test_embed_absent_when_no_config(self, tmp_path):
+        from lmdiff.report.html import _build_run_config_block
+        import lmdiff
+        r = lmdiff.load_result(
+            "tests/fixtures/calibration_v041_7variant_summary.json"
+        )
+        assert _build_run_config_block(r) == ""
