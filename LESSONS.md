@@ -43,6 +43,9 @@ Format: L-NNN (zero-padded, sequential), never renumber, never delete entries (s
 - L-035: similar names hide duplicate implementations; search by what code does, not what it is called
 - L-036: a partial-validity state needs a floor, or it fires on unrepresentative survivors
 - L-037: a correctness fix can push values across thresholds elsewhere in the system
+- L-038: a release checklist must exercise every user-facing output path
+- L-039: existence is not sufficiency
+- L-040: an assertion over composed output cannot tell you which layer is working
 
 ---
 
@@ -1035,6 +1038,21 @@ agree on old data and diverge after a change to one.
 **Tracked follow-up:** audit `lmdiff/` for other `per_X` field/method pairs
 with duplicated computation. Deferred to v0.4.2+.
 
+**Addendum — 2026-08-19, from the v0.4.2 `per_X` audit.** Removing a
+duplicate is right when both copies are incidental. When one copy exists to
+serve a code path already scheduled for removal, **pinning agreement with a
+test is the lower-risk move** until that path retires — divergence then
+fails in a unit test rather than in a figure nobody re-renders. v0.4.2 took
+this route for the `magnitudes_per_domain_normalized` field /
+`magnitudes_per_task_normalized()` method pair: the method exists so the
+v0.2.x `ChangeGeometry` path works without a pre-populated field, so it goes
+when that goes, in v0.5.0. Until then
+`test_pdn_field_and_method_agree` fails on a third divergence.
+
+The audit's other finding — `change_size` and `normalization_effect`
+plotting the same two quantities — was the incidental case, and the
+duplicate was deprecated outright.
+
 ## L-036: a partial-validity state needs a floor, or it fires on unrepresentative survivors
 
 **Date:** 2026-08-12
@@ -1156,3 +1174,182 @@ from the constants so the two cannot desync (see L-035).
 downstream report that reads differently than before in a way nobody
 specified. Re-render every figure and re-read every generated sentence after
 a rescaling change; the assertion suite will not do it for you.
+
+## L-038: a release checklist must exercise every user-facing output path
+
+**Date:** 2026-08-19
+**Phase:** 2, between commits 4.1 and 4.2 (v0.4.2)
+**Severity:** `to_html()` raised `TypeError` for every run with a below-floor
+domain throughout the entire life of v0.4.1 — that release's own headline
+scenario. Nobody noticed until the following release.
+
+**Symptom:** v0.4.1 shipped the measurement-validity framework, whose entire
+point is that a domain the base cannot assess reports `None` rather than a
+number. Calling `to_html()` on any such result crashed at `html.py:366`:
+
+```python
+max(row_share, key=lambda d: row_share.get(d, 0.0)) if row_share else None
+```
+
+`row_share.get(d, 0.0)` returns `None` when the value *is* `None` — the default
+covers a missing key, not a null value — so `max` compared `None` against
+`float`. The identical bug was fixed during v0.4.1 in `markdown.py` and
+`terminal.py` by commit `b821b7e`. HTML carries a third parallel share-table
+implementation, and the fix landed in two of three.
+
+**What failed to catch it:** everything that was run. 1012 unit tests, 140 GPU
+calibration assertions at 1e-6 tolerance, CI green on three Python versions.
+`figures()`, `to_markdown()` and the terminal renderer all succeeded. Nothing in
+the release process — not the suite, not CI, not the manual figure review —
+calls `to_html()`.
+
+The sweep that followed drove all ten output surfaces against a result
+containing excluded cells. Four were wrong, and the crash was the **only one
+that raised**:
+
+| surface | defect |
+|---|---|
+| three renderers | column headers still labelled `‖δ‖/√tok`, the superseded formula's unit |
+| three surfaces | drift tables printing values for domains the adjacent share table marked `n/a` |
+| one figure | a fully-populated column for an excluded domain, under a Formula B colorbar |
+| one statistic | the specialization z-score aggregating over excluded domains — **numerically wrong**, not merely displayed wrong |
+
+**Root cause:** three of the four are failures of *what the output says*, and an
+assertion on a computed value cannot see them. The fourth is a genuine numeric
+defect that the calibration gate missed because the gate asserts on `share` and
+`pdn`, not on every derived statistic.
+
+**Rule:** a release checklist exercises every user-facing output path on data
+representative of what the release changed. "The tests pass" does not cover
+output paths whose failure mode is *what the output says* rather than whether it
+is produced, and it does not cover paths that nothing in the process invokes.
+
+Concretely for lmdiff: render `to_html()`, `to_markdown()`, the terminal
+summary, and every figure — **individually, not `figures()` as a unit** — from a
+fixture exhibiting the condition the release introduced. Then read the output.
+
+**Corollary — "does not raise" is the weakest available check.** All ten
+surfaces rendered without exception and four were wrong. The sweep asked three
+questions per surface, of which only the first is what naive smoke-testing does:
+
+- **R** — does it raise?
+- **U** — does it name a superseded formula or unit?
+- **V** — does it show a value for a cell another surface marks unmeasurable?
+
+A fourth was added afterwards and is the one none of the others reach:
+
+- **A** — do derived statistics *aggregate* over measured cells only?
+
+Excluding a cell from display and excluding it from a statistic are different
+operations. The z-score, displayed correctly, would still have been wrong.
+
+**Where applied:** v0.4.2 ships `tests/unit/test_surface_validity.py`, an
+R/U/V/A suite parametrized over 4 text surfaces and 11 figures, with a coverage
+gate that fails when a renderer is added without being registered.
+
+**Diagnostic signature:** an output path that no test, no CI job and no manual
+step invokes. Enumerate them by asking what a user can call that the process
+never calls — not by asking what is tested.
+
+**Source:** v0.4.2 surface sweep; PR #22.
+
+## L-039: existence is not sufficiency
+
+**Date:** 2026-08-19
+**Phase:** 2 (v0.4.2)
+**Severity:** the same predicate error in two subsystems **one day apart**, the
+second in a module whose own docstring already specified the correct behaviour.
+
+**Symptom, first instance:** `compute_domain_status` returned `partial` whenever
+`n_both > 0` — one valid probe in a hundred sufficed. Nine surviving
+`longbench_2wikimqa` probes produced a 27.6 % long-context share for
+`temp_1.5`, plotted beside domains measured on all one hundred. Fixed by
+`min_valid_fraction` (L-036).
+
+**Symptom, second instance:** `change_size` gated its entire long-context
+narrative — panel title, subtitle, hatch overlay, bottom-line text — on
+`bool(mask_long.any())`. After the validity floor dropped 91 of 100 long-context
+probes, that domain contributed 0.0–3.3 % of raw magnitude, and `any()` was
+still `True`. The figure printed *"Hatched portion = share dominated by
+long-context probes"* above a chart with **no hatching at all**, because the
+hatch was independently suppressed by a separate 5 % threshold that the subtitle
+was not gated on.
+
+**Root cause:** both predicates tested whether the data was *present* rather
+than whether there was *enough of it* to support the claim being made. In the
+second case the module docstring already stated the correct intent — the caveat
+text is data-driven, generic when the domain is absent, "so we never describe
+absent data" — and the implementation tested the wrong quantity regardless.
+
+**Rule:** any predicate gating a claim must test the magnitude the claim depends
+on, not the existence of the data behind it. `if data:` is almost never the
+right gate for `"the data shows X"`.
+
+**Corollary:** when one predicate has several consumers — a title, a visual
+element, and a sentence describing that visual element — gate all of them on the
+*same* predicate. The v0.4.2 figure promised a legend element it never drew
+because the hatch and the sentence describing the hatch were gated separately.
+
+**What this instance says about the lesson:** L-036 was committed on 2026-08-12
+and the second occurrence shipped on 2026-08-13 — one day later, in a module
+documenting the correct behaviour, by the same author who had just written the
+lesson up. **The pattern is easier to state than to notice.** The searchable
+form is therefore not the concept but the predicate shape — `.any()`, `> 0`,
+`if collection:`, `len(x) != 0` — appearing on a line that gates a *claim*
+rather than a code path.
+
+**Where applied:** `change_size` gates all four consumers on one named
+sufficiency threshold, `LONG_CONTEXT_DOMINANCE_PCT`, documented at its
+definition as a presentation threshold chosen so the hatch and its description
+agree — explicitly not a derived quantity.
+
+**Diagnostic signature:** a boolean test on presence immediately upstream of a
+sentence, title or visual element that asserts something about magnitude.
+
+**Source:** L-036 (first instance); v0.4.2 commit `5379a84` (second).
+
+## L-040: an assertion over composed output cannot tell you which layer is working
+
+**Date:** 2026-08-19
+**Phase:** 2 (v0.4.2)
+**Severity:** a regression test in the suite written specifically to prevent
+this class of defect was passing for the wrong reason. Found only by mutation
+checking; no amount of running the test would have revealed it.
+
+**Symptom:** the v0.4.2 R/U/V/A suite was written to lock in four fixes. Each
+fix was reverted in turn and the suite re-run. Three were caught. **The `A`
+assertion did not catch the z-score revert.** Commit 3 had also made
+`magnitudes_per_task_normalized()` validity-aware; with two independent guards
+on the same path, the composed output was identical whether or not commit 2's
+aggregation fix was present. The assertion went green on the other layer.
+
+**Root cause:** defense in depth is only defense if each layer is pinned
+separately. A test observing the *end* of a path with two guards passes when
+either works, and keeps passing when one silently regresses.
+
+**What makes this hard to notice:** the masking was created by a **correct**
+change. Making the method validity-aware was right and independently motivated;
+it merely happened to hide whether the other fix did anything. **Correct changes
+can invalidate tests of other correct changes**, and nothing about writing,
+running or reviewing the test surfaces that. Only reverting the specific fix
+does.
+
+**Rule:** after writing a regression test, before trusting it — for each
+behavioural change the test claims to protect, revert *that change alone* and
+confirm the test fails. If it still passes, the test is not testing what you
+think it is. Mandatory whenever the path has more than one protective layer.
+
+**Where applied:** the `A` assertion now monkeypatches an unfiltered source into
+the z-score and requires the statistic to exclude the cell itself, isolating
+that layer from the one downstream. All four mutations caught afterwards.
+
+**Diagnostic signature:** an assertion whose path passes through more than one
+protective layer. Also: a test that keeps passing across a refactor you expected
+it to notice.
+
+**Cross-reference:** the procedure this implies — including why it is a manual
+checklist step and not a tool — is in `CONTRIBUTING.md` § "After writing a
+regression test, before trusting it". The two are the same insight approached
+from opposite directions.
+
+**Source:** v0.4.2 mutation check over PR #22's five fix commits.
