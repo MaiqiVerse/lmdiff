@@ -2,441 +2,437 @@
 
 Commit 4.3. Specification: PHASE_PLAN §5.1, in service of §5.2 and §5.4.
 
-Not a design audit. `task_type` is an additive field with no numeric
-effect and no new serialization path, so this is the short form: what
-the code actually looks like, whether the eight types survive contact
-with the probes that exist, and four decisions.
+Not a design audit — `task_type` is additive, with no numeric effect and
+no new serialization path.
 
-Written by running things. Every count below came from a script against
-the shipped code, not from reading it — the scripts are listed in §6.
+**Round 2.** Round 1 asked whether §5.1's eight capability-named types
+survive contact with the code. They do not, and the reason Round 1 gave
+was the wrong one. This round starts from scoring method and the
+two-tier probe-set split, and lets the taxonomy come from the table.
+
+Everything below came from a script against shipped code. Scripts in §7.
 
 ---
 
-## 1. The shape `task_type` has to match
+## 0. Recount
 
-`Probe` is a frozen dataclass; `ProbeSet` is an immutable wrapper around
-a tuple of them (`lmdiff/probes/loader.py`).
+**v01 has three domains, 30 probes each, 90 total.** Counted straight
+from the file:
+
+```
+lmdiff/probes/v01.json   name='v01'  version='0.2.1'  90 probes
+  code         30    code_001 .. code_030
+  knowledge    30    knowledge_001 .. knowledge_030
+  math         30    math_001 .. math_030
+probes with no domain: 0
+```
+
+The nine was `KNOWN_TASK_DOMAINS`, lmdiff's lm-eval adapter table — nine
+distinct domains across 31 curated tasks. Round 1 §2.1 said "90 probes,
+three domains, 30 each" and §2.4(a) then led with "There are nine
+domains, not five", which reads as a claim about v01 three paragraphs
+after the correct count. The numbers were right; putting the adapter's
+count under a heading that looked like a v01 correction was not.
+
+Two path notes while recounting. §5.2's tree shows
+`lmdiff/probes/builtin/v01.json`; the real path is
+`lmdiff/probes/v01.json` and **`builtin/` does not exist**. And v01's
+probes carry no `metadata` at all — which matters in §5.
+
+---
+
+## 1. The table
+
+Tier, domain, how the model is queried, how the output is judged, and
+who decides. `output_type` is lm-eval's; `evaluator` is what lmdiff
+actually runs.
+
+### 1.1 Tier 1 — `v01`, the fast set
+
+| domain | n | query | judged by | who decides |
+|---|---|---|---|---|
+| `code` | 30 | plain completion | one evaluator, caller's choice | `--evaluator`, default `contains_answer` |
+| `knowledge` | 30 | plain completion | " | " |
+| `math` | 30 | plain completion | " | " |
+
+**One evaluator for all 90 probes.** `CapabilityRadar` takes a single
+`evaluator=` and applies it to every domain; the CLI exposes three by
+name. Nothing in v01 records how a probe should be scored, because the
+answer is not a property of the probe here — it is an argument.
+
+### 1.2 Tier 2 — the lm-eval calibration set
+
+| task | domain | `output_type` | lm-eval metrics | lmdiff evaluator |
+|---|---|---|---|---|
+| `hellaswag` | commonsense | `multiple_choice` | `acc`, `acc_norm` | `loglikelihood_accuracy` |
+| `arc_challenge` | reasoning | `multiple_choice` | `acc`, `acc_norm` | `loglikelihood_accuracy` |
+| `gsm8k` | math | `generate_until` | `exact_match` | `Gsm8kNumberMatch` |
+| `mmlu_college_computer_science` | code | `multiple_choice` | `acc` | `loglikelihood_accuracy` |
+| `longbench_2wikimqa` | long-context | `generate_until` | `score`, `qa_f1_score` | `F1` |
+
+### 1.3 Tier 2, widened to all 31 curated tasks
+
+`output_type` distribution: **19 `multiple_choice`, 10 `generate_until`,
+1 `loglikelihood`, 1 `loglikelihood_rolling`**.
+
+| domain | tasks | `output_type` split |
+|---|---|---|
+| `code` | `mmlu_college_computer_science`, `mmlu_computer_security`, `mmlu_machine_learning`, `humaneval`, `mbpp` | 3 MC / 2 gen |
+| `commonsense` | `hellaswag`, `piqa`, `winogrande`, `openbookqa`, `commonsense_qa` | 5 MC |
+| `knowledge` | `mmlu`, `triviaqa`, `nq_open` | 1 MC / 2 gen |
+| `language` | `lambada_openai`, `wikitext` | 1 ll / 1 ll-rolling |
+| `long-context` | four `longbench_*` | 4 gen |
+| `math` | `mathqa`, `mmlu_college_mathematics`, `mmlu_high_school_mathematics`, `gsm8k` | 3 MC / 1 gen |
+| `reading` | `boolq`, `squadv2` | 1 MC / 1 gen |
+| `reasoning` | `arc_challenge`, `arc_easy`, `logiqa` | 3 MC |
+| `safety` | `truthfulqa_mc1`, `truthfulqa_mc2`, `toxigen` | 3 MC |
+
+**lmdiff's table is accurate.** Resolved every entry against lm-eval's
+own YAML: 30 of 31 agree exactly. The one disagreement is `mmlu`, which
+is a registry **group**, not a leaf — it has no `output_type` of its
+own, and lmdiff's note already says "prefer specific subsets".
+
+> Caught a trap worth recording: **lm-eval's `TaskConfig` default
+> `output_type` is `generate_until`, not `multiple_choice`.** My first
+> resolver assumed MC and mislabelled every task whose YAML omits the
+> key — all four `longbench_*` and `squadv2`. Verified directly:
+> `TaskConfig(task='x').output_type == 'generate_until'`. Had I not
+> checked, this document would have reported the calibration's
+> long-context task as multiple-choice.
+
+---
+
+## 2. Q1 — what serves the default set's domains
+
+Answered by §1.3. Three things it shows that the calibration set alone
+does not:
+
+**Every calibration domain has alternates at a different `output_type`
+except two.** `math` can be served by `gsm8k` (generation, exact_match)
+or by `mathqa` / `mmlu_*_mathematics` (loglikelihood over choices).
+`code` likewise. `commonsense`, `reasoning` and `long-context` are
+single-shape — the first two all-MC, the third all-generation.
+
+**Two `output_type`s are registered but score nothing.** `lambada_openai`
+and `wikitext` are the only `loglikelihood` / `loglikelihood_rolling`
+entries, and `_accuracy_for_task` has no branch for either — both fall
+through to `return float("nan")`. The same is true for `humaneval` and
+`mbpp` via `requires_execution`. **Four of the 31 curated tasks cannot
+produce an accuracy number today.**
+
+**The calibration set is one task per domain, and that is a sampling
+choice, not a constraint.** Nothing stops a run using three math tasks
+at two `output_type`s — which is exactly the case §5 has to answer for.
+
+---
+
+## 3. Q2 — what lm-eval offers for the domains §5.2 wants
+
+Searched the full 14,069-entry registry, not lmdiff's curated 31. The
+three §5.2 domains come out **completely differently from each other**,
+which is the finding.
+
+### 3.1 `instruction_following` — already served
+
+| task | `output_type` | metrics |
+|---|---|---|
+| `ifeval` | `generate_until` | `prompt_level_strict_acc`, `inst_level_strict_acc`, `prompt_level_loose_acc`, `inst_level_loose_acc` |
+| `leaderboard_ifeval` | `generate_until` | same |
+
+**§5.2 plans to write `instruction_following.json`. It does not need
+to.** IFEval is the standard benchmark, it is registered, and it relates
+to instruction-following exactly as `hellaswag` relates to commonsense.
+The work is a `KNOWN_TASK_DOMAINS` entry and an evaluator, not a probe
+file.
+
+Two costs. Its metrics are programmatic constraint checks (*"write in
+all caps"*, *"exactly three bullets"*) computed by lm-eval's own Python
+— lmdiff must call or reimplement them, and they are unlike any of the
+five evaluators it has. And IFEval prompts are instruction-style by
+construction, which is the L-001 collision Round 1 flagged: unusable
+against base models, which is what v01 was rewritten for.
+
+### 3.2 `hallucination` — served, but not by what lmdiff registers
+
+| task | `output_type` | metrics |
+|---|---|---|
+| `truthfulqa_gen` | `generate_until` | `bleu_max/acc/diff`, `rouge1/2/L_max/acc/diff` |
+| `truthfulqa_mc1` / `mc2` | `multiple_choice` | `acc` |
+
+**`truthfulqa_gen` exists and lmdiff registers only the MC variants.**
+That is Round 1's finding restated precisely: the problem was never that
+truthfulqa is filed under `safety`, it is that lmdiff picked the two
+variants where the model chooses among supplied answers. Fabrication
+needs generation, and the generative variant is one registry entry away.
+
+Cost: bleu/rouge scoring, which needs `sacrebleu` and `rouge_score` —
+new optional dependencies, and a reference-overlap metric unlike
+anything lmdiff runs.
+
+### 3.3 `safety` — split three ways, and the part §5.1 names is missing
+
+| task | `output_type` | metrics | runnable offline? |
+|---|---|---|---|
+| `realtoxicityprompts` | `generate_until` | `perspective_api_toxicity_score` | **no — Google Perspective API key** |
+| `toxigen` | `multiple_choice` | `acc`, `acc_norm` | yes |
+| `crows_pairs_english` | `multiple_choice` | `likelihood_diff`, `pct_stereotype` | yes |
+| `bbq` | `multiple_choice` | `acc` + 24 bias scores | yes |
+| `bbq_generate` | `generate_until` | — | yes |
+| `ethics_{cm,justice,virtue,utilitarianism,deontology}` | `multiple_choice` | `acc` | yes |
+
+Three distinct things wear the word "safety": **toxic generation**
+(generative, external API), **social bias** (MC, likelihood-difference),
+and **refusal behaviour**.
+
+**Nothing in lm-eval's 14,069 measures refusal or over-refusal.** That
+is §5.1's `safety_regression` definition verbatim, and it is the one
+§5.2 set that genuinely has to be written. It also cannot be written
+completion-style — a refusal probe is a request, which is an
+instruction — so it inherits the same L-001 collision as IFEval.
+
+**Net for §5.2's four:** `general_capability` is v01 and the calibration
+set. `instruction_following` is a registry entry, not a file.
+`hallucination` is a registry entry plus two dependencies.
+`safety_regression` is the only one that is actually a probe-writing
+job — and its subject is the one §5.6 already flags for curation care.
+
+---
+
+## 4. Q3 — the two tiers side by side
+
+| domain | v01 | lm-eval default | shared? |
+|---|---|---|---|
+| `code` | 30 completions | `mmlu_college_computer_science`, MC/`acc` | **both** |
+| `math` | 30 completions | `gsm8k`, generation/`exact_match` | **both** |
+| `knowledge` | 30 completions | — (`mmlu`/`triviaqa` registered, not in the default set) | v01 only |
+| `commonsense` | — | `hellaswag`, MC/`acc_norm` | lm-eval only |
+| `reasoning` | — | `arc_challenge`, MC/`acc_norm` | lm-eval only |
+| `long-context` | — | `longbench_2wikimqa`, generation/`qa_f1_score` | lm-eval only |
+
+Two of six shared, and **both shared domains are scored differently in
+each tier.** v01's `math_001` is `"17 + 25 = "` judged by whichever
+evaluator the caller passed; `gsm8k` is a five-shot word problem
+generated to 256 tokens and matched after `####`. Same domain label, no
+comparable measurement.
+
+### 4.1 Would a scoring-shaped `task_type` split a shared domain?
+
+**Yes — five of nine domains split, and `math` and `code` split inside
+the calibration set's own domain list.** From §1.3: `code` 3 MC / 2 gen,
+`knowledge` 1/2, `math` 3/1, `reading` 1/1, `language` 1 ll / 1 llr.
+
+### 4.2 Is that a problem or the point?
+
+**The point.** Splitting is what an independent axis looks like; a
+second label that never splits the first is a relabelling of it.
+
+Quantified over the 31 curated tasks:
+
+```
+guess output_type from domain alone      25/31 = 81%
+guess "multiple_choice" every time       19/31 = 61%
+      -> domain buys 6 correct answers out of 31
+
+guess domain from output_type alone      11/31 = 35%
+```
+
+Domain carries real but partial information about scoring, and scoring
+carries little about domain. They cross-cut. **§5.1's eight
+capability-named types do not cross-cut domain at all** —
+`safety_regression` and `hallucination_probe` both land on the `safety`
+domain, `knowledge_drift` on `knowledge`, `general_capability` on
+everything else. That axis is close to a function of the first one, and
+a second axis that is a function of the first carries no information.
+
+So: scoring method is a genuine second axis and capability is not. But
+that is not the same as concluding `task_type` should be *named* after
+scoring method, for the reason in §5.
+
+---
+
+## 5. Q4 — what falls out
+
+### 5.1 Scoring method is already on the probe
+
+`from_lm_eval` writes it into `Probe.metadata` for every lm-eval probe:
+
+```python
+meta = {"task_name": …, "native_metric": …, "output_type": …,
+        "requires_execution": …, "doc_idx": …}
+```
+
+Confirmed on live output — `hellaswag:0` carries
+`output_type='multiple_choice'`, `native_metric='acc_norm'`,
+`requires_execution=False`, plus `choices` and `correct_index`.
+
+So a `task_type` whose values are `multiple_choice` / `generate_until`
+would be **a second name for `metadata["output_type"]`**, differing only
+in which probes have it — and that is L-035's exact shape, the failure
+this project has paid for three times.
+
+**v01 probes carry no metadata at all.** That is the actual gap: scoring
+method is recorded for tier 2 and absent for tier 1, in a dict rather
+than a field, under no validation, with nothing keeping the two tiers'
+vocabularies aligned.
+
+### 5.2 There is nothing for a metric registry to dispatch
+
+§5.4 says `metrics="default"` selects task-type-specific metrics. Tracing
+where evaluation metrics are actually computed:
+
+- `_accuracy_for_task` (`experiments/family.py`) **already dispatches on
+  `output_type`** — `multiple_choice` → `loglikelihood_accuracy`,
+  `generate_until` → `GENERATE_EVALUATORS[task]` or `ContainsAnswer`,
+  `requires_execution` → `NaN`, unknown task → `ContainsAnswer`.
+- It lives in `run_family_experiment`, **deprecated since v0.4.0 and
+  removed in v0.5.0**, and uses the deprecated `InferenceEngine`.
+- **The live path computes no accuracy at all.** `_api.py` and
+  `_pipeline.py` contain zero occurrences of "accuracy". Reports read
+  `result.metadata["accuracy_by_variant"]`, which only the deprecated
+  path ever populates — so for any `lmdiff.family()` result it is `{}`.
+
+Two consequences. The registry §5.4 describes **already exists**, and it
+dispatches on scoring method, which is the answer to "what should
+task_type distinguish" arriving from the code rather than from a plan.
+And it is on the path being deleted — so before 4.6 can dispatch
+anything, evaluation metrics have to exist on the live path at all. That
+is a larger piece of work than 4.3, and it is not currently scheduled
+anywhere.
+
+### 5.3 Recommendation
+
+**Neither of the two options as posed. Do not name `task_type` after
+scoring method, and do not add scoring method as a third axis — promote
+the scoring fields that already exist out of `metadata` into first-class
+`Probe` fields, keep lm-eval's names, and drop §5.1's capability-named
+`task_type` from 4.3.**
 
 ```python
 @dataclass(frozen=True)
 class Probe:
     id: str
     text: str
-    domain: str | None = None
+    domain: str | None = None          # unchanged — subject matter
+    output_type: str | None = None     # NEW — how the model is queried
+    scoring: str | None = None         # NEW — how output is judged
     expected: str | None = None
     metadata: dict = field(default_factory=dict)
 ```
 
-`domain` is a **first-class optional field**, not a metadata key and not
-a parallel array. It has four consumers in `ProbeSet`, and `task_type`
-should acquire the mirror of each:
+- **`output_type`** — `multiple_choice` / `generate_until` /
+  `loglikelihood` / `loglikelihood_rolling`. lm-eval's vocabulary
+  verbatim, because inventing a synonym for a value copied from lm-eval
+  is how two names for one quantity start. Populated from
+  `metadata["output_type"]` for adapter probes; `generate_until` for
+  v01, which is what a plain completion is.
+- **`scoring`** — the evaluator identity: `exact_match`, `f1`,
+  `contains_answer`, `acc`, `acc_norm`, `gsm8k_number_match`, `pass@1`.
+  Today this is split between `metadata["native_metric"]` and the
+  per-task `GENERATE_EVALUATORS` dict; one field on the probe subsumes
+  both. This is what lets v01 stop taking a single caller-chosen
+  evaluator for all three of its domains.
+- **Both `None`-defaulting**, for Round 1 §3.3's reason unchanged:
+  `None` means unlabelled, and a default is a claim nobody made.
+- **`requires_execution` stays in `metadata`.** It is a property of the
+  metric, and promoting it would be the third field with two homes.
 
-| domain | mirror |
-|---|---|
-| `Probe.domain: str \| None = None` | `Probe.task_type: str \| None = None` |
-| `ProbeSet.domains` → sorted distinct, `None` dropped | `ProbeSet.task_types` |
-| `ProbeSet.filter(domain=...)` | `filter(task_type=...)` |
-| `ProbeSet.by_domain()` → `p.domain or "unknown"` | `by_task_type()` |
+Why this rather than `task_type`:
 
-Plus the two serialization sites: `from_json` reads `p.get("domain")`,
-`to_json` writes it **only when truthy** (`**({"domain": p.domain} if
-p.domain else {})`). That conditional matters — it is what keeps
-`task_type` out of every probe file that does not use it.
+1. **It is the axis the data supports.** §4.2 — scoring cross-cuts
+   domain; capability does not.
+2. **It does not duplicate.** §5.1 — a scoring-valued `task_type` would
+   be a second name for a field that exists.
+3. **It matches the dispatch that already works.** §5.2 —
+   `_accuracy_for_task` reads exactly these two things.
+4. **It closes the tier gap**, which is the concrete defect: tier 1 has
+   no scoring metadata, tier 2 has it in an unvalidated dict.
+5. **It does not freeze eight names** that §3 shows are wrong in three
+   different ways — one already served, one served by a variant lmdiff
+   does not register, one not served at all.
 
-Every `Probe(...)` construction in `lmdiff/` and `tests/` is
-keyword-based — 20 sites checked, zero positional — so field placement
-is free. Put `task_type` directly after `domain`, since they are the two
-labels.
+`GeoResult.probe_output_types` / `probe_scoring` replace Round 1 §3.2's
+`probe_task_types`, on the same argument and the same 7 → 8 bump: the
+seven gates cost the same whenever they move, and unrecorded per-probe
+labels are unrecoverable without a GPU re-run. Two tuples rather than
+one, at no extra gate cost.
 
-Beyond the probe, `domain` is denormalized in exactly one other place:
-`ProbeValidity.domain` (`_validity.py`), for group-by in
-`compute_domain_status`. **`task_type` should not follow it there.**
-Nothing computes validity per task type, and the field's own docstring
-says it exists for a specific lookup. Denormalizing a second label with
-no consumer is the duplication this project keeps paying for (L-035).
+### 5.4 What this leaves open — your call
 
----
+**§5.1's `task_type` does not disappear, it becomes unscheduled.** Five
+of its eight names describe base-vs-variant measurements rather than
+probes (Round 1 §2.4(c)), and the three that describe probes are
+recoverable from `domain` + `output_type` + probe-set identity. My
+reading is that the concept was standing in for "how is this scored",
+and once that is a field the remainder does not earn a third axis — but
+§5.1 is the specification and dropping a field from it is yours to
+decide, not mine.
 
-## 2. Do the eight types fit the probes that exist?
+If you want it kept, the cheapest honest version is a probe-**set**
+attribute rather than a per-probe one: `ProbeSet.task_type`, set by
+whoever authored the set, with no vocabulary enforced and no metric
+dispatching on it until 4.6 has something to dispatch.
 
-Short answer: **your prediction is right, and the two apparent
-exceptions both fail on inspection.** Five of the eight types have zero
-probes, one is a catch-all, and the remaining two are ambiguous rather
-than populated.
-
-### 2.1 The bundled set
-
-`lmdiff/probes/v01.json` — 90 probes, three domains, 30 each:
-`code`, `knowledge`, `math`. All completion-style, all with `expected`.
-
-- `math` (30) → `general_capability`. Clean.
-- `code` (30) → `general_capability`. Clean.
-- `knowledge` (30) → **ambiguous.** `"The capital of France is "`,
-  `"The largest planet in our solar system is "` — this is per-item
-  factual recall, which is §5.1's definition of `knowledge_drift`
-  verbatim. It is equally `general_capability`. Nothing in the probe
-  distinguishes the two.
-
-**30 of 90 probes in the bundled set fit two types.**
-
-### 2.2 The `lm_eval:` adapter
-
-`KNOWN_TASK_DOMAINS` holds 31 tasks. `from_lm_eval` assigns `domain`
-per *task*, so every probe from one task shares a label — `task_type`
-would resolve the same way, through the same table.
-
-I ran the adapter on four tasks and read the actual prompts. Two
-findings that reading the table would not have produced:
-
-**`toxigen` is not a `safety_regression` probe.** Its prompt is:
-
-```
-Is the following statement hateful? Respond with either Yes or No.
-Statement: '...'
-```
-
-That is hate-speech *classification*, scored `acc` over a 2-way choice.
-§5.1 defines `safety_regression` as "harmful-content refusal /
-over-refusal regression". Toxigen measures neither refusal nor
-over-refusal — a model that answers "Yes" correctly has not refused
-anything. It is `general_capability` on subject matter that sounds like
-safety. The `domain: safety` label in `KNOWN_TASK_DOMAINS` is what
-makes it look otherwise.
-
-**`truthfulqa_mc1` cannot support the metric its natural type
-promises.** By subject it is `hallucination_probe` — §5.1's "factual
-fabrication rate". By format it is `output_type: multiple_choice`,
-scored by loglikelihood over four options. **A model choosing among
-supplied options never fabricates**, so a fabrication-rate metric cannot
-run on it regardless of the label. All three `safety`-domain tasks are
-`multiple_choice`; across the whole registry, 19 of 31 are
-`multiple_choice` and 2 more are loglikelihood-only, leaving 10
-`generate_until` tasks — none of which is a hallucination probe.
-
-Same shape as `knowledge_drift`: `triviaqa` and `nq_open` are
-`generate_until` factual recall, so they *could* support it, and they
-are equally `general_capability`. Ambiguous, not populated.
-
-### 2.3 The tally
-
-| type | probes available today | note |
-|---|---|---|
-| `general_capability` | **all 90 v01 + all 31 lm_eval tasks** | catch-all |
-| `knowledge_drift` | 0 unambiguous | v01 `knowledge`, `triviaqa`, `nq_open` fit it *and* `general_capability` |
-| `hallucination_probe` | 0 usable | `truthfulqa_*` fits by subject, cannot support the metric in MC format |
-| `safety_regression` | **0** | `toxigen` is classification, not refusal |
-| `instruction_following` | **0** | nothing registered has multi-constraint instructions |
-| `consistency_check` | **0** | needs paraphrase pairs; none exist |
-| `style_drift` | **0** | needs open-ended generation + a style metric |
-| `crosslingual_consistency` | **0** | nothing multilingual is registered |
-
-**No probe fits *none* of the eight** — but only because
-`general_capability` is a catch-all. A taxonomy with a catch-all cannot
-report "unlabelable", so that column proves nothing.
-
-### 2.4 Three things this turned up that §5.1 does not say
-
-**(a) There are nine domains, not five.** §5.1 opens "Domain (existing
-5): commonsense / reasoning / math / code / long-context". The real
-vocabulary is `code`, `commonsense`, `knowledge`, `language`,
-`long-context`, `math`, `reading`, `reasoning`, `safety` — nine in
-`KNOWN_TASK_DOMAINS`, of which v01 uses three (`code`, `knowledge`,
-`math`, and `knowledge` is not in §5.1's five at all). Nothing depends
-on the number, but §5.1's "two orthogonal labels" framing was written
-against a domain list that does not exist.
-
-**(b) The domain axis already contains task semantics.** `safety` is a
-*domain*. `knowledge` is a *domain*. Those are exactly the two axes
-`safety_regression` and `knowledge_drift` are supposed to introduce as
-the orthogonal second label. The axes are not orthogonal today because
-the first one is already carrying some of the second. Adding `task_type`
-does not fix that; it means the same probe can be labelled `safety` on
-one axis and `general_capability` on the other, which reads as a
-contradiction to anyone looking at a report.
-
-**(c) Five of the eight names describe a measurement, not a probe.**
-
-```
-knowledge_drift            ← a measured change
-safety_regression          ← a measured change
-consistency_check          ← a measured change
-style_drift                ← a measured change
-crosslingual_consistency   ← a measured change
-hallucination_probe        ← a kind of probe
-instruction_following      ← a kind of probe
-general_capability         ← a kind of probe
-```
-
-`drift`, `regression`, `check`, `consistency` are all base-vs-variant
-comparisons — things you compute, not things a probe *is*. That is why
-§2.1's ambiguity keeps appearing: a factual-recall probe is not "a
-knowledge_drift probe", it is a probe on which you can compute knowledge
-drift, and also accuracy, and also raw δ.
-
-This matters operationally because of §5.4: "Hallucination Rate only on
-`task_type="hallucination_probe"` probes". If the label names the
-metric, the dispatch is a tautology — run metric X on probes labelled
-"we want metric X" — and the label cannot be checked against the probe's
-content, only trusted. `truthfulqa_mc1` is the demonstration: label it
-`hallucination_probe` and the registry will dispatch a fabrication-rate
-metric onto a multiple-choice task where fabrication is impossible.
-
-**I am not proposing a rename here** — §5.1 settled these eight names
-and re-litigating settled decisions is how this project has lost time
-before. But the names are about to become a public API surface (a user's
-YAML in commit 4.5 will contain these strings), and renaming after that
-is a breaking change. Decision 3.1 below is where this lands.
+**[QUESTION] — the one that blocks 4.6, not 4.3.** §5.2 says
+`metrics="default"` auto-selects task-type-specific metrics, but §5.2
+above shows the evaluation-metric layer exists only on the deprecated
+path and the live path has none. Does restoring evaluation metrics to
+`lmdiff.family()` belong in Phase 2, in the v0.5.0 removal work (which
+is what deletes the current implementation), or somewhere else? 4.3
+needs no answer — the fields are recorded either way — but it is on the
+critical path for 4.6 and it is currently in no commit's scope.
 
 ---
 
-## 3. Decisions
+## 6. Revised Part 2
 
-### 3.1 Closed enum or open string?
+Provisional. Fields and defaults per §5.3.
 
-**Recommend: open `str | None`, validated against the known eight at
-load time, warning — not raising — on anything else.**
-
-Three reasons, in order of weight:
-
-1. **The 4.6 dispatch never needs to raise.** Task-type-specific metric
-   selection is a lookup: known type → its metrics, unknown type →
-   nothing task-specific. That is total. There is no code path where an
-   unrecognised string has to become an error, so a closed enum buys
-   nothing at the point of use.
-2. **Warn-on-unknown catches the typo where it happens.** Under a pure
-   open string, `instruction_folowing` silently gets no metrics and the
-   user finds out after a multi-hour run, if ever. Under a warning, they
-   find out at load. This is the failure mode a closed enum is actually
-   for, and a warning covers it without the cost.
-3. **§2.4(c) says these names are not ready to be frozen.** A closed
-   enum makes eight strings a hard API boundary in the same release that
-   found five of them describe measurements rather than probes. Open +
-   warn keeps the boundary soft for one more commit, which is exactly as
-   long as it needs to stay soft — 4.5 is when users start writing them.
-
-Concretely: `KNOWN_TASK_TYPES: frozenset[str]` as the vocabulary, a
-`UserWarning` naming the probe id and the unknown value, and nothing in
-the hot path — validate in `from_json` and in the `Probe` constructor's
-call sites, not per-probe-per-metric.
-
-### 3.2 Does `GeoResult` need `probe_task_types`?
-
-**Recommend: yes, add it now, `geo_schema` 7 → 8.**
-
-The argument that decides it is asymmetry of cost:
-
-- **The cost of the bump is the same now and later.** The seven gates in
-  `geo_result_from_json_dict` are `sv in ("5", "6", "7")` — membership
-  lists of *accepted versions*, not of new fields. Any bump for any
-  reason must edit all seven plus the guard at line 302. Deferring does
-  not avoid that work, it just moves it to whichever release next
-  touches the schema. (Z.4 item 5 / Z.5: this is the seven-gate trap,
-  and the interim rule is edit all seven and add a **payload-level**
-  test, not only a version-string one. The v0.4.3 bump failed exactly
-  here — `domain_status` deserialized as `{}` while every version-pin
-  test passed.)
-- **The cost of not bumping is unrecoverable.** Every result saved
-  between 4.3 and 4.6 would carry no task types, and 4.6's grouping
-  could not be applied to it without re-running — a multi-hour GPU job,
-  for results whose probe set may not even be reconstructible (see §4).
-  `probe_domains` exists for precisely this reason.
-
-The field is free when unused: `tuple[str | None, ...] = ()`, aligned
-with `change_vectors` after the NaN filter, exactly like `probe_domains`
-— populated at `_pipeline.py:704` from the same `valid_indices`.
-
-Note one thing that makes this cheaper than it looks: **the new field
-itself needs no gate.** `run_config_yaml` is deserialized at line 400
-outside every gate, via plain `.get()`, because an additive-nullable
-field reads correctly from any version. Only the version *acceptance*
-lists move. So the diff is eight one-character edits and one new
-`.get()`.
-
-Honest counter, for the record: this ships a field nothing reads for
-three commits, and "add it now in case" is a shape this project is
-right to be suspicious of. What makes it different from speculative
-generality is that the consumer is *scheduled* (4.6, §5.4) and the data
-is *destroyed* by not capturing it — neither is true of a speculative
-field.
-
-### 3.3 Probes without a `task_type`
-
-**Recommend: `None`. Do not default to `general_capability`.**
-
-You named the reason yourself and it is the whole argument: `None` and
-`"general_capability"` mean different things to a metric that groups by
-type. Three consequences:
-
-1. **`None` means unlabelled; `general_capability` is a claim.** A probe
-   from a user's YAML with no `task_type` is a probe whose type nobody
-   stated. Labelling it "generic capability" on the author's behalf
-   asserts something the data does not say — the L-039 shape: the
-   predicate *has no task_type* does not support the statement *is a
-   general-capability probe*.
-2. **It is one-way.** A metric that wants to treat unlabelled probes as
-   general can do so at the point of use, visibly. Recovering
-   "unlabelled" from a defaulted `general_capability` is impossible.
-3. **It matches `domain`.** `domain` is `str | None` with `None` for
-   unassigned, `probe_domains` is `tuple[str | None, ...]`, and
-   `by_domain()` renders `None` as `"unknown"`. Defaulting `task_type`
-   while `domain` does not default would be the second pattern the
-   instruction says to avoid.
-
-Old saves and old probe sets therefore load as `None`, which is
-truthful: they were written before the concept existed.
-
-**Separately — and this is not the same decision — v01.json's 90 probes
-should be labelled `general_capability` explicitly in the file.** §2.1
-says they are, and an explicit label in the artifact is a statement
-someone made; a default is a statement nobody made. That is the whole
-distinction, and it is why "default to `general_capability`" and "label
-the existing probes `general_capability`" can both be right answers to
-different questions.
-
-Caveat carried forward from §2.1: the 30 `knowledge` probes get
-`general_capability` under this, which is defensible but discards the
-`knowledge_drift` reading. Since §2.4(c) may rename that type anyway,
-labelling them the ambiguous-but-safe way now and revisiting in 4.4
-costs nothing — a probe file is data, not schema.
-
----
-
-## 4. Does the run config need changing?
-
-**The §8 conclusion holds for the two paths that have an identifier, and
-does not hold for the third — but the gap is not created by
-`task_type`.**
-
-v0.4.3 audit §8: *"`task_type` lives in the probe set, and the run
-config points at it by identifier… Nothing to reserve now."*
-
-Verified against the shipped emitter. `build_run_config` passes
-`probes` through verbatim (`_runconfig.py:155`), and `_resolve_probes`
-(`_api.py:100`) accepts three forms:
-
-| form | emitted | task types recoverable? |
-|---|---|---|
-| `None` / `"v01"` | `probes: v01` | yes — bundled file, pinned by `provenance.lmdiff` |
-| `"lm_eval:hellaswag+…"` | `probes: lm_eval:hellaswag+…` | yes — resolved from `KNOWN_TASK_DOMAINS`, pinned by `provenance.lmdiff` + `provenance.lm_eval` |
-| `ProbeSet` instance | **nothing — the emitter raises** | n/a |
-
-The first two are fine, and the reason is worth stating because it is
-the same reason `domain` is fine: the identifier alone is not enough,
-since resolution goes through a table *inside lmdiff*. What makes it
-sound is `provenance.lmdiff`, which pins the table. `task_type`
-inherits that guarantee unchanged. **Nothing to reserve, confirmed.**
-
-The third is a v0.4.3 defect, found here rather than fixed here.
-
-### 4.1 Defect — a `ProbeSet` instance drops the entire run config
-
-```
-probes = ProbeSet.from_json("my_probes.json")
-result = lmdiff.family(base=…, variants=…, probes=probes)
-# RuntimeWarning: could not emit run configuration:
-#   RepresenterError: ('cannot represent an object', ProbeSet(name='v01', n=90, …))
-# result.run_config_yaml is None
-```
-
-Reproduced end-to-end through `_attach_run_config`, not inferred:
-`yaml.safe_dump` cannot represent a `ProbeSet`, the `except Exception`
-at `_api.py:371` catches it, and the run passes with a warning and no
-artifact.
-
-Three things make this worth fixing before 4.5 rather than after:
-
-- **It fails on the case provenance matters most for.** A named
-  benchmark is recoverable from the identifier. A hand-built probe set
-  is the one thing a reader cannot reconstruct — and it is the only path
-  that produces no record at all.
-- **`reproducible: false` has found its occupant.** v0.4.3 shipped
-  `reproducible` / `non_serializable` per AA.5 with, in the audit's
-  words, no current occupant, and `docs/reference/run-config.md`
-  currently says *"Nothing in lmdiff currently triggers it."* That
-  sentence is wrong. A nameless in-memory `ProbeSet` is precisely
-  "something Python can hold and YAML cannot name" — the flag's stated
-  criterion. The escape hatch exists and the one path that should set it
-  raises instead.
-- **It is the path 4.5 turns into the main one.** A YAML probe-set
-  loader produces exactly this object.
-
-**Recommended fix** (its own commit, or v0.4.5 — your call; it is not
-4.3 work): give `probes` the `_variant_block` treatment. A `ProbeSet`
-with a `name` emits `probes: <name>`, matching what the string form
-would have produced. A `ProbeSet` without one sets `reproducible: false`
-and adds `non_serializable: [{path: probes, reason: in-memory ProbeSet
-with no name}]`. Note `ProbeSet.from_json` populates `name` from the
-file, so the common case emits a usable identifier. The docs sentence
-needs correcting either way.
-
----
-
-## 5. What Part 2 looks like
-
-Provisional, pending your review of §3.
-
-1. `Probe.task_type: str | None = None`, after `domain`.
-2. `ProbeSet.task_types`, `filter(task_type=…)`, `by_task_type()`,
-   `from_json` / `to_json` — the §1 mirror, including the write-only-if-
-   truthy conditional.
-3. `KNOWN_TASK_TYPES` frozenset + warn-on-unknown (§3.1).
-4. `v01.json`: 90 probes labelled `general_capability` (§3.3).
-5. `KNOWN_TASK_DOMAINS`: `TaskInfo.task_type`, defaulting
-   `general_capability`, so the adapter resolves it the way it resolves
-   domain. Per §2.2 every one of the 31 is `general_capability` — which
-   is the honest answer, not a placeholder.
-6. `GeoResult.probe_task_types` + `geo_schema` 7 → 8: eight acceptance
-   lists, one ungated `.get()`, and a **payload-level** regression test
-   per Z.5.
-7. Tests, mutation-checked per assertion. The mutations that matter:
-   `to_json` dropping `task_type` (catches a lossy round-trip); the
-   default flipped to `"general_capability"` (catches §3.3 — a test that
-   only checks *a* value passes under this); and the 7→8 bump with one
-   gate left at `("6", "7")` (catches §3.2 — the v0.4.3 failure, and a
-   version-string assertion passes under it).
+1. `Probe.output_type` / `Probe.scoring`, both `str | None = None`,
+   after `domain`.
+2. `ProbeSet` mirrors: `output_types`, `scorings`,
+   `filter(output_type=…, scoring=…)`, `by_output_type()`, plus the two
+   JSON sites with the existing write-only-if-truthy conditional.
+3. `KNOWN_OUTPUT_TYPES` — lm-eval's four, warn-on-unknown (Round 1 §3.1's
+   argument holds unchanged). `scoring` stays open: it names an evaluator,
+   and 4.6 owns that registry.
+4. `from_lm_eval` promotes `output_type` / `native_metric` from
+   `metadata` to the fields, leaving the metadata keys in place for one
+   release.
+5. `v01.json` — 90 probes labelled `output_type: generate_until` plus a
+   per-domain `scoring`, which is the first time v01 says how it should
+   be judged rather than taking it as an argument.
+6. `GeoResult.probe_output_types` / `probe_scoring`, `geo_schema` 7 → 8:
+   eight acceptance lists, two ungated `.get()`s, **payload-level**
+   regression test per Z.5.
+7. Tests, mutation-checked per assertion. The three that matter: `to_json`
+   dropping a new field; the default flipped from `None` to a value; and
+   the 7 → 8 bump with one gate left at `("6","7")` — the v0.4.3 failure,
+   which a version-string assertion passes under.
 8. CHANGELOG, `0.4.4` in `pyproject.toml` / `__init__.py` /
-   `test_release.py:_CURRENT_VERSION`.
-9. Docs: **`docs/reference/probe-sets.md`, new.** `docs/reference/` holds
-   only `run-config.md`, and nothing anywhere documents `ProbeSet`,
-   `domain`, or the probe-spec forms for users — README covers the
-   `probes=` argument in passing and no more. The taxonomy needs a home
-   and there is no existing page to add a section to.
+   `test_release.py`.
+9. `docs/reference/probe-sets.md`, new — `docs/reference/` holds only
+   `run-config.md`, and nothing documents `ProbeSet` for users today.
 
-### 5.1 One thing 4.4 inherits
-
-L-001: v01's math probes were once instruction-style, produced
-degenerate output on base models, and were rewritten to completion
-style; CLAUDE.md makes completion style the convention and says
-instruction-style probes belong in a separate versioned file.
-
-§5.2 plans `instruction_following.json` and `safety_regression.json` as
-builtin sets. Both are instruction-style **by definition** — a
-multi-constraint instruction cannot be phrased as a completion, and
-neither can a refusal probe. So two of §5.2's four builtin sets are
-unusable against base models, which is the audience v01 was rewritten
-for.
-
-Not a 4.3 problem — no code here touches it. Recorded because it is a
-constraint on 4.4 that the taxonomy is what surfaces, and because "which
-four" is already flagged for revisiting against lab feedback (§5.2's
-first added constraint).
+Carried forward from Round 1, unchanged and still not 4.3 work: a
+`ProbeSet` instance passed to `family()` makes the v0.4.3 run-config
+emitter raise, so the artifact is dropped for the one input a reader
+cannot reconstruct from an identifier. `reproducible: false` has found
+its occupant and `docs/reference/run-config.md` says it has none.
 
 ---
 
-## 6. Scripts
-
-Throwaway, in the session scratchpad, listed so the numbers above can be
-re-derived:
+## 7. Scripts
 
 | script | produced |
 |---|---|
-| `inspect_v01.py` | v01 shape: 90 probes, 3 domains, 30 each, keys `id/text/domain/expected` |
-| `label_probe.py` | the nine-domain vocabulary, §2.4(a) |
-| `try_adapter.py` | real prompts for `hellaswag`, `truthfulqa_mc1`, `toxigen`, `gsm8k` — §2.2's two findings |
-| `output_types.py` | 19 `multiple_choice` / 10 `generate_until` / 2 loglikelihood; all three `safety` tasks MC |
-| `rc_probeset.py` | `RepresenterError` on a `ProbeSet` in `build_run_config` |
-| `rc_endtoend.py` | the same via `_attach_run_config`: `RuntimeWarning`, `run_config_yaml is None` |
+| `recount.py` | §0 — 90 probes, 3 domains, 30 each, 0 undomained |
+| `taskmeta.py` | YAML resolver: `include` chains, `python_task`, the `generate_until` default |
+| `tc.py` | `TaskConfig(task='x').output_type == 'generate_until'` — the §1.3 trap |
+| `audit_known.py` | lmdiff's 31 vs lm-eval's YAML: 30/31 agree, `mmlu` is a group |
+| `search_reg.py`, `targeted2.py` | §3 — `ifeval`, `truthfulqa_gen`, `realtoxicityprompts`, `bbq_*`, `ethics_*`, no refusal task |
+| `crosstab.py` | §4.2 — 5/9 domains split; 81 % vs 61 % vs 35 % |
 
-§2.2 and §4.1 are the two findings that came only from running things.
-Both are invisible in the source — `toxigen`'s prompt is in a dataset,
-and the emitter's failure is a library type rule.
+Round 1's §2.2 finding stands (toxigen is classification, verified from
+the live prompt). Round 2's equivalent is §1.3's default-`output_type`
+trap and §5.2's dead accuracy path — neither visible without running
+something.
