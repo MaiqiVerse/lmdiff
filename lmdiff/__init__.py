@@ -14,7 +14,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 # Map every public symbol to the submodule that defines it. __getattr__
 # below will resolve the target lazily on first access and then cache it
@@ -71,6 +71,7 @@ _LAZY: dict[str, str] = {
     "ChangeGeometry": "lmdiff.geometry",
     "GeoResult": "lmdiff.geometry",
     # probes
+    "KNOWN_OUTPUT_TYPES": "lmdiff.probes.loader",
     "Probe": "lmdiff.probes.loader",
     "ProbeSet": "lmdiff.probes.loader",
     # tasks
@@ -83,7 +84,11 @@ _LAZY: dict[str, str] = {
     "F1": "lmdiff.tasks.evaluators",
     "Gsm8kNumberMatch": "lmdiff.tasks.evaluators",
     "MultipleChoice": "lmdiff.tasks.evaluators",
+    "PrefixMatch": "lmdiff.tasks.evaluators",
     "loglikelihood_accuracy": "lmdiff.tasks.loglikelihood",
+    "EVALUATOR_REGISTRY": "lmdiff.tasks.registry",
+    "KNOWN_SCORINGS": "lmdiff.tasks.registry",
+    "get_evaluator": "lmdiff.tasks.registry",
     # experiments (transitively pulls engine → torch)
     "DEFAULT_DOMAIN_ORDER": "lmdiff.experiments.family",
     "DEFAULT_MAX_NEW_TOKENS": "lmdiff.experiments.family",
@@ -231,7 +236,11 @@ if TYPE_CHECKING:  # pragma: no cover
         run_family_experiment,
     )
     from lmdiff.geometry import ChangeGeometry, GeoResult  # noqa: F401
-    from lmdiff.probes.loader import Probe, ProbeSet  # noqa: F401
+    from lmdiff.probes.loader import (  # noqa: F401
+        KNOWN_OUTPUT_TYPES,
+        Probe,
+        ProbeSet,
+    )
     from lmdiff.tasks.base import (  # noqa: F401
         BaseEvaluator,
         EvalResult,
@@ -244,5 +253,11 @@ if TYPE_CHECKING:  # pragma: no cover
         F1,
         Gsm8kNumberMatch,
         MultipleChoice,
+        PrefixMatch,
     )
     from lmdiff.tasks.loglikelihood import loglikelihood_accuracy  # noqa: F401
+    from lmdiff.tasks.registry import (  # noqa: F401
+        EVALUATOR_REGISTRY,
+        KNOWN_SCORINGS,
+        get_evaluator,
+    )

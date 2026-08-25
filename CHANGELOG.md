@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.4.4] - 2026-08-25
+
+A probe now says how it should be scored, and an accuracy always shows what it rests on.
+
+`CapabilityRadar` took one evaluator for an entire probe set and applied it to every domain. Nothing inspected a probe, so the caller had to pick a single rule covering every answer format at once — and picking wrong produced a plausible number rather than an error. On the bundled `v01` set, the default `ContainsAnswer` scores 3 of 30 `code` probes **correct** for the output `"I don't know, but it is interesting to consider."`, because 12 of those 30 expected values are two characters or fewer. `MultipleChoice` returns `0.00%` for all 90, every one of them carrying `reason: "missing_mc_metadata"` that no output surface displayed.
+
+That second one is the shape this project keeps paying for: a number displayed without the condition that decides whether it means anything (LESSONS L-039). It is also what PHASE_PLAN §5.1 and §5.4 were written to fix — those sections predate the v0.4.0 backend cutover, when the radar was the live evaluation path.
+
+### Added
+
+- **`Probe.output_type` and `Probe.scoring`.** How the model is queried, and which evaluator judges the result. `output_type` uses lm-evaluation-harness's four values verbatim; `scoring` names an evaluator. Both default to `None`, meaning *unlabelled* — distinct from any value, because defaulting would assert something nobody stated. Reference: [`docs/reference/probe-sets.md`](docs/reference/probe-sets.md), the first user-facing documentation `ProbeSet` has had.
+- **`PrefixMatch` (`scoring: "prefix_match"`)** — the output *begins with* `expected`. The rule completion-style probes have always needed and never had: a model that answers correctly and keeps going is right, which `ExactMatch` denies, and an answer buried in a wrong one is not, which `ContainsAnswer` accepts. Measured over `v01`'s 90 probes against the two cases that condemned the others — a correct-but-continuing answer, and the output `"I don't know, but it is interesting to consider."`:
+
+  | | correct, continues | plainly wrong | buried in a wrong answer |
+  |---|---|---|---|
+  | `exact_match` | 0/90 ✗ | 0/90 ✓ | 0/90 ✓ |
+  | `contains_answer` | 90/90 ✓ | **3/90 ✗** | **90/90 ✗** |
+  | `prefix_match` | 90/90 ✓ | 0/90 ✓ | 0/90 ✓ |
+
+  Case-sensitive by default, matching `ExactMatch` — `v01` needs it in two domains independently, for identifiers (`np`, `argv`) and for chemical symbols where `Au` and `au` are different claims. `details["prefix_len"]` reports how much matched, because a one-character match is weaker evidence than a seventeen-character one and nothing else in the result says so.
+- **`lmdiff.tasks.registry`** — one `EVALUATOR_REGISTRY` keyed by each evaluator's own `name`, so it cannot drift from the classes it indexes. Replaces two partial tables that did not know about each other: `cli.py`'s `_EVALUATOR_MAP` listed three of the then-five evaluators, and `experiments/family.py`'s `GENERATE_EVALUATORS` mapped eight task names onto two classes. `f1` and `gsm8k_number_match` were unreachable from the CLI because neither table mentioned them there.
+- **`ProbeSet.output_types` / `.scorings` / `.by_output_type()`**, and `filter(output_type=…, scoring=…)` — mirroring what `domain` already had rather than introducing a second pattern.
+- **`GeoResult.probe_output_types` / `.probe_scoring`**, aligned with `change_vectors` exactly as `probe_domains` is. Recorded although nothing groups by them until the metric registry (commit 4.6): a result outlives the probe set that produced it, and re-deriving the labels means a GPU re-run.
+- **`TaskResult.n_unscorable` / `.n_scorable`, `EvalResult.scorable` / `.evaluator`, `DomainRadarResult.n_unscorable` / `.n_scorable`.**
+
+### Changed
+
+- **`Task` selects an evaluator per probe.** `probe.scoring` resolves through the registry; the constructor's `evaluator` is now the fallback for probes that name none. Every existing caller keeps its behaviour, and a mixed-format probe set can be scored correctly for the first time.
+- **Accuracy excludes unscorable probes rather than counting them wrong, and is `None` when nothing was scorable.** An evaluator that cannot apply to a probe — no `expected`, no `correct_index` — has learned nothing about the model, so including it in the denominator penalises the model for a defect in the probe set. This is "excluded cells are removed, not nulled" one layer down from where v0.4.2 applied it. `0.0` and `None` are different claims: the first says the model got everything wrong, the second says the rule could not judge it. **No floor is introduced** — `None` is a division guard, not a threshold.
+- **Every surface that prints an accuracy prints its denominator beside it.** Terminal tables read `43.33% (30/30)`, JSON objects carry `n_scorable` and `n_unscorable` next to `accuracy`, and `RadarResult.summary_table()` emits both per row. Reading the number without the count is now unrepresentable rather than merely discouraged.
+- **GeoResult schema 7 → 8**, adding the two per-probe tuples. Purely additive: a v1–v7 save loads with both `()`.
+- **`v01.json`** — all 90 probes declare `output_type: generate_until` and `scoring: prefix_match`; version `0.2.1` → `0.4.4`. **This is the first time the bundled set is scored correctly.** It is a set of prefix completions and `ContainsAnswer` was its default by inheritance rather than by choice — nobody had written the rule it needed. Passing an unsuitable evaluator no longer matters: the probes carry their own.
+- **`from_lm_eval` populates both fields**, promoting `output_type` from `Probe.metadata` (where it has always been) to a first-class field, and resolving `scoring` per task. `multiple_choice` and execution tasks get `None`: the first is scored by log-likelihood over stored choices rather than by an evaluator, and the second needs a sandbox lmdiff does not have.
+- **`PairTaskResult.delta_accuracy` and `per_domain_delta` are now nullable.** A difference where one side is absent is not zero. The previous `.get("accuracy", 0.0)` turned a missing domain into a full-marks delta.
+
+### Removed
+
+- **`task_type` was dropped before it shipped.** PHASE_PLAN §5.1 specified a per-probe capability label with eight values. Checked against the data twice, it failed twice: over the 31 curated lm-eval tasks, `output_type` splits 5 of the 9 domains while the eight proposed types split none — `safety_regression` and `hallucination_probe` both land on `safety`, `knowledge_drift` on `knowledge` — and a second axis that is close to a function of the first carries no information. Five of the eight were also named after a base-vs-variant *measurement* (`drift`, `regression`, `check`, `consistency`) rather than after a property of a probe. §5.1 is rewritten with the original preserved beneath it; the investigation is `docs/internal/v044_taxonomy_notes.md`.
+
+### Notes
+
+- **The evaluation layer cannot run on the live engine, and v0.5.0 as scoped would ship it dead.** `Task`, the five evaluators and `loglikelihood_accuracy` — all exported from `lmdiff` — call `generate(prompts, n_samples=…)` and `engine.model_name`, which only the deprecated `InferenceEngine` provides; `HFEngine` has `.name` and a single-prompt `generate`. v0.5.0 removes `InferenceEngine`. Filed as a **blocker** in PHASE_PLAN Z.4 item 6, with the measurement to scope from: the port is roughly 15 lines of engine-calling code, because the evaluators are pure functions of `(output, expected, metadata)` and touch no engine at all.
+- **lm-eval's `TaskConfig` default `output_type` is `generate_until`, not `multiple_choice`.** A resolver assuming otherwise mislabels every task whose YAML omits the key — including the calibration set's `longbench_2wikimqa`.
+- **1195 tests pass, up from 1181 in v0.4.3** (local, with the Llama-2 4-variant calibration `GeoResult` present). In CI, where that local artifact is absent, 1183 and 1169. Fifteen mutations across two rounds, all caught.
+- Bumping `SCHEMA_VERSION` still means editing all seven acceptance gates in `geo_result_from_json_dict`; the new fields themselves need none, being read with `.get()` after the gated block. The regression test now reads the gates out of the source and asserts each admits the current version, so an eighth gate is covered without an eighth test. Range comparisons remain tracked for v0.5.0 (Z.4 item 5).
+
 ## [0.4.3] - 2026-08-20
 
 Every report now carries the call that produced it. A run configuration — the base, the variants, the probe set, the seed, every decode parameter and every value-affecting default — is written as YAML alongside each report and embedded in the HTML.

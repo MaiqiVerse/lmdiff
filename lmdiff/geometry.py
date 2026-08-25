@@ -246,6 +246,32 @@ class GeoResult:
     ``docs/internal/v043_runconfig_design.md`` §6.
     """
 
+    probe_output_types: tuple[str | None, ...] = ()
+    """Per-probe ``output_type``, aligned with ``change_vectors``. v8.
+
+    This and ``probe_scoring`` are what PHASE_PLAN §5.1's ``task_type``
+    became. No ``probe_task_types`` field exists or ever will: that axis
+    was checked against the data twice and is close to a function of
+    ``domain`` — over the 31 curated lm-eval tasks ``output_type`` splits
+    5 of the 9 domains while the eight proposed task types split none.
+    See ``docs/internal/v044_taxonomy_notes.md``.
+
+    Same alignment contract as ``probe_domains``: one entry per surviving
+    probe, after the NaN filter, so ``len == n_probes`` when populated.
+    ``()`` for any pre-v8 save and for results built without a ProbeSet.
+
+    Recorded now although nothing groups by it until the task-type-aware
+    metric registry (PHASE_PLAN §5.4 / commit 4.6). The asymmetry that
+    decided it: a schema bump costs the same whenever it happens, while
+    a result saved without these labels cannot recover them without
+    re-running on a GPU."""
+
+    probe_scoring: tuple[str | None, ...] = ()
+    """Per-probe ``scoring``, aligned with ``change_vectors``. v8.
+
+    See ``probe_output_types``. ``None`` entries mean the probe named no
+    evaluator, which is distinct from naming one this version lacks."""
+
     magnitudes_per_domain_normalized: dict[str, dict[str, float | None]] = field(
         default_factory=dict,
     )
@@ -1018,9 +1044,18 @@ class ChangeGeometry:
         # probe_domains: aligned with change_vectors after NaN filter (v3).
         # Stays () when caller passed a bare list[str] instead of a ProbeSet.
         probe_domains: tuple[str | None, ...] = ()
+        probe_output_types: tuple[str | None, ...] = ()
+        probe_scoring: tuple[str | None, ...] = ()
         if self.probe_set is not None:
             all_domains = [p.domain for p in self.probe_set]
             probe_domains = tuple(all_domains[i] for i in valid_indices)
+            # Schema v8 (v0.4.4). Populated on this path too, so a
+            # GeoResult is not thinner for having come through the
+            # deprecated one.
+            all_ot = [p.output_type for p in self.probe_set]
+            all_sc = [p.scoring for p in self.probe_set]
+            probe_output_types = tuple(all_ot[i] for i in valid_indices)
+            probe_scoring = tuple(all_sc[i] for i in valid_indices)
 
         # Schema v4 (L-022): per-probe token counts.
         avg_tokens_per_probe: tuple[float, ...] = tuple(
@@ -1082,6 +1117,8 @@ class ChangeGeometry:
             selective_magnitudes=selective_magnitudes,
             selective_cosine_matrix=selective_cosine_matrix,
             probe_domains=probe_domains,
+            probe_output_types=probe_output_types,
+            probe_scoring=probe_scoring,
             avg_tokens_per_probe=avg_tokens_per_probe,
             magnitudes_normalized=magnitudes_normalized,
             magnitudes_per_domain_normalized=mag_per_domain_norm,

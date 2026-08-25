@@ -43,8 +43,9 @@ class PairTaskResult:
     task_name: str
     result_a: TaskResult
     result_b: TaskResult
-    delta_accuracy: float
-    per_domain_delta: dict[str, float]
+    delta_accuracy: float | None
+    """``None`` when either side had nothing scorable (v0.4.4)."""
+    per_domain_delta: dict[str, float | None]
     metadata: dict = field(default_factory=dict)
 
 
@@ -164,17 +165,28 @@ class ModelDiff:
         result_a = task.run(self.engine_a)
         result_b = task.run(self.engine_b)
 
-        per_domain_delta: dict[str, float] = {}
+        # Per-domain accuracy became `float | None` in v0.4.4 -- None
+        # when no probe in that domain could be judged. A difference of
+        # two numbers where one is absent is not zero, so it is None
+        # too; `.get(d, {}).get("accuracy", 0.0)` would have turned a
+        # missing domain into a full-marks delta.
+        per_domain_delta: dict[str, float | None] = {}
         for d in result_a.per_domain:
             acc_a = result_a.per_domain[d]["accuracy"]
-            acc_b = result_b.per_domain.get(d, {}).get("accuracy", 0.0)
-            per_domain_delta[d] = acc_b - acc_a
+            acc_b = result_b.per_domain.get(d, {}).get("accuracy")
+            per_domain_delta[d] = (
+                None if acc_a is None or acc_b is None else acc_b - acc_a
+            )
 
         return PairTaskResult(
             task_name=task.name,
             result_a=result_a,
             result_b=result_b,
-            delta_accuracy=result_b.accuracy - result_a.accuracy,
+            delta_accuracy=(
+                None
+                if result_a.accuracy is None or result_b.accuracy is None
+                else result_b.accuracy - result_a.accuracy
+            ),
             per_domain_delta=per_domain_delta,
             metadata={
                 "evaluator": task.evaluator.name,

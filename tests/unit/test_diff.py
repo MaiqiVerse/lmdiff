@@ -239,7 +239,7 @@ class TestModelDiffWithProbeSet:
             report = md.run(metrics=[Fake])
 
         assert report.metadata["probe_set_name"] == "v01"
-        assert report.metadata["probe_set_version"] == "0.2.1"
+        assert report.metadata["probe_set_version"] == "0.4.4"
         assert report.metadata["n_probes"] == 90
 
 

@@ -46,10 +46,10 @@ from lmdiff.geometry import (
     _compute_share_per_domain,
 )
 
-SCHEMA_VERSION = "7"
-"""Current GeoResult on-disk schema (v0.4.1+).
+SCHEMA_VERSION = "8"
+"""Current GeoResult on-disk schema.
 
-Reader accepts v1-v6; writer emits v6 exclusively. Per-version notes:
+Reader accepts v1-v8; writer emits v8 exclusively. Per-version notes:
   v1-v4: legacy formats handled by the existing upgrade path; load
     emits ``DeprecationWarning``.
   v5 (v0.3.2 - v0.4.0): values **preserved as saved** on load per
@@ -130,11 +130,13 @@ def _metric_result(r: MetricResult) -> dict[str, Any]:
 def _eval_result(r: EvalResult) -> dict[str, Any]:
     return {
         "correct": r.correct,
+        "evaluator": r.evaluator,
         "expected": r.expected,
         "metadata": _clean_value(r.metadata),
         "output": r.output,
         "probe_id": r.probe_id,
         "score": _clean_value(r.score),
+        "scorable": r.scorable,
     }
 
 
@@ -146,6 +148,9 @@ def _task_result(r: TaskResult) -> dict[str, Any]:
         "metadata": _clean_value(r.metadata),
         "n_correct": r.n_correct,
         "n_probes": r.n_probes,
+        # Beside accuracy, always -- see _domain_radar_result.
+        "n_scorable": r.n_scorable,
+        "n_unscorable": r.n_unscorable,
         "per_domain": _clean_value(r.per_domain),
         "per_probe": [to_json_dict(p) for p in r.per_probe],
         "probe_set_name": r.probe_set_name,
@@ -155,11 +160,16 @@ def _task_result(r: TaskResult) -> dict[str, Any]:
 
 @to_json_dict.register(DomainRadarResult)
 def _domain_radar_result(r: DomainRadarResult) -> dict[str, Any]:
+    # n_scorable / n_unscorable ship beside accuracy, not instead of it:
+    # a JSON consumer reading `accuracy` alone must be able to see the
+    # denominator in the same object (v0.4.4).
     return {
         "accuracy": _clean_value(r.accuracy),
         "bd_vs_baseline": _clean_value(r.bd_vs_baseline),
         "domain": r.domain,
         "n_probes": r.n_probes,
+        "n_scorable": r.n_scorable,
+        "n_unscorable": r.n_unscorable,
     }
 
 
@@ -249,6 +259,10 @@ def _geo_result(r: GeoResult) -> dict[str, Any]:
         "n_probes": r.n_probes,
         "per_probe": _clean_value(r.per_probe),
         "probe_domains": list(r.probe_domains) if r.probe_domains else [],
+        "probe_output_types": (
+            list(r.probe_output_types) if r.probe_output_types else []
+        ),
+        "probe_scoring": list(r.probe_scoring) if r.probe_scoring else [],
         "probe_validity": {
             pid: _probe_validity_to_dict(pv)
             for pid, pv in (r.probe_validity or {}).items()
@@ -299,7 +313,7 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
     behaves identically whether it came from ``analyze()`` or a round-trip.
     """
     sv = str(d.get("schema_version", "1"))
-    if sv not in ("1", "2", "3", "4", "5", "6", "7"):
+    if sv not in ("1", "2", "3", "4", "5", "6", "7", "8"):
         raise ValueError(f"unsupported GeoResult schema_version: {sv!r}")
 
     def _nan_of(v: Any) -> float:
@@ -335,16 +349,16 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
         per_probe={k: {p: float(val) for p, val in row.items()} for k, row in d["per_probe"].items()},
         metadata=dict(d.get("metadata", {})),
     )
-    if sv in ("2", "3", "4", "5", "6", "7"):
+    if sv in ("2", "3", "4", "5", "6", "7", "8"):
         kwargs["delta_means"] = {k: float(v) for k, v in d.get("delta_means", {}).items()}
         kwargs["selective_magnitudes"] = {
             k: float(v) for k, v in d.get("selective_magnitudes", {}).items()
         }
         kwargs["selective_cosine_matrix"] = _nan_matrix(d.get("selective_cosine_matrix"))
-    if sv in ("3", "4", "5", "6", "7"):
+    if sv in ("3", "4", "5", "6", "7", "8"):
         raw = d.get("probe_domains", [])
         kwargs["probe_domains"] = tuple(raw) if raw else ()
-    if sv in ("4", "5", "6", "7"):
+    if sv in ("4", "5", "6", "7", "8"):
         raw_tokens = d.get("avg_tokens_per_probe", [])
         kwargs["avg_tokens_per_probe"] = (
             tuple(float(x) for x in raw_tokens) if raw_tokens else ()
@@ -352,7 +366,7 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
         kwargs["magnitudes_normalized"] = {
             k: float(v) for k, v in d.get("magnitudes_normalized", {}).items()
         }
-    if sv in ("5", "6", "7"):
+    if sv in ("5", "6", "7", "8"):
         # share_per_domain & pdn may carry None values starting v6;
         # _nullable_float_matrix handles both v5 (always-float) and
         # v6 (float | None).
@@ -365,7 +379,7 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
                 _nullable_float_matrix(raw_pdn)
             )
 
-    if sv in ("6", "7"):
+    if sv in ("6", "7", "8"):
         # v0.4.1 fields. validity records use the dataclasses from
         # lmdiff._validity; reconstruct them with float coercion.
         from lmdiff._validity import EngineValidity, ProbeValidity
@@ -399,13 +413,24 @@ def geo_result_from_json_dict(d: dict[str, Any]) -> GeoResult:
     # path needed, unlike v5 -> v6 where existing fields changed meaning.
     kwargs["run_config_yaml"] = d.get("run_config_yaml")
 
+    # v8 (v0.4.4): per-probe scoring labels. Ungated for the same reason
+    # as run_config_yaml above -- absent in every earlier schema, so
+    # `.get()` yields () and no upgrade path is needed. The seven
+    # acceptance lists above still had to move, because they gate on
+    # which VERSIONS are readable, not on which fields are new. That
+    # distinction is what the 6 -> 7 bump got wrong (Z.5).
+    raw_ot = d.get("probe_output_types") or []
+    kwargs["probe_output_types"] = tuple(raw_ot) if raw_ot else ()
+    raw_sc = d.get("probe_scoring") or []
+    kwargs["probe_scoring"] = tuple(raw_sc) if raw_sc else ()
+
     result = GeoResult(**kwargs)
 
     # Legacy upgrade paths: v1-v4 didn't have share / pdn at all → must
     # synthesize. v5 → v6: per Q9.8, PRESERVE the saved values; only
     # synthesize the validity stubs that v5 didn't have. v0.4.1 formula
     # numerics are NOT applied to v5 saves.
-    if sv in ("5", "6", "7"):
+    if sv in ("5", "6", "7", "8"):
         if sv == "5":
             _stub_validity_for_v5_load(result)
             warnings.warn(

@@ -10,7 +10,7 @@ import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from lmdiff.probes.loader import Probe, ProbeSet
+from lmdiff.probes.loader import KNOWN_OUTPUT_TYPES, Probe, ProbeSet
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     pass
@@ -19,17 +19,33 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "TaskInfo",
     "KNOWN_TASK_DOMAINS",
+    "TASK_SCORINGS",
     "from_lm_eval",
     "from_hf_dataset",
 ]
 
 
-_SUPPORTED_OUTPUT_TYPES = frozenset({
-    "multiple_choice",
-    "generate_until",
-    "loglikelihood",
-    "loglikelihood_rolling",
-})
+# The four values lmdiff can drive. Defined once, in the probe module,
+# because it is a property of a probe rather than of this adapter --
+# through v0.4.3 the same frozenset was written out here as well.
+_SUPPORTED_OUTPUT_TYPES = KNOWN_OUTPUT_TYPES
+
+# Which evaluator judges each generative task's output. Was
+# ``experiments/family.py::GENERATE_EVALUATORS``, mapping task names to
+# classes; here it maps task names to registry keys, so the probe can
+# carry the answer and the runner needs no per-task table (PHASE_PLAN
+# §5.1). Multiple-choice tasks are absent deliberately: they are scored
+# by loglikelihood over ``metadata['choices']``, not by an evaluator.
+TASK_SCORINGS: dict[str, str] = {
+    "gsm8k": "gsm8k_number_match",
+    "longbench_2wikimqa": "f1",
+    "longbench_hotpotqa": "f1",
+    "longbench_narrativeqa": "f1",
+    "longbench_qasper": "f1",
+    "squadv2": "f1",
+    "triviaqa": "f1",
+    "nq_open": "f1",
+}
 
 
 @dataclass(frozen=True)
@@ -119,6 +135,25 @@ def _resolve_domain(task_name: str, info: TaskInfo | None) -> str:
         if prefix_info is not None:
             return prefix_info.domain
     return "unknown"
+
+
+def _resolve_scoring(
+    task_name: str, output_type: str, info: TaskInfo | None,
+) -> str | None:
+    """Which evaluator should judge this task's output.
+
+    ``None`` for anything lmdiff cannot score, and the distinction
+    matters: ``multiple_choice`` is scored by loglikelihood over the
+    stored ``choices`` rather than by an evaluator, and execution tasks
+    (``humaneval``, ``mbpp``) need a sandbox lmdiff does not have. In
+    both cases nobody has stated an evaluator, which is what ``None``
+    means -- not "use the default".
+    """
+    if output_type != "generate_until":
+        return None
+    if info is not None and info.requires_execution:
+        return None
+    return TASK_SCORINGS.get(task_name, "contains_answer")
 
 
 def _task_output_type(task: Any) -> str:
@@ -314,6 +349,7 @@ def from_lm_eval(
 
     info = KNOWN_TASK_DOMAINS.get(task_name)
     resolved_domain = _resolve_domain(task_name, info)
+    resolved_scoring = _resolve_scoring(task_name, output_type, info)
 
     version = None
     raw_version = getattr(task, "VERSION", None)
@@ -345,6 +381,8 @@ def from_lm_eval(
             id=f"{task_name}:{i}",
             text=text,
             domain=resolved_domain,
+            output_type=output_type,
+            scoring=resolved_scoring,
             expected=rt.primary,
             metadata=meta,
         ))
