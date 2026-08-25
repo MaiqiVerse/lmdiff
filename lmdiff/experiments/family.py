@@ -39,7 +39,11 @@ from typing import Any
 from lmdiff.config import Config
 from lmdiff.engine import release_cuda_cache
 from lmdiff.geometry import ChangeGeometry, GeoResult
-from lmdiff.probes.adapters import KNOWN_TASK_DOMAINS, from_lm_eval
+from lmdiff.probes.adapters import (
+    KNOWN_TASK_DOMAINS,
+    TASK_SCORINGS,
+    from_lm_eval,
+)
 from lmdiff.probes.loader import Probe, ProbeSet
 from lmdiff.report.json_report import (
     geo_result_from_json_dict,
@@ -47,8 +51,8 @@ from lmdiff.report.json_report import (
 )
 from lmdiff.report.terminal import print_geometry
 from lmdiff.tasks.base import Task
-from lmdiff.tasks.evaluators import F1, Gsm8kNumberMatch
 from lmdiff.tasks.loglikelihood import loglikelihood_accuracy
+from lmdiff.tasks.registry import EVALUATOR_REGISTRY
 
 DEFAULT_TASKS: tuple[str, ...] = (
     "hellaswag",
@@ -106,16 +110,18 @@ def resolve_max_new_tokens(
     return TASK_MAX_NEW_TOKENS.get(task_name, default)
 
 
-# Evaluator class for each generate_until task whose accuracy we score.
+# Was a second, partial evaluator table here: eight task names onto two
+# classes, unaware of `cli.py`'s three-entry map and of the two
+# evaluators neither listed. The task -> evaluator-name mapping now
+# lives beside the adapter that knows about tasks
+# (`probes.adapters.TASK_SCORINGS`) and the name -> class mapping lives
+# in `tasks.registry`. See PHASE_PLAN §5.1.
+#
+# Kept as a module-level alias because it is importable API; it is now
+# derived rather than written out, so it cannot drift from the registry.
 GENERATE_EVALUATORS: dict[str, type] = {
-    "gsm8k": Gsm8kNumberMatch,
-    "longbench_2wikimqa": F1,
-    "longbench_hotpotqa": F1,
-    "longbench_narrativeqa": F1,
-    "longbench_qasper": F1,
-    "squadv2": F1,
-    "triviaqa": F1,
-    "nq_open": F1,
+    task: EVALUATOR_REGISTRY[scoring]
+    for task, scoring in TASK_SCORINGS.items()
 }
 
 
@@ -192,6 +198,14 @@ def _load_concatenated_probes(
     return mega, per_task
 
 
+def _acc_or_nan(result: Any) -> float:
+    """``TaskResult.accuracy`` is ``None`` when no probe could be judged
+    (v0.4.4). This path's contract is a float, and it already uses NaN
+    for "not measurable" -- so map onto that rather than inventing a
+    second sentinel."""
+    return float("nan") if result.accuracy is None else result.accuracy
+
+
 def _accuracy_for_task(
     task_name: str,
     probes: ProbeSet,
@@ -218,7 +232,7 @@ def _accuracy_for_task(
             overrides=task_max_new_tokens,
         )
         task = Task(task_name, probes, ContainsAnswer(), max_new_tokens=gen_len)
-        return task.run(engine).accuracy
+        return _acc_or_nan(task.run(engine))
 
     if info.output_type == "multiple_choice":
         return loglikelihood_accuracy(probes, engine, task_name=task_name).accuracy
@@ -236,7 +250,7 @@ def _accuracy_for_task(
             overrides=task_max_new_tokens,
         )
         task = Task(task_name, probes, evaluator_cls(), max_new_tokens=gen_len)
-        return task.run(engine).accuracy
+        return _acc_or_nan(task.run(engine))
 
     return float("nan")
 

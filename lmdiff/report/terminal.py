@@ -161,6 +161,35 @@ def _print_bd_breakdown(
     console.print(tbl)
 
 
+def _print_unscorable_note(console: Console, n_unscorable: int) -> None:
+    """Say why a denominator is short, where the reader is looking."""
+    if n_unscorable <= 0:
+        return
+    console.print(
+        f"[yellow]{n_unscorable} probe-evaluations could not be judged[/yellow] "
+        f"and are excluded from the accuracies above — the evaluator does not "
+        f"fit those probes (no `expected`, or missing multiple-choice "
+        f"metadata). Set each probe's `scoring` field, or pass a different "
+        f"fallback evaluator.",
+    )
+
+
+def _acc_cell(dr) -> str:
+    """Accuracy and the count it rests on, in one cell.
+
+    The two are never rendered apart. `v01` under the `multiple_choice`
+    evaluator produced a clean `0.00%` for all 90 probes while every one
+    of them carried `reason: "missing_mc_metadata"` -- a number
+    displayed without the condition that decides whether it means
+    anything, the same shape as L-039. Formatting them together is what
+    makes that unrepresentable rather than merely discouraged.
+    """
+    if dr.accuracy is None:
+        return f"[yellow]n/a[/yellow] ({dr.n_scorable}/{dr.n_probes})"
+    body = f"{dr.accuracy:.2%} ({dr.n_scorable}/{dr.n_probes})"
+    return body if dr.fully_scorable else f"[yellow]{body}[/yellow]"
+
+
 def print_radar(result: "RadarResult", console: Console | None = None) -> None:
     """Print a CapabilityRadar / RadarResult as a per-domain table."""
     console = console or Console()
@@ -174,23 +203,27 @@ def print_radar(result: "RadarResult", console: Console | None = None) -> None:
         tbl = Table(title="Per-Domain Accuracy", show_lines=False)
         tbl.add_column("Domain", style="cyan")
         tbl.add_column("N", justify="right")
-        tbl.add_column("Acc(A)", justify="right")
+        tbl.add_column("Acc(A) (scorable/n)", justify="right")
+        unscorable = 0
         for d in domains:
             a = result.a_by_domain.get(d)
             if a is None:
                 continue
-            tbl.add_row(d, str(a.n_probes), f"{a.accuracy:.2%}")
+            unscorable += a.n_unscorable
+            tbl.add_row(d, str(a.n_probes), _acc_cell(a))
         console.print(tbl)
+        _print_unscorable_note(console, unscorable)
         return
 
     tbl = Table(title="Per-Domain Accuracy + BD", show_lines=False)
     tbl.add_column("Domain", style="cyan")
     tbl.add_column("N", justify="right")
-    tbl.add_column("Acc(A)", justify="right")
-    tbl.add_column("Acc(B)", justify="right")
+    tbl.add_column("Acc(A) (scorable/n)", justify="right")
+    tbl.add_column("Acc(B) (scorable/n)", justify="right")
     tbl.add_column("ΔAcc", justify="right")
     tbl.add_column("BD", justify="right")
     tbl.add_column("BD(healthy)", justify="right")
+    unscorable = 0
     for d in domains:
         a = result.a_by_domain.get(d)
         b = result.b_by_domain.get(d)
@@ -198,17 +231,22 @@ def print_radar(result: "RadarResult", console: Console | None = None) -> None:
             continue
         bd = result.bd_by_domain.get(d, float("nan"))
         bdh = result.bd_healthy_by_domain.get(d, float("nan"))
-        delta = b.accuracy - a.accuracy
+        unscorable += a.n_unscorable + b.n_unscorable
+        if a.accuracy is None or b.accuracy is None:
+            delta_cell = "n/a"
+        else:
+            delta_cell = f"{b.accuracy - a.accuracy:+.2%}"
         tbl.add_row(
             d,
             str(a.n_probes),
-            f"{a.accuracy:.2%}",
-            f"{b.accuracy:.2%}",
-            f"{delta:+.2%}",
+            _acc_cell(a),
+            _acc_cell(b),
+            delta_cell,
             "n/a" if math.isnan(bd) else f"{bd:.4f}",
             "n/a" if math.isnan(bdh) else f"{bdh:.4f}",
         )
     console.print(tbl)
+    _print_unscorable_note(console, unscorable)
 
 
 def print_geometry(result: "GeoResult", console: Console | None = None) -> None:

@@ -21,11 +21,13 @@ app = typer.Typer(
 
 _BUILTIN_PROBES_DIR = Path(__file__).parent / "probes"
 
-_EVALUATOR_MAP = {
-    "exact_match": "ExactMatch",
-    "contains_answer": "ContainsAnswer",
-    "multiple_choice": "MultipleChoice",
-}
+# Built from the registry rather than typed out, so a new evaluator
+# appears in --help without a second edit.
+_EVALUATOR_HELP = (
+    "Fallback evaluator for probes with no `scoring` field. One of: "
+    "exact_match, contains_answer, multiple_choice, f1, gsm8k_number_match"
+)
+
 
 
 def _resolve_probes_path(probes: str) -> Path:
@@ -51,20 +53,21 @@ def _resolve_probes_path(probes: str) -> Path:
 
 
 def _get_evaluator(name: str):
-    """Lazily import and return an evaluator instance."""
-    from lmdiff.tasks.evaluators import ContainsAnswer, ExactMatch, MultipleChoice
+    """Resolve an evaluator name through the shared registry.
 
-    mapping = {
-        "exact_match": ExactMatch,
-        "contains_answer": ContainsAnswer,
-        "multiple_choice": MultipleChoice,
-    }
-    cls = mapping.get(name)
-    if cls is None:
+    Was a third hand-written map listing three of the five evaluators;
+    ``f1`` and ``gsm8k_number_match`` were unreachable from the CLI
+    because this dict did not mention them (PHASE_PLAN §5.1).
+    """
+    from lmdiff.tasks.registry import EVALUATOR_REGISTRY, get_evaluator
+
+    instance = get_evaluator(name)
+    if instance is None:
         raise typer.BadParameter(
-            f"Unknown evaluator: '{name}'. Choose from: {', '.join(mapping)}"
+            f"Unknown evaluator: '{name}'. "
+            f"Choose from: {', '.join(sorted(EVALUATOR_REGISTRY))}"
         )
-    return cls()
+    return instance
 
 
 @app.command()
@@ -118,7 +121,7 @@ def radar(
     model_a: str = typer.Argument(..., help="HuggingFace model ID or path for config A"),
     model_b: str = typer.Argument(..., help="HuggingFace model ID or path for config B"),
     probes: str = typer.Option("v01", help="Probe set name or path (default: v01)"),
-    evaluator: str = typer.Option("contains_answer", help="Evaluator: exact_match, contains_answer, multiple_choice"),
+    evaluator: str = typer.Option("contains_answer", help=_EVALUATOR_HELP),
     max_new_tokens: int = typer.Option(16, help="Max new tokens for generation"),
     dtype: Optional[str] = typer.Option(None, "--dtype", help="Model precision: bfloat16, float16, float32 (default: auto)"),
     output_json: bool = typer.Option(False, "--json", help="Output JSON instead of rich table"),
@@ -233,7 +236,7 @@ def geometry(
 def run_task(
     model: str = typer.Argument(..., help="HuggingFace model ID or path"),
     probes: str = typer.Option("v01", help="Probe set name or path (default: v01)"),
-    evaluator: str = typer.Option("contains_answer", help="Evaluator: exact_match, contains_answer, multiple_choice"),
+    evaluator: str = typer.Option("contains_answer", help=_EVALUATOR_HELP),
     max_new_tokens: int = typer.Option(16, help="Max new tokens for generation"),
     output_json: bool = typer.Option(False, "--json", help="Output JSON instead of rich table"),
 ) -> None:
@@ -258,17 +261,37 @@ def run_task(
     else:
         console = Console()
         console.rule(f"[bold]Task: {result.task_name} on {result.engine_name}[/bold]")
-        console.print(f"Probes: {result.n_probes}  Correct: {result.n_correct}  Accuracy: {result.accuracy:.2%}")
+        acc = (
+            "n/a" if result.accuracy is None else f"{result.accuracy:.2%}"
+        )
+        console.print(
+            f"Probes: {result.n_probes}  Correct: {result.n_correct}  "
+            f"Scorable: {result.n_scorable}/{result.n_probes}  Accuracy: {acc}"
+        )
         console.print()
         if result.per_domain:
             tbl = Table(title="Per-Domain", show_lines=True)
             tbl.add_column("Domain", style="cyan")
             tbl.add_column("N", justify="right")
+            tbl.add_column("Scorable", justify="right")
             tbl.add_column("Correct", justify="right")
             tbl.add_column("Accuracy", justify="right")
             for d, info in sorted(result.per_domain.items()):
-                tbl.add_row(d, str(info["n"]), str(info["correct"]), f"{info['accuracy']:.2%}")
+                d_acc = info["accuracy"]
+                tbl.add_row(
+                    d,
+                    str(info["n"]),
+                    f"{info['n_scorable']}/{info['n']}",
+                    str(info["correct"]),
+                    "n/a" if d_acc is None else f"{d_acc:.2%}",
+                )
             console.print(tbl)
+        if result.n_unscorable:
+            console.print(
+                f"[yellow]{result.n_unscorable} probes could not be judged"
+                f"[/yellow] by their evaluator and are excluded from the "
+                f"accuracies above."
+            )
 
 
 @app.command(name="family-experiment")

@@ -61,7 +61,7 @@ def _v5_payload() -> dict:
 
 class TestSchemaVersion:
     def test_writer_emits_v6(self):
-        assert SCHEMA_VERSION == "7"
+        assert SCHEMA_VERSION == "8"
 
 
 # ── v5 load: preserve, do NOT recompute (Q9.8) ──────────────────────
@@ -273,7 +273,7 @@ class TestSchemaV7RunConfig:
 
     def test_writer_emits_v7(self):
         from lmdiff.report.json_report import SCHEMA_VERSION
-        assert SCHEMA_VERSION == "7"
+        assert SCHEMA_VERSION == "8"
 
     def test_run_config_yaml_round_trips(self):
         text = "lmdiff_schema: 1\nbase: gpt2\n"
@@ -313,3 +313,106 @@ class TestSchemaV7RunConfig:
         r.domain_status = {"v1": {"a": "partial"}}
         restored = geo_result_from_json_dict(to_json_dict(r))
         assert restored.domain_status == {"v1": {"a": "partial"}}
+class TestSchemaV8ProbeScoring:
+    """v0.4.4: ``probe_output_types`` / ``probe_scoring``, schema 7 → 8.
+
+    Payload-level in both directions, per PHASE_PLAN Z.5. Asserting the
+    version string is what let the 6 → 7 bump ship with ``domain_status``
+    silently deserializing to ``{}``: every version-pin test passed
+    because the version string was right, while a gate still stopped at
+    ``"6"`` and dropped the payload it protected.
+    """
+
+    def test_writer_emits_v8(self):
+        assert SCHEMA_VERSION == "8"
+        assert to_json_dict(_minimal_geo())["schema_version"] == "8"
+
+    def test_new_fields_survive_a_round_trip(self):
+        r = _minimal_geo()
+        r.probe_output_types = ("generate_until", "multiple_choice")
+        r.probe_scoring = ("f1", None)
+        restored = geo_result_from_json_dict(to_json_dict(r))
+        assert restored.probe_output_types == ("generate_until", "multiple_choice")
+        assert restored.probe_scoring == ("f1", None)
+
+    def test_none_entries_are_preserved_not_coerced(self):
+        """``None`` means the probe named no evaluator, which is a
+        different statement from naming one this version lacks."""
+        r = _minimal_geo()
+        r.probe_scoring = (None, None)
+        restored = geo_result_from_json_dict(to_json_dict(r))
+        assert restored.probe_scoring == (None, None)
+
+    def test_pre_v8_save_loads_with_empty_tuples(self):
+        """The compatibility direction: an older save has no such keys
+        and must load rather than raise."""
+        payload = to_json_dict(_minimal_geo())
+        payload["schema_version"] = "7"
+        del payload["probe_output_types"]
+        del payload["probe_scoring"]
+        restored = geo_result_from_json_dict(payload)
+        assert restored.probe_output_types == ()
+        assert restored.probe_scoring == ()
+
+    # ── the gate trap, payload-level, at every version ────────────────
+    #
+    # One assertion per gate. A bump that leaves any single gate at
+    # ("…", "7") drops exactly the fields that gate protects, and only a
+    # test that reads the PAYLOAD back can see it.
+
+    def test_v8_save_still_gets_its_v2_fields(self):
+        r = _minimal_geo()
+        r.delta_means = {"v1": 0.25}
+        restored = geo_result_from_json_dict(to_json_dict(r))
+        assert restored.delta_means == {"v1": 0.25}
+
+    def test_v8_save_still_gets_its_v3_fields(self):
+        r = _minimal_geo()
+        r.probe_domains = ("math", "code")
+        restored = geo_result_from_json_dict(to_json_dict(r))
+        assert restored.probe_domains == ("math", "code")
+
+    def test_v8_save_still_gets_its_v4_fields(self):
+        r = _minimal_geo()
+        r.avg_tokens_per_probe = (11.0, 13.0)
+        r.magnitudes_normalized = {"v1": 0.5}
+        restored = geo_result_from_json_dict(to_json_dict(r))
+        assert restored.avg_tokens_per_probe == (11.0, 13.0)
+        assert restored.magnitudes_normalized == {"v1": 0.5}
+
+    def test_v8_save_still_gets_its_v5_fields(self):
+        r = _minimal_geo()
+        r.share_per_domain = {"v1": {"math": 1.0}}
+        restored = geo_result_from_json_dict(to_json_dict(r))
+        assert restored.share_per_domain == {"v1": {"math": 1.0}}
+
+    def test_v8_save_still_gets_its_v6_fields(self):
+        r = _minimal_geo()
+        r.domain_status = {"v1": {"math": "full"}}
+        restored = geo_result_from_json_dict(to_json_dict(r))
+        assert restored.domain_status == {"v1": {"math": "full"}}
+
+    def test_v8_save_still_gets_its_v7_field(self):
+        r = _minimal_geo()
+        r.run_config_yaml = "lmdiff_schema: 1\n"
+        restored = geo_result_from_json_dict(to_json_dict(r))
+        assert restored.run_config_yaml == "lmdiff_schema: 1\n"
+
+    def test_every_gate_accepts_the_current_version(self):
+        """Structural backstop for the six above. Reads the gates out of
+        the source and checks each admits ``SCHEMA_VERSION`` — so a
+        seventh gate added later is covered without a seventh test."""
+        import inspect
+        import re
+
+        from lmdiff.report import json_report
+
+        src = inspect.getsource(json_report.geo_result_from_json_dict)
+        gates = re.findall(r'sv (?:not )?in \(([^)]*)\)', src)
+        assert len(gates) >= 7, f"expected the known gates, found {len(gates)}"
+        for gate in gates:
+            versions = re.findall(r'"(\d+)"', gate)
+            assert SCHEMA_VERSION in versions, (
+                f"gate ({gate}) does not admit schema v{SCHEMA_VERSION}; "
+                f"it will silently drop the field it protects"
+            )

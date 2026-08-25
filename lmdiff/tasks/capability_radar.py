@@ -16,8 +16,28 @@ class DomainRadarResult:
     """Per-domain measurement for one engine."""
     domain: str
     n_probes: int
-    accuracy: float
+    accuracy: float | None
+    """Correct / **scorable**, or ``None`` when nothing was scorable.
+
+    .. versionchanged:: 0.4.4
+       Was correct / ``n_probes``, counting unjudgeable probes as
+       wrong. On ``v01`` under the ``multiple_choice`` evaluator that
+       rendered as a clean ``0.0`` across all 90 probes, because none
+       of them carries the metadata that rule needs."""
     bd_vs_baseline: float | None = None
+    n_unscorable: int = 0
+    """Probes the evaluator could not judge (v0.4.4). Excluded from
+    ``accuracy``. Non-zero means the evaluator does not fit these
+    probes, which is a different statement from a low score."""
+
+    @property
+    def n_scorable(self) -> int:
+        """What ``accuracy`` rests on."""
+        return self.n_probes - self.n_unscorable
+
+    @property
+    def fully_scorable(self) -> bool:
+        return self.n_unscorable == 0
 
 
 @dataclass
@@ -37,14 +57,26 @@ class RadarResult:
         """Flat list of rows for report rendering."""
         rows: list[dict] = []
         for d in self.domains:
+            a = self.a_by_domain[d]
             row: dict[str, Any] = {
                 "domain": d,
-                "n_probes": self.a_by_domain[d].n_probes,
-                "accuracy_a": self.a_by_domain[d].accuracy,
+                "n_probes": a.n_probes,
+                # Emitted next to the accuracy, always, so no consumer
+                # can render the number without the denominator it
+                # rests on -- the failure this column exists for.
+                "n_scorable_a": a.n_scorable,
+                "n_unscorable_a": a.n_unscorable,
+                "accuracy_a": a.accuracy,
             }
             if self.b_by_domain is not None:
-                row["accuracy_b"] = self.b_by_domain[d].accuracy
-                row["delta_acc"] = row["accuracy_b"] - row["accuracy_a"]
+                b = self.b_by_domain[d]
+                row["n_scorable_b"] = b.n_scorable
+                row["n_unscorable_b"] = b.n_unscorable
+                row["accuracy_b"] = b.accuracy
+                row["delta_acc"] = (
+                    None if a.accuracy is None or b.accuracy is None
+                    else b.accuracy - a.accuracy
+                )
             if self.bd_by_domain is not None:
                 row["bd"] = self.bd_by_domain[d]
             if self.bd_healthy_by_domain is not None:
@@ -70,6 +102,13 @@ class CapabilityRadar:
         evaluator: BaseEvaluator | None = None,
         max_new_tokens: int = 16,
     ) -> None:
+        """``evaluator`` is the **fallback** from v0.4.4 onward.
+
+        Probes carrying a ``scoring`` field are judged by the evaluator
+        they name; this one covers the rest. Before v0.4.4 it judged
+        everything, which is why a mixed-format set could not be scored
+        correctly by any single choice -- see PHASE_PLAN §5.1.
+        """
         self.probes = probes
         self.evaluator = evaluator or ContainsAnswer()
         self.max_new_tokens = max_new_tokens
@@ -107,6 +146,7 @@ class CapabilityRadar:
                 domain=d,
                 n_probes=tr.n_probes,
                 accuracy=tr.accuracy,
+                n_unscorable=tr.n_unscorable,
             )
 
         return RadarResult(
@@ -163,6 +203,7 @@ class CapabilityRadar:
                 domain=d,
                 n_probes=tr_a.n_probes,
                 accuracy=tr_a.accuracy,
+                n_unscorable=tr_a.n_unscorable,
                 # bd_vs_baseline deliberately None: BD is symmetric,
                 # lives in top-level bd_by_domain only.
             )
@@ -170,6 +211,7 @@ class CapabilityRadar:
                 domain=d,
                 n_probes=tr_b.n_probes,
                 accuracy=tr_b.accuracy,
+                n_unscorable=tr_b.n_unscorable,
             )
 
             bd_by_domain[d] = bd_result.value

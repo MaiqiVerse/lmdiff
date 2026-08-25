@@ -67,7 +67,11 @@ class TestFromJson:
         ps = ProbeSet.from_json(V01_PATH)
         assert len(ps) == 90
         assert ps.name == "v01"
-        assert ps.version == "0.2.1"
+        # 0.2.1 -> 0.4.4: commit 4.3 added `output_type` to all 90
+        # probes. The version is provenance -- a run records it as
+        # `probe_set_version` -- so it moves when the file does, even
+        # though no probe text changed.
+        assert ps.version == "0.4.4"
         assert set(ps.domains) == {"math", "knowledge", "code"}
 
     def test_v01_domain_counts(self):

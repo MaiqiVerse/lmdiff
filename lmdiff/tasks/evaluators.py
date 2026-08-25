@@ -5,7 +5,12 @@ import re
 import string
 from typing import ClassVar
 
-from lmdiff.tasks.base import BaseEvaluator
+from lmdiff.tasks.base import (
+    UNSCORABLE_EMPTY_EXPECTED,
+    UNSCORABLE_MISSING_MC_METADATA,
+    UNSCORABLE_NO_EXPECTED,
+    BaseEvaluator,
+)
 
 __all__ = [
     "ExactMatch",
@@ -26,7 +31,7 @@ class ExactMatch(BaseEvaluator):
 
     def evaluate(self, output, expected, probe_metadata=None):
         if expected is None:
-            return False, 0.0, {"reason": "no_expected"}
+            return False, 0.0, {"reason": UNSCORABLE_NO_EXPECTED}
         o = output.strip() if self.strip else output
         e = expected.strip() if self.strip else expected
         if not self.case_sensitive:
@@ -44,9 +49,9 @@ class ContainsAnswer(BaseEvaluator):
 
     def evaluate(self, output, expected, probe_metadata=None):
         if expected is None:
-            return False, 0.0, {"reason": "no_expected"}
+            return False, 0.0, {"reason": UNSCORABLE_NO_EXPECTED}
         if expected == "":
-            return False, 0.0, {"reason": "empty_expected"}
+            return False, 0.0, {"reason": UNSCORABLE_EMPTY_EXPECTED}
         o = output if self.case_sensitive else output.lower()
         e = expected if self.case_sensitive else expected.lower()
         pos = o.find(e)
@@ -64,7 +69,7 @@ class MultipleChoice(BaseEvaluator):
 
     def evaluate(self, output, expected, probe_metadata=None):
         if probe_metadata is None or "correct_index" not in probe_metadata:
-            return False, 0.0, {"reason": "missing_mc_metadata"}
+            return False, 0.0, {"reason": UNSCORABLE_MISSING_MC_METADATA}
 
         text = output.strip().upper()
         letter_match = re.search(r"\b([A-Z])\b", text)
@@ -101,7 +106,7 @@ class F1(BaseEvaluator):
 
     def evaluate(self, output, expected, probe_metadata=None):
         if expected is None:
-            return False, 0.0, {"reason": "no_expected"}
+            return False, 0.0, {"reason": UNSCORABLE_NO_EXPECTED}
 
         targets: list[str] = [expected]
         if probe_metadata and isinstance(probe_metadata.get("aliases"), list):
@@ -166,7 +171,7 @@ class Gsm8kNumberMatch(BaseEvaluator):
 
     def evaluate(self, output, expected, probe_metadata=None):
         if expected is None:
-            return False, 0.0, {"reason": "no_expected"}
+            return False, 0.0, {"reason": UNSCORABLE_NO_EXPECTED}
         pred_num = self._extract(output)
         gold_num = self._extract(expected)
         if pred_num is None or gold_num is None:

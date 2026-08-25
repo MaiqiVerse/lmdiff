@@ -704,6 +704,15 @@ def run_family_pipeline(
     all_domains = [p.domain for p in probe_set]
     probe_domains = tuple(all_domains[i] for i in valid_indices)
 
+    # Schema v8 (v0.4.4): per-probe scoring labels, same alignment.
+    # Captured here because a GeoResult outlives the ProbeSet that made
+    # it -- an in-memory set is gone at process exit, and an lm_eval
+    # identifier resolves through a table that moves between versions.
+    all_output_types = [p.output_type for p in probe_set]
+    all_scoring = [p.scoring for p in probe_set]
+    probe_output_types = tuple(all_output_types[i] for i in valid_indices)
+    probe_scoring = tuple(all_scoring[i] for i in valid_indices)
+
     # Schema v4: per-probe token counts.
     avg_tokens_per_probe: tuple[float, ...] = tuple(
         float(all_probe_tokens[i]) for i in valid_indices
@@ -809,6 +818,8 @@ def run_family_pipeline(
         selective_magnitudes=selective_magnitudes,
         selective_cosine_matrix=selective_cosine_matrix,
         probe_domains=probe_domains,
+        probe_output_types=probe_output_types,
+        probe_scoring=probe_scoring,
         avg_tokens_per_probe=avg_tokens_per_probe,
         magnitudes_normalized=magnitudes_normalized,
         magnitudes_per_domain_normalized=mag_per_domain_norm,

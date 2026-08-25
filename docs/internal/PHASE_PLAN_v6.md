@@ -448,7 +448,45 @@ The gap between the two is mostly cosmetic — private-module naming and package
 >
 > §5.1–§5.4 remain the specification for commits 4.3–4.6. §5.3 in particular should not be implemented from its text as written — the run-config schema from commit 4.2 will establish YAML dialect and loader conventions that a probe-set loader must share.
 
-### 5.1 Probe taxonomy
+### 5.1 Probe taxonomy — rewritten 2026-08-25; original preserved below
+
+> **The `task_type` axis proposed here was checked against the code twice and failed twice. It is dropped, not deferred.** What replaces it is narrower and comes from the data rather than from a list of names. Investigation: `docs/internal/v044_taxonomy_notes.md`.
+
+ProbeSet tracks **two labels per probe**, and the second one is how the probe is scored:
+
+1. **Domain** — subject matter, used for normalization grouping. Nine values exist today (`code`, `commonsense`, `knowledge`, `language`, `long-context`, `math`, `reading`, `reasoning`, `safety`), not the five this section originally claimed; `v01.json` uses three of them.
+2. **Scoring** — `output_type` (how the model is queried) and `scoring` (how its output is judged).
+
+```
+output_type    multiple_choice | generate_until | loglikelihood | loglikelihood_rolling
+               lm-eval's vocabulary verbatim, because inventing a synonym for a
+               value copied from lm-eval is how two names for one quantity start.
+
+scoring        exact_match | contains_answer | multiple_choice | f1 |
+               gsm8k_number_match — the evaluator registry's keys, open-ended
+               because the registry is the vocabulary.
+```
+
+Both default `None`, which means *unlabelled* and is distinct from any value. Defaulting would assert something nobody stated.
+
+**Why scoring and not capability.** Over the 31 curated tasks in `KNOWN_TASK_DOMAINS`: domain predicts `output_type` 81 % against a 61 % always-guess-`multiple_choice` baseline, and `output_type` predicts domain 35 %. Five of the nine domains split by `output_type`, `math` and `code` among them. The axes genuinely cross-cut.
+
+The original eight task types do not. `safety_regression` and `hallucination_probe` both land on the `safety` domain, `knowledge_drift` on `knowledge`, `general_capability` on everything else — a second axis that is close to a function of the first carries no information. Five of the eight were also named after a base-vs-variant *measurement* (`drift`, `regression`, `check`, `consistency`) rather than after a property of a probe, which is why labelling anything with them kept producing two defensible answers.
+
+**Where this already existed.** `from_lm_eval` has always written `output_type`, `native_metric` and `requires_execution` into `Probe.metadata`. Commit 4.3 promotes them to fields; it does not invent them. The real gap was tier asymmetry — v01's 90 probes carry no metadata at all, so scoring information existed for lm-eval probes and not for the bundled set.
+
+**What this section was for.** §5.1 and §5.4 were written to fix `CapabilityRadar`, which takes one evaluator for an entire ProbeSet and applies it to every domain. The symptom is that the radar cannot tell how a probe should be scored. Measured on v01: the default `ContainsAnswer` scores 3 of 30 `code` probes *correct* for the output `"I don't know, but it is interesting to consider."` — 12 of those 30 expected strings are two characters or fewer — while `MultipleChoice` returns 0.0 for all 90 with `reason: "missing_mc_metadata"` that no output surface displays.
+
+§5.5's commit list predates the v0.4.0 backend cutover, when `CapabilityRadar` *was* the live evaluation path. That is also why §5.4 dispatches on metrics that do not exist: the five evaluators that do exist were enumerated in two partial dicts in two modules, named nowhere as a set, and attached to no probe, so there was nothing addressable to point at.
+
+**Commit 4.3 therefore ships three things, not one:** the two probe fields, a single `EVALUATOR_REGISTRY` replacing those two partial dicts, and `Task` selecting an evaluator per probe with fallback to the caller's. The third is the actual fix, and it needs no engine work — it lands on the path the radar already runs on.
+
+**Not in 4.3.** `Task`, the five evaluators and `loglikelihood_accuracy` speak the v0.2.x batch engine API and cannot run against `HFEngine`. That port is tracked as a v0.5.0 blocker in Z.4 item 6.
+
+---
+
+<details>
+<summary><b>Original §5.1, superseded 2026-08-25</b></summary>
 
 ProbeSet upgraded to track **two orthogonal labels per probe**:
 
@@ -469,6 +507,8 @@ Task types:
 ```
 
 A probe carries both `domain="reasoning"` and `task_type="instruction_following"`. Metrics that care about task type group by it; metrics that care about domain group by domain.
+
+</details>
 
 ### 5.2 Builtin probe sets — initial 4, rest in backlog
 
@@ -4025,6 +4065,54 @@ So `degraded` is **an annotation, not an exclusion**. The share is computed and 
 `geo_result_from_json_dict` with range comparisons (Z.5). Small, and it
 belongs in a release already touching the schema. Its current failure
 mode is silence: a forgotten gate drops a field rather than raising.
+
+**6. The task layer's engine port — a BLOCKER on item 4, not a note beside it.**
+
+Removing `InferenceEngine` (item 4) breaks the evaluation layer, because
+that layer speaks the v0.2.x batch API and `lmdiff/__init__.py` exports
+most of it as public API. **As item 4 is currently scoped, v0.5.0 ships
+exports that raise on use.**
+
+The incompatibility is structural, on both engine methods:
+
+| | v0.2.x `InferenceEngine` | live `Engine` / `HFEngine` |
+|---|---|---|
+| identity | `.model_name` | `.name` |
+| generate | `generate(prompts: list[str], n_samples=1, max_new_tokens=64, …)` | `generate(prompt: str, *, max_new_tokens=16, temperature, top_p, top_k, seed)` |
+| score | `score(prompts: list[str], continuations: list[str], …)` | `score(prompt: str, continuation: str, *, prefix_text="")` |
+
+`Task.run` calls `engine.generate(self.probes.texts, n_samples=1, …)`
+and `engine.model_name`; the Protocol has neither. Verified against
+stubs of both surfaces: `TypeError: generate() got an unexpected keyword
+argument 'n_samples'` on the live one, fine on the legacy one.
+
+Exported and affected: `Task`, `TaskResult`, `BaseEvaluator`,
+`EvalResult`, `ContainsAnswer`, `ExactMatch`, `F1`, `Gsm8kNumberMatch`,
+`MultipleChoice`, `loglikelihood_accuracy`.
+
+**Scope from this number rather than re-deriving it: the port is roughly
+15 lines of engine-calling code.** The five evaluators are pure
+functions of `(output, expected, metadata)` and touch no engine at all;
+`loglikelihood_accuracy` is the same shape. What is bound to the old API
+is the call sites in `Task.run` and `loglikelihood_accuracy` — loop the
+single-prompt `generate` / `score` instead of passing a list, and read
+`.name`. It is an adapter, not a rewrite. Everything expensive-looking
+about this item is already engine-free and already tested.
+
+Two parts, and the second is the reason this is filed rather than
+mentioned:
+
+- **The port itself**, per above.
+- **`CapabilityRadar` is not on item 4's removal list while its only
+  in-tree caller, `ModelDiff.capability_radar`, is.** It is also not
+  exported from `lmdiff/__init__.py` and carries no `DeprecationWarning`
+  — nothing in `lmdiff/tasks/` does. After v0.5.0 as scoped it survives
+  with zero callers and an engine API that no longer exists. That reads
+  as an omission rather than a decision. Port it, remove it, or export
+  it once ported — but decide.
+
+Whether the port is its own commit before v0.5.0 or part of v0.5.0 is
+open. Investigation and measurements: `docs/internal/v044_taxonomy_notes.md` §1.5–§1.6.
 
 Estimated 2–3 weeks. Items 1–3 are one coherent theme — "make variant-only measurement first-class" — and should ship together.
 
