@@ -84,6 +84,7 @@ _LAZY: dict[str, str] = {
     "F1": "lmdiff.tasks.evaluators",
     "Gsm8kNumberMatch": "lmdiff.tasks.evaluators",
     "MultipleChoice": "lmdiff.tasks.evaluators",
+    "PrefixMatch": "lmdiff.tasks.evaluators",
     "loglikelihood_accuracy": "lmdiff.tasks.loglikelihood",
     "EVALUATOR_REGISTRY": "lmdiff.tasks.registry",
     "KNOWN_SCORINGS": "lmdiff.tasks.registry",
@@ -252,6 +253,7 @@ if TYPE_CHECKING:  # pragma: no cover
         F1,
         Gsm8kNumberMatch,
         MultipleChoice,
+        PrefixMatch,
     )
     from lmdiff.tasks.loglikelihood import loglikelihood_accuracy  # noqa: F401
     from lmdiff.tasks.registry import (  # noqa: F401

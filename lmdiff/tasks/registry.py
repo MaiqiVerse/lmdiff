@@ -22,6 +22,7 @@ from lmdiff.tasks.evaluators import (
     ExactMatch,
     Gsm8kNumberMatch,
     MultipleChoice,
+    PrefixMatch,
 )
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
 
 _EVALUATOR_CLASSES: tuple[type[BaseEvaluator], ...] = (
     ExactMatch,
+    PrefixMatch,
     ContainsAnswer,
     MultipleChoice,
     F1,

@@ -32,7 +32,12 @@ from lmdiff.tasks.base import (  # noqa: E402
     UNSCORABLE_REASONS,
     Task,
 )
-from lmdiff.tasks.evaluators import ContainsAnswer, ExactMatch, MultipleChoice  # noqa: E402
+from lmdiff.tasks.evaluators import (  # noqa: E402
+    ContainsAnswer,
+    ExactMatch,
+    MultipleChoice,
+    PrefixMatch,
+)
 from lmdiff.tasks.registry import (  # noqa: E402
     EVALUATOR_REGISTRY,
     KNOWN_SCORINGS,
@@ -75,8 +80,8 @@ class TestEvaluatorRegistry:
         """Was two partial dicts in two modules: cli.py listed three of
         five, experiments/family.py mapped task names onto two."""
         assert set(EVALUATOR_REGISTRY) == {
-            "exact_match", "contains_answer", "multiple_choice",
-            "f1", "gsm8k_number_match",
+            "exact_match", "prefix_match", "contains_answer",
+            "multiple_choice", "f1", "gsm8k_number_match",
         }
 
     def test_keys_are_the_classes_own_names(self):
@@ -406,19 +411,133 @@ class TestV01Labelled:
             "code": 30, "knowledge": 30, "math": 30,
         }
 
-    def test_scoring_is_deliberately_unset(self):
-        """Not an oversight. All 90 are prefix completions -- the answer
-        is the immediate continuation -- and none of the five evaluators
-        implements that rule. `contains_answer` measurably misfires on
-        the short ones (`"i"`, `"n"` match almost any output) and
-        `exact_match` rejects every continuation that runs on. Labelling
-        them with a rule known to be wrong would be worse than leaving
-        the caller's fallback in place. See the [QUESTION] in
-        docs/internal/v044_taxonomy_notes.md."""
+    def test_every_probe_names_prefix_match(self):
+        """All 90 are prefix completions -- the answer is the immediate
+        continuation. Leaving `scoring` unset would leave v01 depending
+        on the caller guessing, which is the defect this commit removes."""
         ps = ProbeSet.from_json(V01)
-        assert ps.scorings == []
+        assert ps.scorings == ["prefix_match"]
+        assert all(p.scoring == "prefix_match" for p in ps)
 
     def test_loads_without_warnings(self):
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             ProbeSet.from_json(V01)
+
+
+class TestPrefixMatch:
+    """Measured against the two cases that condemned the other rules.
+
+    ``ExactMatch`` rejects a correct answer that keeps going;
+    ``ContainsAnswer`` accepts an answer that appears anywhere,
+    including inside a wrong one. ``prefix_match`` is the only one of
+    the three correct on both, which is why v01 gets it.
+    """
+
+    def _v01_by_domain(self):
+        import collections
+
+        ps = ProbeSet.from_json(V01)
+        out = collections.defaultdict(list)
+        for p in ps:
+            out[p.domain].append(p)
+        return out
+
+    def test_accepts_a_correct_answer_that_continues(self):
+        """Case A. ExactMatch scores 0/90 here; the answer is present
+        and at the front, so 90/90 is the correct reading."""
+        ev, em = PrefixMatch(), ExactMatch()
+        n_prefix = n_exact = 0
+        for probes in self._v01_by_domain().values():
+            for p in probes:
+                out = f"{p.expected}\n\nand then some more text follows"
+                n_prefix += ev.evaluate(out, p.expected)[0]
+                n_exact += em.evaluate(out, p.expected)[0]
+        assert n_prefix == 90
+        assert n_exact == 0, "the failure prefix_match exists to fix"
+
+    def test_rejects_a_plainly_wrong_output(self):
+        """Case B. ContainsAnswer marks 3 of 30 `code` probes correct
+        here -- `n`, `i` and `b` are substrings of the sentence."""
+        wrong = "I don't know, but it is interesting to consider."
+        ev, ca = PrefixMatch(), ContainsAnswer()
+        by_dom = self._v01_by_domain()
+        n_prefix = sum(
+            ev.evaluate(wrong, p.expected)[0]
+            for probes in by_dom.values() for p in probes
+        )
+        n_contains_code = sum(
+            ca.evaluate(wrong, p.expected)[0] for p in by_dom["code"]
+        )
+        assert n_prefix == 0
+        assert n_contains_code == 3, "the other failure it exists to fix"
+
+    def test_rejects_an_answer_buried_in_a_wrong_one(self):
+        """`"hmm, probably not 42"` contains the answer and is not one.
+        ContainsAnswer accepts all 90 of these."""
+        ev, ca = PrefixMatch(), ContainsAnswer()
+        probes = [p for ps in self._v01_by_domain().values() for p in ps]
+        assert sum(ev.evaluate(f"hmm, probably not {p.expected}", p.expected)[0]
+                   for p in probes) == 0
+        assert sum(ca.evaluate(f"hmm, probably not {p.expected}", p.expected)[0]
+                   for p in probes) == 90
+
+    def test_accepts_the_bare_answer(self):
+        probes = [p for ps in self._v01_by_domain().values() for p in ps]
+        ev = PrefixMatch()
+        assert sum(ev.evaluate(p.expected, p.expected)[0] for p in probes) == 90
+
+    @pytest.mark.parametrize("expected,output", [
+        ("Au", "au is the symbol"),   # chemical symbols: knowledge domain
+        ("np", "NP"),                 # identifiers: code domain
+        ("Paris", "paris"),
+    ])
+    def test_case_sensitive_by_default(self, expected, output):
+        """v01 needs this in two domains independently. ContainsAnswer,
+        which defaults case-insensitive, accepts all three."""
+        assert PrefixMatch().evaluate(output, expected)[0] is False
+        assert ContainsAnswer().evaluate(output, expected)[0] is True
+
+    def test_case_insensitive_on_request(self):
+        assert PrefixMatch(case_sensitive=False).evaluate("paris x", "Paris")[0]
+
+    def test_strips_leading_whitespace_and_a_padded_target(self):
+        """A target stored as `" Paris"` should match an output that
+        starts `"Paris"` -- the pairing prefix semantics need."""
+        assert PrefixMatch().evaluate("  Paris, France", " Paris ")[0]
+
+    def test_no_strip_is_literal(self):
+        assert PrefixMatch(strip=False).evaluate("  Paris", "Paris")[0] is False
+
+    def test_prefix_len_reports_how_distinctive_the_match_was(self):
+        """A one-character match is weaker evidence than a seventeen-
+        character one, and nothing else in the result says so."""
+        ev = PrefixMatch()
+        assert ev.evaluate("i + 1", "i")[2]["prefix_len"] == 1
+        assert ev.evaluate("ZeroDivisionError:", "ZeroDivisionError")[2][
+            "prefix_len"] == 17
+
+    def test_missing_expected_is_unscorable(self):
+        _, _, meta = PrefixMatch().evaluate("anything", None)
+        assert meta["reason"] in UNSCORABLE_REASONS
+
+    def test_empty_expected_is_unscorable_not_vacuously_true(self):
+        """Every string starts with "", so accepting it would mark the
+        probe correct rather than unjudgeable."""
+        correct, _, meta = PrefixMatch().evaluate("anything", "   ")
+        assert correct is False
+        assert meta["reason"] in UNSCORABLE_REASONS
+
+    def test_v01_scores_end_to_end_through_the_registry(self):
+        """The whole point: v01 now carries its own rule, so a caller
+        passing an unsuitable fallback still gets it scored correctly."""
+        ps = ProbeSet.from_json(V01)
+        outputs = [f"{p.expected} and then more" for p in ps]
+        tr = Task("t", ps, MultipleChoice()).run(_Engine(outputs))
+        assert {r.evaluator for r in tr.per_probe} == {"prefix_match"}
+        assert tr.n_unscorable == 0
+        assert tr.accuracy == 1.0, (
+            "MultipleChoice as the fallback used to make this 0.0 with "
+            "all 90 unscorable"
+        )
+

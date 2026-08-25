@@ -8,6 +8,7 @@
       "text": "17 + 25 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "42"
     },
     {
@@ -15,6 +16,7 @@
       "text": "144 / 12 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "12"
     },
     {
@@ -22,6 +24,7 @@
       "text": "7 * 8 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "56"
     },
     {
@@ -29,6 +32,7 @@
       "text": "The square root of 64 is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "8"
     },
     {
@@ -36,6 +40,7 @@
       "text": "Two plus two equals ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "four"
     },
     {
@@ -43,6 +48,7 @@
       "text": "The first three prime numbers are 2, 3, ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "5"
     },
     {
@@ -50,6 +56,7 @@
       "text": "If you have 10 apples and give away 3, you have ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "7"
     },
     {
@@ -57,6 +64,7 @@
       "text": "Half of 100 is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "50"
     },
     {
@@ -64,6 +72,7 @@
       "text": "A dozen is equal to ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "12"
     },
     {
@@ -71,6 +80,7 @@
       "text": "10 squared is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "100"
     },
     {
@@ -78,6 +88,7 @@
       "text": "15 × 4 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "60"
     },
     {
@@ -85,6 +96,7 @@
       "text": "The cube of 3 is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "27"
     },
     {
@@ -92,6 +104,7 @@
       "text": "100 - 37 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "63"
     },
     {
@@ -99,6 +112,7 @@
       "text": "Three dozen equals ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "36"
     },
     {
@@ -106,6 +120,7 @@
       "text": "A century is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "100"
     },
     {
@@ -113,6 +128,7 @@
       "text": "9 + 6 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "15"
     },
     {
@@ -120,6 +136,7 @@
       "text": "The number of days in a year is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "365"
     },
     {
@@ -127,6 +144,7 @@
       "text": "One quarter of 200 is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "50"
     },
     {
@@ -134,6 +152,7 @@
       "text": "5 * 5 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "25"
     },
     {
@@ -141,6 +160,7 @@
       "text": "The next number after 99 is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "100"
     },
     {
@@ -148,6 +168,7 @@
       "text": "8 + 7 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "15"
     },
     {
@@ -155,6 +176,7 @@
       "text": "One half of 64 is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "32"
     },
     {
@@ -162,6 +184,7 @@
       "text": "11 * 11 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "121"
     },
     {
@@ -169,6 +192,7 @@
       "text": "The number of hours in a day is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "24"
     },
     {
@@ -176,6 +200,7 @@
       "text": "200 + 350 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "550"
     },
     {
@@ -183,6 +208,7 @@
       "text": "13 * 7 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "91"
     },
     {
@@ -190,6 +216,7 @@
       "text": "The number of minutes in an hour is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "60"
     },
     {
@@ -197,6 +224,7 @@
       "text": "One third of 90 is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "30"
     },
     {
@@ -204,6 +232,7 @@
       "text": "The number of months in a year is ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "12"
     },
     {
@@ -211,6 +240,7 @@
       "text": "45 + 55 = ",
       "domain": "math",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "100"
     },
     {
@@ -218,6 +248,7 @@
       "text": "The capital of France is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Paris"
     },
     {
@@ -225,6 +256,7 @@
       "text": "The largest planet in our solar system is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Jupiter"
     },
     {
@@ -232,6 +264,7 @@
       "text": "Water is composed of hydrogen and ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "oxygen"
     },
     {
@@ -239,6 +272,7 @@
       "text": "The author of Romeo and Juliet is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "William"
     },
     {
@@ -246,6 +280,7 @@
       "text": "The chemical symbol for gold is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Au"
     },
     {
@@ -253,6 +288,7 @@
       "text": "The tallest mountain in the world is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Mount"
     },
     {
@@ -260,6 +296,7 @@
       "text": "The speed of light is approximately ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "299"
     },
     {
@@ -267,6 +304,7 @@
       "text": "The first president of the United States was ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "George"
     },
     {
@@ -274,6 +312,7 @@
       "text": "The currency of Japan is the ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "yen"
     },
     {
@@ -281,6 +320,7 @@
       "text": "The Great Wall is located in ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "China"
     },
     {
@@ -288,6 +328,7 @@
       "text": "The capital of Germany is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Berlin"
     },
     {
@@ -295,6 +336,7 @@
       "text": "The chemical symbol for iron is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Fe"
     },
     {
@@ -302,6 +344,7 @@
       "text": "The largest ocean on Earth is the ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Pacific"
     },
     {
@@ -309,6 +352,7 @@
       "text": "The boiling point of water is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "100"
     },
     {
@@ -316,6 +360,7 @@
       "text": "The longest river in the world is the ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Nile"
     },
     {
@@ -323,6 +368,7 @@
       "text": "The chemical formula for table salt is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Na"
     },
     {
@@ -330,6 +376,7 @@
       "text": "The largest mammal on Earth is the ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "blue"
     },
     {
@@ -337,6 +384,7 @@
       "text": "The inventor of the telephone was Alexander Graham ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Bell"
     },
     {
@@ -344,6 +392,7 @@
       "text": "The freezing point of water in Fahrenheit is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "32"
     },
     {
@@ -351,6 +400,7 @@
       "text": "The capital of Japan is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Tokyo"
     },
     {
@@ -358,6 +408,7 @@
       "text": "The smallest planet in our solar system is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Mercury"
     },
     {
@@ -365,6 +416,7 @@
       "text": "The author of Hamlet was William ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Shakespeare"
     },
     {
@@ -372,6 +424,7 @@
       "text": "The chemical symbol for silver is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Ag"
     },
     {
@@ -379,6 +432,7 @@
       "text": "Light from the Sun takes approximately 8 ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "minutes"
     },
     {
@@ -386,6 +440,7 @@
       "text": "The capital of Italy is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Rome"
     },
     {
@@ -393,6 +448,7 @@
       "text": "The largest continent by area is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Asia"
     },
     {
@@ -400,6 +456,7 @@
       "text": "Diamonds are made of pure ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "carbon"
     },
     {
@@ -407,6 +464,7 @@
       "text": "The number of bones in the adult human body is ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "206"
     },
     {
@@ -414,6 +472,7 @@
       "text": "The fastest land animal is the ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "che"
     },
     {
@@ -421,6 +480,7 @@
       "text": "The Eiffel Tower is located in ",
       "domain": "knowledge",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "Paris"
     },
     {
@@ -428,6 +488,7 @@
       "text": "def fibonacci(n):\n    if n <= 1:\n        return ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "n"
     },
     {
@@ -435,6 +496,7 @@
       "text": "def is_prime(n):\n    if n < 2:\n        return ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "False"
     },
     {
@@ -442,6 +504,7 @@
       "text": "for i in range(10):\n    print(",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "i"
     },
     {
@@ -449,6 +512,7 @@
       "text": "import numpy as ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "np"
     },
     {
@@ -456,6 +520,7 @@
       "text": "class Animal:\n    def __init__(self, name):\n        self.",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "name"
     },
     {
@@ -463,6 +528,7 @@
       "text": "# Compute the factorial of n\ndef factorial(n):\n    if n == 0:\n        return ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "1"
     },
     {
@@ -470,6 +536,7 @@
       "text": "x = [1, 2, 3]\nlen(x) == ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "3"
     },
     {
@@ -477,6 +544,7 @@
       "text": "# Reverse a string\ndef reverse(s):\n    return s[",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "::-1"
     },
     {
@@ -484,6 +552,7 @@
       "text": "try:\n    x = 1 / 0\nexcept ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "ZeroDivisionError"
     },
     {
@@ -491,6 +560,7 @@
       "text": "sorted([3, 1, 2]) returns ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "["
     },
     {
@@ -498,6 +568,7 @@
       "text": "import pandas as ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "pd"
     },
     {
@@ -505,6 +576,7 @@
       "text": "d = {'a': 1, 'b': 2}\nfor key in d:\n    print(",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "key"
     },
     {
@@ -512,6 +584,7 @@
       "text": "if x > 0:\n    print(\"positive\")\nelse:\n    print(\"",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "negative"
     },
     {
@@ -519,6 +592,7 @@
       "text": "import os\nos.path.",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "join"
     },
     {
@@ -526,6 +600,7 @@
       "text": "with open(\"file.txt\", \"r\") as ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "f"
     },
     {
@@ -533,6 +608,7 @@
       "text": "squares = [x**2 for x in ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "range"
     },
     {
@@ -540,6 +616,7 @@
       "text": "def add(a, b):\n    return a + ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "b"
     },
     {
@@ -547,6 +624,7 @@
       "text": "from collections import ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "default"
     },
     {
@@ -554,6 +632,7 @@
       "text": "x = \"hello world\"\nx.split(",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": ")"
     },
     {
@@ -561,6 +640,7 @@
       "text": "import json\ndata = json.",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "load"
     },
     {
@@ -568,6 +648,7 @@
       "text": "for key, value in d.",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "items"
     },
     {
@@ -575,6 +656,7 @@
       "text": "numbers = [1, 2, 3, 4, 5]\ntotal = sum(",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "numbers"
     },
     {
@@ -582,6 +664,7 @@
       "text": "if __name__ == \"__main__\":\n    ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "main"
     },
     {
@@ -589,6 +672,7 @@
       "text": "x = [1, 2, 3]\nx.append(",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "4"
     },
     {
@@ -596,6 +680,7 @@
       "text": "import sys\nsys.",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "argv"
     },
     {
@@ -603,6 +688,7 @@
       "text": "def greet(name):\n    return f\"Hello, {",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "name"
     },
     {
@@ -610,6 +696,7 @@
       "text": "with open('file.txt', 'r') as f:\n    content = f.",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "read"
     },
     {
@@ -617,6 +704,7 @@
       "text": "x = \"hello\"\nprint(x.upper(",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": ")"
     },
     {
@@ -624,6 +712,7 @@
       "text": "try:\n    result = int(\"abc\")\nexcept ValueError:\n    result = ",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "None"
     },
     {
@@ -631,6 +720,7 @@
       "text": "import re\npattern = re.",
       "domain": "code",
       "output_type": "generate_until",
+      "scoring": "prefix_match",
       "expected": "compile"
     }
   ]

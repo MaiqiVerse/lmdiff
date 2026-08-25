@@ -90,11 +90,12 @@ protects.
 
 ## `scoring`
 
-Which evaluator judges the output. Five ship:
+Which evaluator judges the output. Six ship:
 
 | `scoring` | rule | needs |
 |---|---|---|
 | `exact_match` | output equals `expected`, whitespace stripped | `expected` |
+| `prefix_match` | output *begins with* `expected` | `expected` |
 | `contains_answer` | `expected` occurs anywhere in the output | `expected` |
 | `multiple_choice` | parse a letter or integer from the output | `metadata["correct_index"]` |
 | `f1` | SQuAD token-overlap ≥ 0.5 | `expected`, optionally `metadata["aliases"]` |
@@ -108,11 +109,16 @@ whatever evaluator the caller passed. Nothing raises.
 
 Match the rule to the answer's shape, not to the subject:
 
-- The answer is the whole output → `exact_match`.
+- The prompt stops mid-sentence and the answer is what comes next →
+  `prefix_match`. This is the completion-probe rule; it accepts an
+  answer that runs on past itself and rejects one that only turns up
+  later.
+- The answer is the whole output, nothing after → `exact_match`.
 - The answer is embedded in a sentence → `contains_answer`, but only if
   `expected` is long enough to be distinctive. A one- or two-character
   expected value is a substring of almost any output, and
-  `contains_answer` will report it correct.
+  `contains_answer` will report it correct. It also accepts an answer
+  buried inside a wrong one — `"hmm, probably not 42"` scores as `42`.
 - The answer is a span to be compared loosely → `f1`.
 - The answer is a number reached by working → `gsm8k_number_match`.
 
@@ -189,14 +195,18 @@ difference in capability. v01's math probes were instruction-style once
 and were rewritten for exactly this reason. Instruction-style probes
 belong in their own versioned file.
 
-`v01` declares `output_type: generate_until` and **deliberately leaves
-`scoring` unset**, so the caller's evaluator applies to all 90. Its
-probes are *prefix* completions — the answer is the immediate
-continuation — and none of the five shipped rules expresses that: the
-short expected values (`"n"`, `"i"`, `"["`) make `contains_answer`
-match almost anything, and `exact_match` rejects every continuation that
-runs on past the answer. Labelling them with a rule known to misfire
-would be worse than leaving the choice explicit.
+`v01` declares `output_type: generate_until` and `scoring:
+prefix_match` on every probe, so the right rule applies whatever
+evaluator you pass.
+
+That rule exists because of this set. The answer to a v01 probe is the
+immediate continuation, and until v0.4.4 nothing expressed that:
+`contains_answer` was the default by inheritance rather than by choice,
+and with expected values as short as `"n"`, `"i"` and `"["` it marks 3
+of the 30 `code` probes correct for the output `"I don't know, but it
+is interesting to consider."` `exact_match` has the opposite problem —
+it rejects every answer that continues past itself, which is all of
+them.
 
 ## Writing your own
 

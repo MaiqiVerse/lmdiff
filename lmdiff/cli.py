@@ -21,12 +21,21 @@ app = typer.Typer(
 
 _BUILTIN_PROBES_DIR = Path(__file__).parent / "probes"
 
-# Built from the registry rather than typed out, so a new evaluator
-# appears in --help without a second edit.
-_EVALUATOR_HELP = (
-    "Fallback evaluator for probes with no `scoring` field. One of: "
-    "exact_match, contains_answer, multiple_choice, f1, gsm8k_number_match"
-)
+def _evaluator_help() -> str:
+    """Built from the registry, so a new evaluator appears in --help
+    without a second edit. The previous version of this string was
+    hand-written under a comment claiming otherwise, and had gone stale
+    twice over -- `f1` and `gsm8k_number_match` existed and were not
+    listed."""
+    from lmdiff.tasks.registry import EVALUATOR_REGISTRY
+
+    return (
+        "Fallback evaluator for probes with no `scoring` field. One of: "
+        + ", ".join(sorted(EVALUATOR_REGISTRY))
+    )
+
+
+_EVALUATOR_HELP = _evaluator_help()
 
 
 
