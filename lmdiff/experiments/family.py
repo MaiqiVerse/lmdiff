@@ -31,6 +31,7 @@ import json
 import math
 import sys
 import time
+from types import SimpleNamespace
 from dataclasses import dataclass, field
 from html import escape
 from pathlib import Path
@@ -198,6 +199,55 @@ def _load_concatenated_probes(
     return mega, per_task
 
 
+class _LegacyEngineAdapter:
+    """Presents a v0.2.x ``InferenceEngine`` as the ``Engine`` Protocol.
+
+    v0.4.5 ported ``Task`` and ``loglikelihood_accuracy`` to the
+    Protocol. This module is deprecated and deleted in v0.5.0, so rather
+    than teaching the new code about the old engine, the shim lives here
+    and dies with the module.
+
+    It reproduces the stateful behaviour the ported code deliberately
+    dropped: ``InferenceEngine`` resolves ``system_prompt`` / ``context``
+    / ``decode`` from its own config, so the adapter reads
+    ``engine.config`` and keeps doing that. Without it, this path would
+    quietly start scoring a different configuration than it did in
+    v0.4.4 -- which is the whole failure the port exists to make
+    impossible.
+    """
+
+    __slots__ = ("_engine",)
+
+    def __init__(self, engine: Any) -> None:
+        self._engine = engine
+
+    @property
+    def name(self) -> str:
+        return self._engine.model_name
+
+    def generate(self, prompt: str, *, prefix_text: str = "", **kwargs: Any) -> Any:
+        # prefix_text is ignored on purpose: the wrapped engine applies
+        # its stored system_prompt / context itself.
+        res = self._engine.generate(
+            [prompt], n_samples=1,
+            max_new_tokens=kwargs.get("max_new_tokens", 32),
+        )
+        out = SimpleNamespace(text=res.completions[0][0], tokens=[])
+        if getattr(res, "token_ids", None):
+            out.tokens = res.token_ids[0][0]
+        return out
+
+    def score(self, prompt: str, continuation: str, *, prefix_text: str = "") -> Any:
+        res = self._engine.score([prompt], continuations=[continuation])
+        ce = res.cross_entropies[0]
+        toks = (res.token_ids or [[0]])[0]
+        return SimpleNamespace(
+            avg_logprob=ce if ce != ce else -ce,
+            tokens=toks or [0],
+            logprobs=None,
+        )
+
+
 def _acc_or_nan(result: Any) -> float:
     """``TaskResult.accuracy`` is ``None`` when no probe could be judged
     (v0.4.4). This path's contract is a float, and it already uses NaN
@@ -232,10 +282,14 @@ def _accuracy_for_task(
             overrides=task_max_new_tokens,
         )
         task = Task(task_name, probes, ContainsAnswer(), max_new_tokens=gen_len)
-        return _acc_or_nan(task.run(engine))
+        return _acc_or_nan(task.run(_LegacyEngineAdapter(engine)))
 
     if info.output_type == "multiple_choice":
-        return loglikelihood_accuracy(probes, engine, task_name=task_name).accuracy
+        return _acc_or_nan(
+            loglikelihood_accuracy(
+                probes, _LegacyEngineAdapter(engine), task_name=task_name,
+            )
+        )
 
     if info.output_type == "generate_until":
         if info.requires_execution:
@@ -250,7 +304,7 @@ def _accuracy_for_task(
             overrides=task_max_new_tokens,
         )
         task = Task(task_name, probes, evaluator_cls(), max_new_tokens=gen_len)
-        return _acc_or_nan(task.run(engine))
+        return _acc_or_nan(task.run(_LegacyEngineAdapter(engine)))
 
     return float("nan")
 

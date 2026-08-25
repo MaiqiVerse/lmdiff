@@ -4066,7 +4066,14 @@ So `degraded` is **an annotation, not an exclusion**. The share is computed and 
 belongs in a release already touching the schema. Its current failure
 mode is silence: a forgotten gate drops a field rather than raising.
 
-**6. The task layer's engine port — a BLOCKER on item 4, not a note beside it.**
+**6. The task layer's engine port — a BLOCKER on item 4. SHIPPED as v0.4.5.**
+
+> Cleared by v0.4.5 (`docs/internal/v045_engine_port_notes.md`).
+> `Task`, `loglikelihood_accuracy` and `CapabilityRadar.run_single`
+> speak the Protocol; `run_pair` is deprecated for removal here;
+> evaluation metrics are back on the live path. The removal in item
+> 4 is no longer blocked. Retained below because the analysis is
+> what the port was scoped from.
 
 Removing `InferenceEngine` (item 4) breaks the evaluation layer, because
 that layer speaks the v0.2.x batch API and `lmdiff/__init__.py` exports
@@ -4113,6 +4120,35 @@ mentioned:
 
 Whether the port is its own commit before v0.5.0 or part of v0.5.0 is
 open. Investigation and measurements: `docs/internal/v044_taxonomy_notes.md` §1.5–§1.6.
+
+**7. Accuracy cell keys: task-keyed overrides against domain-keyed cells.**
+
+v0.4.5 keys `accuracy_by_variant` by **domain**, matching `probe_domains`
+and every other per-cell quantity in a `GeoResult`. `task_max_new_tokens`
+is keyed by **lm-eval task name**, and `_effective_max_new_tokens` looks
+both up with the same key — so a `{"gsm8k": 256}` override no longer
+suppresses the `AccuracyArtifactFinding` caveat on the `math` cell those
+probes land in.
+
+Deliberately not fixed in the port. The mapping question touches a
+**shipped artifact**: the run config emits `task_overrides` in the
+task-keyed form (`docs/reference/run-config.md`), so whatever a
+task-keyed override means against a domain-keyed cell has to be
+consistent with a file format users already have on disk. That is a
+schema decision, not a port detail.
+
+Three shapes it could take, none chosen: resolve task→domain at pipeline
+time and key the override the same way accuracy is keyed; keep accuracy
+task-keyed and lose the alignment with every other per-cell quantity; or
+let a cell carry both labels. The first is cheapest and the third is
+most honest about probe sets that mix tasks within a domain.
+
+Related, same release, same cause: the artifact caveat now applies to
+live-path results only. It reads generativeness off `probe_output_types`,
+which is domain-aligned, so results from the deprecated path — which key
+accuracy by task name — lose it. One release before that path is deleted
+anyway, and the alternative was carrying a hardcoded list of five task
+names to serve it.
 
 Estimated 2–3 weeks. Items 1–3 are one coherent theme — "make variant-only measurement first-class" — and should ship together.
 

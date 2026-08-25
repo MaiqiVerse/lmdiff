@@ -78,6 +78,41 @@ exactly when a test goes green on the wrong one.
 
 Cost is minutes, and only for the fixes the new test claims to cover.
 
+### The mutation check can fail silently, in the shape it exists to catch
+
+Three ways a mutation run reports nothing wrong while having verified
+nothing. All three were hit in one v0.4.5 session.
+
+**Verify every anchor still matches, before running.** A mutation whose
+`old` string no longer appears in the source **skips**, and a skip reads
+as coverage at a glance — it sits in the same column as a pass. This
+happens exactly when you are most exposed: you rewrote the function, so
+the anchor moved, so the mutation aimed at your new code silently
+stopped aiming at anything. Parse the mutation list and assert every
+anchor matches before spending the twenty minutes.
+
+**Check the mutation actually changed the behaviour, not just the
+bytes.** `base_accuracy = {} or _accuracy_by_domain(...)` reads like a
+disable and is a no-op: `{}` is falsy, so `or` returns the call. It
+reported **NOT CAUGHT** against a test that was working perfectly. When
+a mutation comes back not-caught, re-read the mutation before you
+re-read the test — a bad mutation and a missing test are indistinguishable
+from the summary line.
+
+**Run on a quiescent tree.** The harness captures each file, mutates it,
+and restores it in a `finally`. Editing the same files during a run
+makes every result unreliable — the restore writes back a snapshot from
+before your edit — and a run killed mid-mutation leaves the mutation
+applied in the working tree. Both happened; the second one was
+self-inflicted twice, once by editing during a run and once by a helper
+script that did `from mutate_45 import MUTATIONS`, which *executes* the
+module.
+
+The leftover mutation was caught by the suite within one command, which
+is the system working — but only because the two tests that pin it
+existed. That is the argument for writing them, not a reason to relax
+about the hygiene.
+
 ### Why this is a checklist step and not a tool
 
 This was tested rather than assumed. The obvious automation —

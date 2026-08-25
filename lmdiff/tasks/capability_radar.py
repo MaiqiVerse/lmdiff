@@ -7,6 +7,7 @@ from lmdiff.tasks.base import BaseEvaluator, Task, TaskResult
 from lmdiff.tasks.evaluators import ContainsAnswer
 
 if TYPE_CHECKING:
+    from lmdiff._engine import Engine
     from lmdiff.engine import InferenceEngine
     from lmdiff.probes.loader import ProbeSet
 
@@ -123,8 +124,10 @@ class CapabilityRadar:
         self,
         domain: str,
         domain_probes: ProbeSet,
-        engine: InferenceEngine,
-        pre_generated: Any = None,
+        engine: "Engine",
+        outputs: list[str] | None = None,
+        prefix_text: str = "",
+        generate_kwargs: dict | None = None,
     ) -> TaskResult:
         task = Task(
             name=f"radar_{domain}",
@@ -132,16 +135,37 @@ class CapabilityRadar:
             evaluator=self.evaluator,
             max_new_tokens=self.max_new_tokens,
         )
-        return task.run(engine, pre_generated=pre_generated)
+        return task.run(
+            engine, outputs=outputs, prefix_text=prefix_text,
+            generate_kwargs=generate_kwargs,
+        )
 
-    def run_single(self, engine: InferenceEngine) -> RadarResult:
-        """Accuracy-only radar for one engine."""
+    def run_single(
+        self,
+        engine: "Engine",
+        *,
+        prefix_text: str = "",
+        generate_kwargs: dict | None = None,
+    ) -> RadarResult:
+        """Accuracy-only radar for one engine.
+
+        .. versionchanged:: 0.4.5
+           Speaks the ``Engine`` Protocol. ``prefix_text`` and
+           ``generate_kwargs`` must be supplied for any config with a
+           ``system_prompt`` or non-greedy decode — the Protocol's
+           engines are stateless, and omitting them measures a different
+           configuration without raising. Build both from a ``Config``
+           with ``lmdiff._prompting``.
+        """
         by_domain = self.probes.by_domain()
         domains = sorted(by_domain.keys())
 
         a_results: dict[str, DomainRadarResult] = {}
         for d in domains:
-            tr = self._run_task_for_domain(d, by_domain[d], engine)
+            tr = self._run_task_for_domain(
+                d, by_domain[d], engine,
+                prefix_text=prefix_text, generate_kwargs=generate_kwargs,
+            )
             a_results[d] = DomainRadarResult(
                 domain=d,
                 n_probes=tr.n_probes,
@@ -150,7 +174,7 @@ class CapabilityRadar:
             )
 
         return RadarResult(
-            engine_a_name=engine.model_name,
+            engine_a_name=engine.name,
             engine_b_name=None,
             domains=domains,
             a_by_domain=a_results,
@@ -161,10 +185,42 @@ class CapabilityRadar:
         )
 
     def run_pair(
-        self, engine_a: InferenceEngine, engine_b: InferenceEngine,
+        self, engine_a: "InferenceEngine", engine_b: "InferenceEngine",
     ) -> RadarResult:
-        """Full radar: accuracy per engine + BD per domain."""
+        """Full radar: accuracy per engine + BD per domain.
+
+        .. deprecated:: 0.4.5
+           Not ported to the ``Engine`` Protocol and **removed in
+           v0.5.0**. It requires a v0.2.x ``InferenceEngine``.
+
+           The reason it is not ported rather than merely unported: it
+           exists to pair accuracy with ``BehavioralDistance`` on shared
+           generations, and the live path does not compute BD at all —
+           ``_pipeline`` derives δ directly via ``engine.score``,
+           deliberately (see ``geometry`` module docstring). Its only
+           in-tree caller, ``ModelDiff.capability_radar``, is on the same
+           removal list. Porting it would mean porting BD, which reaches
+           for ``engine.tokenizer`` — a model object, which metrics are
+           not allowed to see.
+
+           ``run_single`` is ported and is the part worth keeping. If
+           accuracy paired with δ on shared generations is wanted, it
+           belongs in ``_pipeline``, where both engines and the shared
+           generations already are — which is what v0.4.5 does for
+           ``accuracy_by_variant``.
+        """
+        import warnings
+
         from lmdiff.metrics.output.behavioral_distance import BehavioralDistance
+
+        warnings.warn(
+            "CapabilityRadar.run_pair is deprecated since v0.4.5 and will "
+            "be removed in v0.5.0. It requires the deprecated "
+            "InferenceEngine. Use run_single for per-domain accuracy, or "
+            "lmdiff.family() for accuracy paired with change geometry.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         by_domain = self.probes.by_domain()
         domains = sorted(by_domain.keys())
@@ -190,8 +246,15 @@ class CapabilityRadar:
                 domain_probes.texts, n_samples=1, max_new_tokens=self.max_new_tokens,
             )
 
-            tr_a = self._run_task_for_domain(d, domain_probes, engine_a, pre_generated=gen_a)
-            tr_b = self._run_task_for_domain(d, domain_probes, engine_b, pre_generated=gen_b)
+            # Legacy GenerationResult -> the list[str] Task.run now takes.
+            tr_a = self._run_task_for_domain(
+                d, domain_probes, engine_a,
+                outputs=[c[0] for c in gen_a.completions],
+            )
+            tr_b = self._run_task_for_domain(
+                d, domain_probes, engine_b,
+                outputs=[c[0] for c in gen_b.completions],
+            )
 
             bd_result = bd_metric.compute(
                 engine_a, engine_b, domain_probes.texts,

@@ -19,20 +19,30 @@ def _make_probe(id_, text, choices, correct_index, domain="test"):
 
 
 def _mock_engine_with_scores(all_ces: list[list[float]]):
-    """Mock engine whose score() returns per-call CE lists from all_ces in order."""
+    """Engine Protocol surface (v0.4.5).
+
+    ``score`` now takes one (prompt, continuation) pair per call and
+    returns ``avg_logprob`` — mean log-prob over the continuation —
+    rather than a batch of ``cross_entropies``. The fixture still
+    expresses itself in CE, one list per probe, so it flattens the lists
+    and negates: ``ce = -avg_logprob`` reproduces the legacy
+    ``-lp.sum() / n_tokens`` exactly.
+
+    ``tokens`` is non-empty so the caller does not treat the score as an
+    empty continuation; a NaN CE is passed through as a NaN avg_logprob,
+    which is the "scoring failed" signal the old ``cross_entropies``
+    carried.
+    """
     engine = MagicMock()
-    engine.model_name = "mock"
+    engine.name = "mock"
 
-    iter_ces = iter(all_ces)
+    flat = iter([ce for ces in all_ces for ce in ces])
 
-    def score_side(prompts, continuations=None, continuation_ids=None, **kwargs):
+    def score_side(prompt, continuation=None, **kwargs):
+        ce = next(flat)
         sr = MagicMock()
-        ces = next(iter_ces)
-        assert len(ces) == len(prompts), (
-            f"test setup mismatch: got {len(prompts)} prompts but CE list is {len(ces)}"
-        )
-        sr.cross_entropies = ces
-        sr.token_ids = [[0, 1]] * len(prompts)
+        sr.avg_logprob = ce if ce != ce else -ce
+        sr.tokens = [0, 1]
         return sr
 
     engine.score.side_effect = score_side

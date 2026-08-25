@@ -75,13 +75,30 @@ _SPECIALIZATION_PEAK_SHARE_THRESHOLD = 0.30
 #: statement from "not computed", and the reader needs to tell them
 #: apart. See ``docs/methodology/normalization.md``.
 _SPECIALIZATION_PEAK_MARGIN = 0.05
-_GENERATIVE_TASKS = frozenset({
-    "gsm8k",
-    "longbench_2wikimqa",
-    "longbench_hotpotqa",
-    "longbench_narrativeqa",
-    "longbench_qasper",
-})
+def _generative_cells(result: "GeoResult") -> set[str]:
+    """Which accuracy cells were produced by *generation*.
+
+    Was ``_GENERATIVE_TASKS``, a hardcoded frozenset of five lm-eval task
+    names — the third such list in the tree, after
+    ``KNOWN_TASK_DOMAINS.output_type`` and ``TASK_SCORINGS``. Since
+    v0.4.4 the probes carry the answer, and since v0.4.5 the GeoResult
+    carries it too, so it is derived rather than enumerated (v0.4.5).
+
+    A cell is generative iff any probe in it was queried with
+    ``generate_until``: only generated text can be truncated by
+    ``max_new_tokens``, which is what the caveat this feeds is about.
+
+    Empty for any pre-v8 save, which correctly disables the finding
+    rather than guessing.
+    """
+    domains = getattr(result, "probe_domains", ()) or ()
+    output_types = getattr(result, "probe_output_types", ()) or ()
+    if not domains or len(output_types) != len(domains):
+        return set()
+    return {
+        d for d, ot in zip(domains, output_types)
+        if d is not None and ot == "generate_until"
+    }
 _ACCURACY_ARTIFACT_MAX_NEW_TOKENS = 32
 _ACCURACY_ARTIFACT_THRESHOLD = 0.05
 
@@ -441,8 +458,9 @@ def _extract_accuracy_findings(result: "GeoResult") -> list[Finding]:
         if isinstance(per_task, dict):
             tasks_seen.update(per_task.keys())
 
+    generative = _generative_cells(result)
     for task in sorted(tasks_seen):
-        if task not in _GENERATIVE_TASKS:
+        if task not in generative:
             continue
         mnt = _effective_max_new_tokens(meta, task)
         if mnt is None or mnt > _ACCURACY_ARTIFACT_MAX_NEW_TOKENS:

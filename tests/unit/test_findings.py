@@ -38,6 +38,7 @@ def _build_geo(
     base_name: str = "base",
     variants: dict[str, list[float]] | None = None,
     domains: tuple[str, ...] = (),
+    output_types: tuple[str, ...] = (),
     cosine_matrix: dict[str, dict[str, float]] | None = None,
     metadata: dict | None = None,
 ) -> GeoResult:
@@ -51,6 +52,7 @@ def _build_geo(
             for v in variants
         }
     geo = GeoResult(
+        probe_output_types=output_types,
         base_name=base_name,
         variant_names=list(variants),
         n_probes=n,
@@ -370,13 +372,22 @@ class TestDriftCellsRespectDomainStatus:
 
 class TestAccuracyArtifact:
     def test_fires_for_gsm8k_with_low_max_new_tokens(self):
-        geo = _build_geo(metadata={
-            "max_new_tokens": 16,
-            "accuracy_by_variant": {
-                "v1": {"gsm8k": 0.0, "hellaswag": 0.55},
-                "v2": {"gsm8k": 0.01, "hellaswag": 0.61},
+        # v0.4.5: generativeness is read off probe_output_types rather
+        # than a hardcoded task list, so the fixture must declare it.
+        geo = _build_geo(
+            domains=("gsm8k", "gsm8k", "hellaswag", "hellaswag"),
+            output_types=(
+                "generate_until", "generate_until",
+                "multiple_choice", "multiple_choice",
+            ),
+            metadata={
+                "max_new_tokens": 16,
+                "accuracy_by_variant": {
+                    "v1": {"gsm8k": 0.0, "hellaswag": 0.55},
+                    "v2": {"gsm8k": 0.01, "hellaswag": 0.61},
+                },
             },
-        })
+        )
         findings = extract_findings(geo)
         artifacts = [
             f for f in findings if isinstance(f, AccuracyArtifactFinding)
@@ -391,14 +402,19 @@ class TestAccuracyArtifact:
     def test_does_not_fire_when_per_task_override_present(self):
         # Per spec invariant #6: an explicit per-task override means the
         # user already fixed the artifact; rule must not fire on that task.
-        geo = _build_geo(metadata={
-            "max_new_tokens": 16,
-            "task_max_new_tokens": {"gsm8k": 256},
-            "accuracy_by_variant": {
-                "v1": {"gsm8k": 0.0, "longbench_2wikimqa": 0.0},
-                "v2": {"gsm8k": 0.01, "longbench_2wikimqa": 0.0},
+        geo = _build_geo(
+            domains=("gsm8k", "gsm8k", "longbench_2wikimqa",
+                     "longbench_2wikimqa"),
+            output_types=("generate_until",) * 4,
+            metadata={
+                "max_new_tokens": 16,
+                "task_max_new_tokens": {"gsm8k": 256},
+                "accuracy_by_variant": {
+                    "v1": {"gsm8k": 0.0, "longbench_2wikimqa": 0.0},
+                    "v2": {"gsm8k": 0.01, "longbench_2wikimqa": 0.0},
+                },
             },
-        })
+        )
         findings = extract_findings(geo)
         tasks = {
             f.details["task"]

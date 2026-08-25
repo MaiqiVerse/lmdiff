@@ -352,3 +352,231 @@ would not be true inside v0.5.0.
 Both findings in §1.2 and §3.1 are invisible in the source: the first
 lives in a default-argument fallback two calls deep, and the second in a
 key that nothing writes.
+
+---
+
+## 8. Implementation record
+
+Scope §5 held. Two things it did not anticipate changed the design, and
+both were found by running rather than reading.
+
+### 8.1 A second generation pass would have moved δ
+
+Guard: *stop if base scoring moves any existing number rather than
+filling in a missing one.* It would have.
+
+`_delta_for_variant` pins the seed with `manual_seed` **once, at probe
+0**, then lets RNG advance naturally through the generate loop (Fix 3,
+v0.4.0 PR #15 — the alternative reseeds every probe and over-correlates
+the sampling). So an extra generation pass consumes RNG, and for any
+sampling variant whose seed resolves to `None` — legitimate, and
+documented as non-reproducible by design — δ shifts.
+
+The resolution is better than the one scoped, and it was sitting there:
+**score variants on the completions δ was already computed from.** The
+δ loop produces `v_outputs`; that is exactly what an evaluator needs. So
+`_delta_for_variant` returns it, and `Task.run` grows an `outputs=`
+parameter.
+
+Three consequences, all good:
+
+- no second generation, so no RNG consumed and δ provably unmoved;
+- no extra GPU time for the variant half — the expensive part is
+  already done;
+- the L-010 pairing for free. Accuracy and δ describe *one* sample, not
+  two, which is the constraint `CapabilityRadar.run_pair` was built to
+  satisfy and which now holds on the live path without BD.
+
+Base still needs its own pass — the δ loop generates the *variant's*
+output and scores it under both engines; base is never asked to produce
+anything. That pass runs **after every variant's δ loop**, so it cannot
+perturb the RNG state any variant depended on. One ordering constraint,
+no torch, no state save/restore.
+
+### 8.2 Multiple-choice probes would have been scored by string match
+
+Not in the scope at all, and it would have shipped a wrong number rather
+than a missing one.
+
+`from_lm_eval` sets `scoring=None` for `multiple_choice` probes — by
+design, since they are scored over stored choices rather than by an
+evaluator. `Task` therefore falls back to `ContainsAnswer` and matches
+the **generated text** against the gold choice. On `hellaswag` that is
+not a low accuracy; it is a different measurement.
+
+**Three of the five calibration tasks are multiple-choice**, so this was
+the common case:
+
+```
+hellaswag                       multiple_choice   scoring=None
+arc_challenge                   multiple_choice   scoring=None
+mmlu_college_computer_science   multiple_choice   scoring=None
+gsm8k                           generate_until    gsm8k_number_match
+longbench_2wikimqa              generate_until    f1
+```
+
+`_accuracy_by_domain` now dispatches on `output_type` — multiple-choice
+through `loglikelihood_accuracy` over the stored choices, everything
+else through `Task` on the reused completions. This is
+`_accuracy_for_task`'s dispatch, moved to the live path, and it is what
+makes the deprecated-path comparison in §9 mechanical rather than
+merely indicative.
+
+It also forced one more change: the variant's accuracy is computed
+**inside** the per-variant loop rather than after it, because
+log-likelihood scoring needs the engine and the cache releases engines
+look-ahead-by-one. `score` is a deterministic forward pass and consumes
+no RNG, so this does not reintroduce §8.1's problem.
+
+### 8.3 Reported, not fixed
+
+**`task_max_new_tokens` overrides no longer suppress the artifact
+caveat.** Accuracy is keyed by domain from v0.4.5; the override dict is
+keyed by lm-eval task name. `_effective_max_new_tokens` looks the two up
+with the same key, so a `{"gsm8k": 256}` override will not match a
+`math` cell and the caveat fires anyway. Fixing it means deciding how a
+task-keyed override maps onto a domain-keyed cell, which is a design
+question the scope does not cover — and the run config emits
+`task_overrides` in the task-keyed form, so the answer has to be
+consistent with that too.
+
+**The artifact caveat narrows to live-path results.** `_GENERATIVE_TASKS`
+was a hardcoded frozenset of five lm-eval task names; it is now derived
+from `probe_output_types`, which is domain-keyed. Results from the
+deprecated path key accuracy by task name and so lose the caveat — one
+release before the path itself goes. Carrying a hardcoded list of five
+task names for one more release, to serve a path being deleted, is the
+duplication this change exists to remove.
+
+**`run_pair` is deprecated, not deleted.** §4 recommended removal, and
+v0.4.5 gets it as far as a `DeprecationWarning` naming v0.5.0. Nothing
+in `lmdiff/tasks/` has ever carried one, and every other v0.5.0 removal
+had a minor cycle of notice. Deleting a public method with none would be
+the exception.
+
+---
+
+## 9. GPU verification — commands, what to read, pass criteria
+
+Not run. Nothing below has been executed on a GPU; where a CPU stand-in
+exists it is labelled and is not offered as verification.
+
+### 9.1 Marker activation, resolved
+
+`pyproject.toml` sets `addopts = "-m 'not slow and not gpu'"`, which
+deselects both markers on every run. **`-m ""` clears it** — an empty
+expression selects everything.
+
+### 9.2 Run 1 — the gate: geometry must not move
+
+```bash
+mamba run -n lmdiff python -m pytest \
+    tests/integration/test_calibration_regression.py -m "" -v -s
+```
+
+Runs `lmdiff.family(**build_run_kwargs())` from
+`tests/integration/_v041_4variant_spec.py` — the same call the fixture
+was generated from — against
+`tests/fixtures/calibration_v041_4variant_baseline.json` at
+`TOLERANCE = 1e-6`.
+
+**Look for:** every test passing, and specifically
+`test_change_vectors_match`, `test_cosine_matrix_match`,
+`test_selective_cosine_matrix_match`, `test_magnitudes_match`,
+`test_magnitudes_normalized_match`.
+
+**Pass: all pass, no skips.** A skip means the baseline fixture is
+missing and the run verified nothing — look for `baseline not present`
+and stop.
+
+**Any failure fails the release.** §8.1 closes the two mechanisms that
+could move these; this is what tests that it did.
+
+### 9.3 Run 2 — accuracy, which has no reference
+
+```bash
+mamba run -n lmdiff python scripts/_v045_accuracy_report.py
+```
+
+One `family()` call; prints the geometry comparison *and* the accuracy
+tables, so 9.2 and 9.3 can be a single GPU pass. `--skip-geometry`
+suppresses the duplicate comparison.
+
+**Judged by eye — there is nothing to compare against.** The 4-variant
+baseline has no accuracy in it: `accuracy_by_variant` has been `{}`
+since v0.4.1, so the fixture cannot serve as a reference. Plausibility
+means:
+
+- **`base` is populated.** Empty means `BaseAccuracyMissingFinding`
+  will fire on every report forever — the specific thing the base pass
+  prevents. The script asserts this and fails the run.
+- **`commonsense` ≈ 0.55–0.60, `reasoning` ≈ 0.40–0.45**, matching
+  published Llama-2-7B hellaswag / arc_challenge figures. Both are
+  scored by log-likelihood over stored choices, so they are directly
+  comparable to the literature. Anything near 0.25 is a four-way guess
+  and something is wrong.
+- **`code` highest for the `code` variant, `math` for `math`.**
+  Specialization should be visible in accuracy, not only in δ.
+- **`long-context` is `—` in every column.** 91 of 100
+  `longbench_2wikimqa` probes exceed Llama-2-7B's 4096-token window, so
+  they were never attempted and are excluded rather than counted wrong.
+  A number here is the bug.
+- **`math` low across the board is expected.** gsm8k is scored on the δ
+  generation budget, which is short. If it reads ~0 the
+  `AccuracyArtifactFinding` caveat should appear — the script prints
+  which ones fired, and its *absence* would be the defect.
+
+**Pass:** base populated; nothing in `long-context`; commonsense and
+reasoning within range; no negative, >1.0 or NaN value.
+
+### 9.4 Run 3 — the deprecated-path reference
+
+```bash
+mamba run -n lmdiff python scripts/_v045_legacy_accuracy.py
+```
+
+**Worth running, and the budget correction is accepted — but it is a
+mechanical reference for three of the five tasks, not all five, and
+saying which prevents an expected difference reading as a regression.**
+
+| task | domain | comparable? | why |
+|---|---|---|---|
+| `hellaswag` | commonsense | **yes, 1e-6** | both paths score by log-likelihood over the same stored choices with the same prefix |
+| `arc_challenge` | reasoning | **yes, 1e-6** | same |
+| `mmlu_college_computer_science` | code | **yes, 1e-6** | same |
+| `gsm8k` | math | plausibility only | the deprecated path generates fresh at `TASK_MAX_NEW_TOKENS["gsm8k"]`; v0.4.5 scores the δ generations at the run's `max_new_tokens` |
+| `longbench_2wikimqa` | long-context | n/a | out of the base window |
+
+That the three MC tasks *are* exactly comparable is a consequence of
+§8.2 — before that fix they would have been string-matched and nothing
+here would have lined up.
+
+Two differences that are design, not drift: the deprecated path keys by
+task name where v0.4.5 keys by domain (1:1 in this spec, mapping above),
+and it has **no base column**, because it never scored the base engine.
+
+**Pass: the three multiple-choice rows agree to 1e-6.** This is the only
+mechanical check available anywhere, and v0.5.0 deletes the path that
+provides it — the last release in which it can be asked. Disagreement
+means the port changed a measurement rather than relocating one:
+blocker.
+
+`gsm8k` differing is expected. A difference *larger than the generation
+budget accounts for* — the new path at 0.00 against the old at 0.15,
+say — is worth stopping on, because it would mean reusing the δ
+generations is not equivalent to generating afresh for accuracy.
+
+### 9.5 Cost, and what to cut if the box is tight
+
+Runs 1+2 are one `family()` over 4 variants × 5 tasks × 100 probes — the
+call the v0.4.1 calibration already makes, plus the new accuracy work:
+log-likelihood scoring for the three MC tasks (~100 probes × 4 choices ×
+5 engines including base) and one extra generation pass for base.
+
+Run 3 is a separate `run_family_experiment` with `skip_accuracy=False`,
+reloading each variant through the deprecated `InferenceEngine`. It is
+the expensive one.
+
+**Run 1 is the release gate. Run 3 is the one I would still argue for**
+if time is short: a plausibility judgement on Run 2 can be revisited any
+time, and Run 3 cannot be run at all after v0.5.0.

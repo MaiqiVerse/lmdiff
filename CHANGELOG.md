@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.4.5] - 2026-08-25
+
+Evaluation metrics are back on the live path, after four releases in which `accuracy_by_variant` was `{}` and every consumer quietly coped.
+
+The cause was structural rather than a bug: the v0.4.0 backend cutover moved the live path to `HFEngine` and the `Engine` Protocol, and left the task layer speaking the v0.2.x `InferenceEngine`. `Task.run` called `generate(prompts, n_samples=…)` and `engine.model_name`; the Protocol has neither. So `Task`, the six evaluators and `loglikelihood_accuracy` — all exported from `lmdiff` — could not run against the only engine the library builds. PHASE_PLAN Z.4 item 6 filed it as a blocker on the v0.5.0 `InferenceEngine` removal; this release clears it.
+
+Scope and measurements: [`docs/internal/v045_engine_port_notes.md`](docs/internal/v045_engine_port_notes.md).
+
+### Added
+
+- **`lmdiff/_prompting.py`** — `prefix_text`, `assemble_prompt` and `generate_kwargs`, moved out of `_pipeline`'s private scope so the task layer can share the one definition rather than growing a second. Not cosmetic: `InferenceEngine` resolved `system_prompt` / `context` / `decode` from its *stored config*, while the Protocol's engines are stateless, so a port that does not pass them silently measures a different configuration. A `system_prompt` variant loses its scaffold; a `temperature=1.5` variant becomes **greedy**, because `HFEngine.generate` derives `do_sample` from `temperature != 1.0` and the default is `1.0`. Neither raises. Two tests assert on what reaches the engine, because no computed value differs.
+- **Accuracy on `lmdiff.family()`** — `metadata["accuracy_by_variant"]` and `metadata["base_accuracy"]`, keyed by **domain**, matching `probe_domains` and every other per-cell quantity in a `GeoResult`.
+- **`CapabilityRadar`, `RadarResult` and `DomainRadarResult` are exported.** The radar had stopped working at the cutover and nobody reported it, because an unexported thing has no users to report it.
+
+### Changed
+
+- **`Task.run`, `loglikelihood_accuracy` and `CapabilityRadar.run_single` speak the `Engine` Protocol.** Generation is a loop in `Task` rather than inside the engine; both implementations were always per-prompt at batch size 1, so the old `generate(prompts: list[str])` was a convenience wrapper and this costs nothing. `Task.run`'s `pre_generated` becomes `outputs: list[str]`, and `prefix_text` / `generate_kwargs` must now be passed.
+- **Variants are scored on the completions δ was already computed from.** Not an optimisation — a correctness requirement. The seed is pinned once per variant at probe 0 and RNG advances through the generate loop, so a second generation pass would move δ for any sampling variant without an explicit seed. Reusing the δ generations consumes no RNG, costs no GPU time, and gives the L-010 pairing for free: accuracy and δ describe one sample rather than two. Base needs its own pass and it runs *after* every variant, so it cannot perturb what they saw.
+- **Multiple-choice probes are scored by log-likelihood, not by string match.** `from_lm_eval` gives them `scoring=None`, so they would otherwise fall back to matching *generated text* against the gold choice — on `hellaswag` a different measurement, not a low accuracy. Three of the five calibration tasks are multiple-choice. `_accuracy_by_domain` dispatches on `output_type`.
+- **`_GENERATIVE_TASKS` retired.** The accuracy-artifact caveat derived which cells were generated from a hardcoded frozenset of five lm-eval task names — the third such list, after `KNOWN_TASK_DOMAINS.output_type` and `TASK_SCORINGS`. Since v0.4.4 the probes carry the answer and since v0.4.4 the `GeoResult` carries it too, so it is now derived from `probe_output_types`.
+
+### Deprecated
+
+- **`CapabilityRadar.run_pair`**, removed in v0.5.0. It pairs accuracy with `BehavioralDistance`, which the live path deliberately does not compute — `_pipeline` derives δ directly via `engine.score`. Porting it would mean porting BD, which reaches for `engine.tokenizer`, a model object metrics are not allowed to see. `run_single` is ported and is the part worth keeping. Nothing in `lmdiff/tasks/` carried a `DeprecationWarning` before this.
+
+### Notes
+
+- **Not fixed, reported:** `task_max_new_tokens` overrides are keyed by lm-eval task name while accuracy is now keyed by domain, so a `{"gsm8k": 256}` override no longer suppresses the artifact caveat on a `math` cell. Fixing it means deciding how a task-keyed override maps onto a domain-keyed cell, and the answer has to stay consistent with the run config, which emits `task_overrides` in the task-keyed form.
+- The artifact caveat now applies to live-path results only; task-keyed accuracy from the deprecated path loses it one release before the path itself goes.
+- **GPU verification is specified, not performed.** Commands, what to read and pass criteria are in the notes §9. The geometric gate is the existing 4-variant calibration at 1e-6; accuracy has no reference in that fixture and is judged by eye, with the deprecated path available as a mechanical reference for the three multiple-choice tasks — the last release in which that comparison can be made at all.
+
 ## [0.4.4] - 2026-08-25
 
 A probe now says how it should be scored, and an accuracy always shows what it rests on.

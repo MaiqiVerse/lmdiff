@@ -14,7 +14,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 
 # Map every public symbol to the submodule that defines it. __getattr__
 # below will resolve the target lazily on first access and then cache it
@@ -86,6 +86,9 @@ _LAZY: dict[str, str] = {
     "MultipleChoice": "lmdiff.tasks.evaluators",
     "PrefixMatch": "lmdiff.tasks.evaluators",
     "loglikelihood_accuracy": "lmdiff.tasks.loglikelihood",
+    "CapabilityRadar": "lmdiff.tasks.capability_radar",
+    "DomainRadarResult": "lmdiff.tasks.capability_radar",
+    "RadarResult": "lmdiff.tasks.capability_radar",
     "EVALUATOR_REGISTRY": "lmdiff.tasks.registry",
     "KNOWN_SCORINGS": "lmdiff.tasks.registry",
     "get_evaluator": "lmdiff.tasks.registry",
@@ -254,6 +257,11 @@ if TYPE_CHECKING:  # pragma: no cover
         Gsm8kNumberMatch,
         MultipleChoice,
         PrefixMatch,
+    )
+    from lmdiff.tasks.capability_radar import (  # noqa: F401
+        CapabilityRadar,
+        DomainRadarResult,
+        RadarResult,
     )
     from lmdiff.tasks.loglikelihood import loglikelihood_accuracy  # noqa: F401
     from lmdiff.tasks.registry import (  # noqa: F401

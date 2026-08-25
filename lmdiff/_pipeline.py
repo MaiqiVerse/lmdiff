@@ -36,6 +36,9 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 import numpy as np
 
 from lmdiff._config import Config
+from lmdiff._prompting import assemble_prompt as _assemble_prompt
+from lmdiff._prompting import generate_kwargs as _generate_kwargs
+from lmdiff._prompting import prefix_text as _prefix_text
 from lmdiff._engine import Engine
 from lmdiff._validity import (
     DEFAULT_MIN_VALID_FRACTION,
@@ -71,73 +74,14 @@ _BASE_ANCHOR = "__base__"
 # ── Prompt assembly (runtime-only Config fields) ─────────────────────
 
 
-def _prefix_text(config: Config) -> str:
-    """Build the prefix that precedes a probe, from a v0.3 ``Config``.
-
-    Mirrors v0.2.x ``InferenceEngine._prefix_text`` byte-for-byte:
-    ``"\\n".join([system_prompt, *context_contents]) + "\\n"`` when
-    any prefix material is present; ``""`` otherwise.
-
-    Note: keeping the trailing ``"\\n"`` matters for byte-equivalence
-    with the v0.2.x calibration baseline. Don't strip.
-    """
-    parts: list[str] = []
-    if config.system_prompt:
-        parts.append(config.system_prompt)
-    if config.context:
-        for msg in config.context:
-            content = msg.content if hasattr(msg, "content") else msg.get("content", "")
-            if content:
-                parts.append(content)
-    if not parts:
-        return ""
-    return "\n".join(parts) + "\n"
-
-
-def _assemble_prompt(config: Config, probe_text: str) -> str:
-    """Concatenate prefix + probe. The Engine sees a single string."""
-    return _prefix_text(config) + probe_text
-
-
-# ── Decode → generate kwargs ─────────────────────────────────────────
-
-
-def _generate_kwargs(config: Config, max_new_tokens: int) -> dict[str, Any]:
-    """Translate the v0.3 ``DecodeSpec`` into Engine.generate kwargs.
-
-    The Engine Protocol's ``generate`` signature (v0.4.0) is:
-        generate(prompt, *, max_new_tokens, temperature, top_p,
-                 top_k, seed, prefix_text)
-
-    Mirrors v0.2.x ``InferenceEngine._decode_params`` — temperature,
-    top_p, top_k all flow through. ``top_k`` defaults to 0 (no
-    filtering); HF's ``model.generate`` defaults to top_k=50 when the
-    kwarg is omitted, which silently truncates sample-decode
-    distributions. Passing top_k=0 explicitly is what makes ``temp_1.5``
-    variants byte-equivalent to v0.3.2.
-
-    NB: ``seed`` is **not** included here. Seed is applied once per
-    variant at probe 0 by ``_delta_for_variant`` (see ``_resolve_seed``);
-    repeating it on every probe call would reset RNG between probes
-    and force every probe in a sampling variant to see the same RNG
-    state, which is the wrong granularity (lab convention is "pin
-    once per experiment, let RNG advance naturally").
-    """
-    decode = config.decode
-    out: dict[str, Any] = {"max_new_tokens": max_new_tokens}
-    if decode.strategy == "greedy":
-        # Defaults are temperature=1.0, top_p=1.0 → HFEngine sets do_sample=False.
-        return out
-    if decode.strategy == "sample":
-        out["temperature"] = decode.temperature
-        out["top_p"] = decode.top_p
-        out["top_k"] = decode.top_k
-        return out
-    # beam / best_of_n / self_consistency aren't yet wired through
-    # HFEngine.generate; the v0.2.x path didn't support them either.
-    # Fall through to greedy defaults for byte-equivalence with v0.3.2.
-    return out
-
+# ── Prompt assembly + decode kwargs ──────────────────────────────────
+#
+# Defined in `lmdiff._prompting` since v0.4.5, because the task layer's
+# engine port needs the same translation and two copies of it would be
+# two things that agree today (L-035). Imported under the private names
+# this module has always used, so every call site below is unchanged --
+# which is what makes the move verifiable as behaviour-neutral rather
+# than merely asserted.
 
 def _resolve_seed(
     v_config: Config, family_seed: Optional[int],
@@ -163,6 +107,103 @@ def _resolve_seed(
 
 
 # ── Per-variant change-vector computation ────────────────────────────
+
+
+def _accuracy_by_domain(
+    probe_set: "ProbeSet",
+    outputs: list[str],
+    engine: Any,
+    engine_name: str,
+    *,
+    valid: list[bool],
+    prefix_text: str = "",
+) -> dict[str, float | None]:
+    """Score one engine per probe domain, dispatching on ``output_type``.
+
+    Two measurements, because a probe set holds two kinds of probe and
+    only one of them is judged by looking at generated text:
+
+    * ``multiple_choice`` — score every stored choice by log-likelihood
+      and take the argmin. Reading the generated text instead would
+      string-match a continuation against a gold answer the model was
+      never asked to produce; on ``hellaswag`` that is not a low
+      accuracy, it is a different measurement. Three of the five
+      calibration tasks are multiple-choice, so this is the common case,
+      not the corner.
+    * everything else — evaluate the completion, using the evaluator
+      each probe names (v0.4.4) with ``ContainsAnswer`` as the fallback.
+
+    ``valid[i]`` is False for probes this engine never attempted — out
+    of its context window. Those are dropped rather than scored: an
+    unattempted probe is not a wrong answer, and counting it as one
+    would penalise a model for a probe set it was never shown. Same
+    rule the share and pdn tables already apply (v0.4.1's "excluded
+    cells are removed, not nulled"), one layer down.
+
+    Returns ``{domain: accuracy | None}``. ``None`` when nothing in that
+    domain could be scored — distinct from ``0.0``, which is a claim
+    about the model.
+    """
+    from lmdiff.probes.loader import ProbeSet as _ProbeSet
+    from lmdiff.tasks.base import Task
+    from lmdiff.tasks.evaluators import ContainsAnswer
+    from lmdiff.tasks.loglikelihood import loglikelihood_accuracy
+
+    by_domain: dict[str, list[int]] = {}
+    for i in range(len(probe_set)):
+        if not valid[i]:
+            continue
+        d = probe_set[i].domain or "unknown"
+        by_domain.setdefault(d, []).append(i)
+
+    out: dict[str, float | None] = {}
+    for domain, idx in by_domain.items():
+        n_correct = 0
+        n_scorable = 0
+
+        mc = [
+            i for i in idx
+            if probe_set[i].output_type == "multiple_choice"
+            and isinstance(probe_set[i].metadata.get("choices"), list)
+            and isinstance(probe_set[i].metadata.get("correct_index"), int)
+        ]
+        gen = [i for i in idx if i not in set(mc) and outputs[i]]
+
+        if mc:
+            tr = loglikelihood_accuracy(
+                _ProbeSet([probe_set[i] for i in mc]),
+                engine, task_name=f"accuracy:{domain}",
+                prefix_text=prefix_text,
+            )
+            n_correct += tr.n_correct
+            n_scorable += tr.n_scorable
+        if gen:
+            tr = Task(
+                name=f"accuracy:{domain}",
+                probes=_ProbeSet([probe_set[i] for i in gen]),
+                evaluator=ContainsAnswer(),
+            ).run(_NullEngine(engine_name), outputs=[outputs[i] for i in gen])
+            n_correct += tr.n_correct
+            n_scorable += tr.n_scorable
+
+        out[domain] = (n_correct / n_scorable) if n_scorable > 0 else None
+    return out
+
+
+class _NullEngine:
+    """Satisfies ``Task.run``'s engine contract when outputs are supplied.
+
+    ``Task.run`` touches the engine for exactly two things: generation,
+    which is skipped when ``outputs`` is passed, and ``.name`` for the
+    result label. Handing it the real engine would work and would also
+    suggest generation might happen — it cannot, and this makes that
+    unrepresentable.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
 
 
 def _delta_for_variant(
@@ -403,7 +444,12 @@ def _delta_for_variant(
             vv = bpb_from_ce(vv, n_tokens=ntok_v_self[i], text=v_outputs[i])
         deltas.append(float(bv - vv))
 
-    return deltas, use_bpb, variant_validity
+    # v_outputs is returned so accuracy can be scored on the SAME
+    # generations δ was computed from (v0.4.5). Generating again
+    # would consume RNG and move δ for any sampling variant with
+    # no pinned seed — and it would break the L-010 pairing that
+    # accuracy and δ describe one sample, not two.
+    return deltas, use_bpb, variant_validity, v_outputs
 
 
 # ── Top-level pipeline ────────────────────────────────────────────────
@@ -576,6 +622,9 @@ def run_family_pipeline(
     # probe). Merged with base records into the master probe_validity
     # dict after the variant loop completes.
     variant_validity_records: dict[str, list[EngineValidity]] = {}
+    # Per-variant completions, kept for accuracy scoring (v0.4.5).
+    variant_outputs: dict[str, list[str]] = {}
+    accuracy_by_variant: dict[str, dict[str, float | None]] = {}
 
     try:
         for v_idx, name in enumerate(variant_names, 1):
@@ -613,7 +662,7 @@ def run_family_pipeline(
                         )
                     engine_cache[anchor] = v_engine
 
-                deltas, use_bpb, var_validity = _delta_for_variant(
+                deltas, use_bpb, var_validity, v_outs = _delta_for_variant(
                     base_engine=base_engine,
                     base_config=base_config,
                     v_engine=v_engine,
@@ -629,6 +678,19 @@ def run_family_pipeline(
                 raw_deltas[name] = deltas
                 bpb_flags[name] = use_bpb
                 variant_validity_records[name] = var_validity
+                # Accuracy while this engine is still resident. The
+                # cache releases engines look-ahead-by-one, so after the
+                # loop there is nothing left to score multiple-choice
+                # probes against. `score` is a deterministic forward
+                # pass and consumes no RNG, so this cannot perturb the
+                # next variant's sampling.
+                v_valid = [ev.is_valid for ev in var_validity]
+                v_acc = _accuracy_by_domain(
+                    probe_set, v_outs, v_engine, name,
+                    valid=v_valid, prefix_text=_prefix_text(v_config),
+                )
+                if v_acc:
+                    accuracy_by_variant[name] = v_acc
 
                 # Look-ahead-by-one release. Same rule as
                 # ChangeGeometry.analyze (v0.3.2 PR #10).
@@ -793,6 +855,56 @@ def run_family_pipeline(
                 name: magnitudes[name] / denom for name in variant_names
             }
 
+    # ── Accuracy (v0.4.5) ────────────────────────────────────────────
+    #
+    # Restored to the live path after four releases in which
+    # `accuracy_by_variant` was `{}` and every consumer coped.
+    #
+    # Variants are scored on the completions δ was already computed
+    # from — no second generation pass, so no extra GPU time, no RNG
+    # consumed, and δ provably unmoved. It is also the L-010 pairing for
+    # free: accuracy and δ describe one sample rather than two.
+    #
+    # Base needs its own pass, because the δ loop generates the
+    # *variant's* output and scores it under both engines; base is never
+    # asked to produce anything. That pass runs **here, after every
+    # variant**, so it cannot perturb the RNG state any variant's
+    # generation depends on. Scoring base is not optional: without it
+    # `BaseAccuracyMissingFinding` fires on every run forever, since
+    # nothing else in lmdiff has ever written `base_accuracy`.
+    from lmdiff._progress import iterate as _progress_iter
+
+    base_accuracy: dict[str, float | None] = {}
+    if accuracy_by_variant:
+        base_prefix = _prefix_text(base_config)
+        base_kwargs = _generate_kwargs(base_config, max_new_tokens)
+        base_outputs: list[str] = []
+        for i in _progress_iter(
+            range(n_total), desc="base:accuracy", total=n_total, enable=progress,
+        ):
+            if not base_validity_per_probe[i].is_valid:
+                base_outputs.append("")
+                continue
+            try:
+                base_outputs.append(
+                    base_engine.generate(
+                        prompts[i], prefix_text=base_prefix, **base_kwargs,
+                    ).text
+                )
+            except TypeError:
+                # Engine without prefix_text — same fallback the δ loop
+                # uses for mock engines in unit tests.
+                base_outputs.append(
+                    base_engine.generate(
+                        base_prefix + prompts[i], **base_kwargs,
+                    ).text
+                )
+        base_accuracy = _accuracy_by_domain(
+            probe_set, base_outputs, base_engine, base_name,
+            valid=[ev.is_valid for ev in base_validity_per_probe],
+            prefix_text=base_prefix,
+        )
+
     metadata = {
         "n_total_probes": n_total,
         "n_skipped": n_total - n_valid,
@@ -804,6 +916,10 @@ def run_family_pipeline(
         metadata["probe_set_name"] = probe_set.name
     if probe_set.version:
         metadata["probe_set_version"] = probe_set.version
+    if accuracy_by_variant:
+        metadata["accuracy_by_variant"] = accuracy_by_variant
+    if base_accuracy:
+        metadata["base_accuracy"] = base_accuracy
 
     result = GeoResult(
         base_name=base_config.display_name,
