@@ -705,6 +705,8 @@ def _layer3_accuracy_table(
     artifact_tasks: set[str],
     sty: _Styler,
 ) -> list[str]:
+    from lmdiff._validity import cell_accuracy, cell_support
+
     if not accuracy or not variants:
         return []
     tasks: list[str] = []
@@ -715,11 +717,15 @@ def _layer3_accuracy_table(
     if not tasks:
         return []
 
-    title = sty("bold", "Per-task accuracy")
+    title = sty("bold", "Per-domain accuracy  (correct/scorable)")
     out = [title, ""]
 
     name_w = max(8, max(len(v) for v in variants) + 2)
-    cell_w = 9
+    # Wide enough for "0.02 (100/100)*" -- the number, its denominator
+    # and the artifact marker are ONE cell, never two, so no layout can
+    # separate them. Measured against the widest real case rather than
+    # guessed: a 3-digit/3-digit support plus the marker is 15.
+    cell_w = 16
     header_cells = [" " * name_w] + [t[:cell_w].rjust(cell_w) for t in tasks]
     out.append("  " + " ".join(header_cells))
 
@@ -727,11 +733,20 @@ def _layer3_accuracy_table(
         row = accuracy.get(v) or {}
         cells = [v.ljust(name_w)]
         for t in tasks:
-            val = row.get(t)
+            cell = row.get(t)
+            val = cell_accuracy(cell)
+            support = cell_support(cell)
             artifact = t in artifact_tasks
-            text = _fmt_acc(val if val is not None else float("nan"),
-                            artifact=artifact, width=cell_w)
-            if artifact:
+            if val is None:
+                text = "n/a".rjust(cell_w)
+            else:
+                body = f"{val:.2f}"
+                if support is not None:
+                    body = f"{body} ({support[0]}/{support[1]})"
+                if artifact:
+                    body += "*"
+                text = body.rjust(cell_w)
+            if artifact or val is None:
                 cells.append(sty("yellow", text))
             else:
                 cells.append(text)

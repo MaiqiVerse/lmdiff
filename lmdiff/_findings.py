@@ -444,6 +444,8 @@ def _effective_max_new_tokens(meta: dict, task: str) -> int | None:
 
 def _extract_accuracy_findings(result: "GeoResult") -> list[Finding]:
     """AccuracyArtifactFinding (caveat) + BaseAccuracyMissingFinding (caveat)."""
+    from lmdiff._validity import cell_accuracy
+
     meta = result.metadata or {}
     acc_by_variant = meta.get("accuracy_by_variant") or {}
     if not isinstance(acc_by_variant, dict) or not acc_by_variant:
@@ -469,14 +471,10 @@ def _extract_accuracy_findings(result: "GeoResult") -> list[Finding]:
         for per_task in acc_by_variant.values():
             if not isinstance(per_task, dict):
                 continue
-            v = per_task.get(task)
-            if v is None:
-                continue
-            try:
-                fv = float(v)
-            except (TypeError, ValueError):
-                continue
-            if fv != fv:  # NaN
+            # cell_accuracy reads both the v0.4.5 record and the bare
+            # float the deprecated path (and examples/*.json) produced.
+            fv = cell_accuracy(per_task.get(task))
+            if fv is None:
                 continue
             accs.append(fv)
         if not accs:
@@ -490,7 +488,8 @@ def _extract_accuracy_findings(result: "GeoResult") -> list[Finding]:
                 details={
                     "task": task,
                     "accuracy_by_variant": {
-                        k: v.get(task) for k, v in acc_by_variant.items()
+                        k: cell_accuracy(v.get(task))
+                        for k, v in acc_by_variant.items()
                         if isinstance(v, dict) and task in v
                     },
                     "max_new_tokens": mnt,
@@ -503,10 +502,17 @@ def _extract_accuracy_findings(result: "GeoResult") -> list[Finding]:
         )
 
     # BaseAccuracyMissingFinding — variants have accuracy data, base does not.
-    base_acc = meta.get("base_accuracy") or meta.get("accuracy_base")
+    # A base block whose every cell is suppressed is not base accuracy;
+    # it is the absence of it, wearing the right shape. Gate the claim
+    # on the quantity (L-039).
+    raw_base = meta.get("base_accuracy") or meta.get("accuracy_base") or {}
+    base_acc = any(
+        cell_accuracy(c) is not None for c in raw_base.values()
+    ) if isinstance(raw_base, dict) else bool(raw_base)
     variants_with_accuracy = [
         k for k, v in acc_by_variant.items()
-        if isinstance(v, dict) and v
+        if isinstance(v, dict)
+        and any(cell_accuracy(c) is not None for c in v.values())
     ]
     if variants_with_accuracy and not base_acc:
         findings.append(

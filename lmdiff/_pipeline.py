@@ -42,6 +42,7 @@ from lmdiff._prompting import prefix_text as _prefix_text
 from lmdiff._engine import Engine
 from lmdiff._validity import (
     DEFAULT_MIN_VALID_FRACTION,
+    accuracy_cell,
     EngineValidity,
     ProbeValidity,
     compute_domain_status,
@@ -117,7 +118,8 @@ def _accuracy_by_domain(
     *,
     valid: list[bool],
     prefix_text: str = "",
-) -> dict[str, float | None]:
+    min_valid_fraction: float = DEFAULT_MIN_VALID_FRACTION,
+) -> dict[str, dict]:
     """Score one engine per probe domain, dispatching on ``output_type``.
 
     Two measurements, because a probe set holds two kinds of probe and
@@ -149,15 +151,21 @@ def _accuracy_by_domain(
     from lmdiff.tasks.evaluators import ContainsAnswer
     from lmdiff.tasks.loglikelihood import loglikelihood_accuracy
 
+    # Every probe, then the valid subset. The floor needs the domain's
+    # full size as its denominator -- "9 of 100 attempted" is the fact
+    # it thresholds, and dropping the invalid ones first would leave
+    # only "9 of 9".
+    domain_all: dict[str, list[int]] = {}
     by_domain: dict[str, list[int]] = {}
     for i in range(len(probe_set)):
-        if not valid[i]:
-            continue
         d = probe_set[i].domain or "unknown"
-        by_domain.setdefault(d, []).append(i)
+        domain_all.setdefault(d, []).append(i)
+        if valid[i]:
+            by_domain.setdefault(d, []).append(i)
 
-    out: dict[str, float | None] = {}
-    for domain, idx in by_domain.items():
+    out: dict[str, dict] = {}
+    for domain in domain_all:
+        idx = by_domain.get(domain, [])
         n_correct = 0
         n_scorable = 0
 
@@ -186,7 +194,13 @@ def _accuracy_by_domain(
             n_correct += tr.n_correct
             n_scorable += tr.n_scorable
 
-        out[domain] = (n_correct / n_scorable) if n_scorable > 0 else None
+        out[domain] = accuracy_cell(
+            n_correct=n_correct,
+            n_scorable=n_scorable,
+            n_valid=len(idx),
+            n_probes=len(domain_all[domain]),
+            min_valid_fraction=min_valid_fraction,
+        )
     return out
 
 
@@ -688,6 +702,7 @@ def run_family_pipeline(
                 v_acc = _accuracy_by_domain(
                     probe_set, v_outs, v_engine, name,
                     valid=v_valid, prefix_text=_prefix_text(v_config),
+                    min_valid_fraction=min_valid_fraction,
                 )
                 if v_acc:
                     accuracy_by_variant[name] = v_acc
@@ -903,6 +918,7 @@ def run_family_pipeline(
             probe_set, base_outputs, base_engine, base_name,
             valid=[ev.is_valid for ev in base_validity_per_probe],
             prefix_text=base_prefix,
+            min_valid_fraction=min_valid_fraction,
         )
 
     metadata = {

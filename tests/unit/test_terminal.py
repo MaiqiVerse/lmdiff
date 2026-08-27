@@ -236,7 +236,7 @@ class TestFiveLayerStructure:
         assert "Where each variant acts biggest" in out
         assert "How big is each move" in out
         assert "Direction agreement" in out
-        assert "Per-task accuracy" in out
+        assert "Per-domain accuracy" in out
         # Layer 4
         assert "Caveats" in out
         # Layer 5

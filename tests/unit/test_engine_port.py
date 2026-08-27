@@ -340,17 +340,24 @@ class TestLiveAccuracy:
         "nothing could be scored". `set(acc) == {"math"}` still holds.
         So assert the number.
         """
+        from lmdiff._validity import cell_accuracy
+
         acc = self._run().metadata["accuracy_by_variant"]["v"]
-        assert isinstance(acc["math"], float), (
+        assert isinstance(cell_accuracy(acc["math"]), float), (
             "accuracy is None -- the completions delta was computed from "
             "did not reach the evaluator"
         )
-        assert 0.0 <= acc["math"] <= 1.0
+        assert 0.0 <= cell_accuracy(acc["math"]) <= 1.0
+        # The support travels with the value (v0.4.5).
+        assert acc["math"]["n_scorable"] > 0
+        assert acc["math"]["n_probes"] == 4
 
     def test_base_accuracy_is_a_real_number_too(self):
+        from lmdiff._validity import cell_accuracy
+
         base = self._run().metadata["base_accuracy"]
-        assert isinstance(base["math"], float)
-        assert 0.0 <= base["math"] <= 1.0
+        assert isinstance(cell_accuracy(base["math"]), float)
+        assert 0.0 <= cell_accuracy(base["math"]) <= 1.0
 
     def test_base_is_scored_too(self):
         """Without this, `BaseAccuracyMissingFinding` fires on every run
@@ -412,8 +419,213 @@ class TestLiveAccuracy:
             probe_set=probes,
             max_new_tokens=4,
         )
-        acc = result.metadata["accuracy_by_variant"]["v"]["commonsense"]
+        from lmdiff._validity import cell_accuracy
+
+        acc = cell_accuracy(
+            result.metadata["accuracy_by_variant"]["v"]["commonsense"]
+        )
         # Not None: string-matching a completion against "A"/"B" would
         # score 0.0 here, and scoring the choices gives a real number.
         assert acc is not None
         assert 0.0 <= acc <= 1.0
+
+
+# ── the validity floor on accuracy (v0.4.5) ──────────────────────────
+
+
+class TestAccuracyFloor:
+    """`min_valid_fraction` applied to accuracy — the same threshold, not
+    a second one. See docs/methodology/normalization.md.
+
+    Accuracy is a single-engine quantity, so the floor tests *that
+    engine's* valid fraction, where share tests valid-for-both. On the
+    Llama-2 calibration that reproduces `domain_status`'s `out_of_range`
+    determination exactly and extends it to base.
+    """
+
+    def _cell(self, n_valid, n_probes, n_correct=None, floor=0.5):
+        from lmdiff._validity import accuracy_cell
+
+        n_correct = n_valid // 2 if n_correct is None else n_correct
+        return accuracy_cell(
+            n_correct=n_correct, n_scorable=n_valid,
+            n_valid=n_valid, n_probes=n_probes, min_valid_fraction=floor,
+        )
+
+    def test_the_nine_of_a_hundred_survivors_are_suppressed(self):
+        """The calibration's real case: 9 of 100 long-context probes fit
+        the 4096-token window, and those 9 are the short left tail."""
+        from lmdiff._validity import ACCURACY_BELOW_FLOOR, cell_accuracy
+
+        cell = self._cell(9, 100)
+        assert cell_accuracy(cell) is None
+        assert cell["reason"] == ACCURACY_BELOW_FLOOR
+
+    def test_eighty_nine_of_a_hundred_survives(self):
+        """CodeLlama's 16k window covers 89. That is a measurement, and
+        suppressing it would discard real signal."""
+        from lmdiff._validity import cell_accuracy
+
+        cell = self._cell(89, 100, n_correct=13)
+        assert cell_accuracy(cell) is not None
+        assert cell["reason"] is None
+
+    @pytest.mark.parametrize("n_valid,kept", [
+        (49, False), (50, True), (51, True),
+    ])
+    def test_boundary_is_at_the_floor_exactly(self, n_valid, kept):
+        from lmdiff._validity import cell_accuracy
+
+        assert (cell_accuracy(self._cell(n_valid, 100)) is not None) is kept
+
+    def test_floor_comes_from_the_run_not_a_constant(self):
+        """`min_valid_fraction=0.0` disables it, exactly as it does for
+        share — the escape hatch means the same thing in both places."""
+        from lmdiff._validity import cell_accuracy
+
+        assert cell_accuracy(self._cell(9, 100, floor=0.0)) is not None
+        assert cell_accuracy(self._cell(9, 100, floor=0.95)) is None
+
+    def test_support_shown_is_scorable_over_domain_size(self):
+        """Not scorable-over-attempted. `(89/89)` is true of the probes
+        CodeLlama attempted and hides the 11 it could not — a
+        denominator that is not the one the claim rests on (L-039)."""
+        from lmdiff._validity import cell_support
+
+        assert cell_support(self._cell(89, 100, n_correct=13)) == (89, 100)
+
+    def test_n_valid_kept_as_the_floors_audit_trail(self):
+        cell = self._cell(9, 100)
+        assert cell["n_valid"] == 9 and cell["n_probes"] == 100
+
+    def test_suppressed_is_distinguishable_from_unjudgeable(self):
+        """Two different reasons for `None`, and a reader must be able to
+        tell them apart without re-deriving either."""
+        from lmdiff._validity import ACCURACY_BELOW_FLOOR, accuracy_cell
+
+        floored = self._cell(9, 100)
+        nothing = accuracy_cell(
+            n_correct=0, n_scorable=0, n_valid=100, n_probes=100,
+        )
+        assert floored["reason"] == ACCURACY_BELOW_FLOOR
+        assert nothing["reason"] is None
+        assert nothing["accuracy"] is None
+
+    def test_legacy_bare_float_still_reads(self):
+        """`examples/*.json` came from the deprecated path and carry a
+        bare float. A renderer must not raise on one (the v0.4.2
+        `to_html` lesson)."""
+        from lmdiff._validity import cell_accuracy, cell_support
+
+        assert cell_accuracy(0.53) == 0.53
+        assert cell_support(0.53) is None
+        assert cell_accuracy(float("nan")) is None
+        assert cell_accuracy(None) is None
+
+    def test_renderers_show_the_denominator(self):
+        """Rendered and read, not asserted on a computed value (L-038)."""
+        from lmdiff.report.markdown import _build_accuracy_table
+
+        acc = {"v": {
+            "long-context": self._cell(89, 100, n_correct=13),
+            "math": self._cell(9, 100),
+        }}
+        text = "\n".join(_build_accuracy_table(["v"], acc, set()))
+        assert "(89/100)" in text, "accuracy rendered without its denominator"
+        assert "n/a" in text, "suppressed cell rendered as a number"
+
+    def test_base_block_of_all_suppressed_cells_is_not_base_accuracy(self):
+        """A base block whose every cell is floored is the absence of
+        base accuracy wearing the right shape — the caveat must fire."""
+        from lmdiff._findings import BaseAccuracyMissingFinding, extract_findings
+        from lmdiff.geometry import GeoResult
+
+        r = GeoResult(
+            base_name="b", variant_names=["v"], n_probes=2,
+            magnitudes={"v": 1.0}, cosine_matrix={"v": {"v": 1.0}},
+            change_vectors={"v": [0.1, 0.2]}, per_probe={"v": {}},
+            metadata={
+                "accuracy_by_variant": {"v": {"math": self._cell(100, 100)}},
+                "base_accuracy": {"math": self._cell(9, 100)},
+            },
+        )
+        assert [
+            f for f in extract_findings(r)
+            if isinstance(f, BaseAccuracyMissingFinding)
+        ], "base scoring produced nothing usable and nothing said so"
+
+    def _floor_run(self, min_valid_fraction):
+        """A domain the variant can only partly attempt: 2 of 10 probes
+        fit its window. `MockEngine.token_count` is word-split, so probe
+        length is controllable exactly."""
+        from tests.fixtures.mock_engine import MockEngine
+
+        from lmdiff._pipeline import run_family_pipeline
+
+        base_cfg = Config(model="mock_base")
+        v_cfg = Config(model="mock_variant")
+        probes = ProbeSet(
+            [
+                Probe(id=f"s{i}", text="short probe here ", domain="thin",
+                      expected="x", output_type="generate_until")
+                for i in range(2)
+            ] + [
+                Probe(id=f"l{i}", text="word " * 200, domain="thin",
+                      expected="x", output_type="generate_until")
+                for i in range(8)
+            ] + [
+                Probe(id=f"w{i}", text="short probe here ", domain="wide",
+                      expected="x", output_type="generate_until")
+                for i in range(10)
+            ]
+        )
+        kw = {} if min_valid_fraction is None else {
+            "min_valid_fraction": min_valid_fraction,
+        }
+        return run_family_pipeline(
+            base_engine=MockEngine(config=base_cfg, seed=1, max_context=64),
+            base_config=base_cfg,
+            variant_engines={"v": MockEngine(config=v_cfg, seed=2,
+                                             max_context=64)},
+            variant_configs={"v": v_cfg},
+            probe_set=probes,
+            max_new_tokens=4,
+            **kw,
+        )
+
+    def test_pipeline_threads_the_runs_floor_to_accuracy(self):
+        """End-to-end wiring, not the predicate.
+
+        `accuracy_cell` is unit-tested above with synthetic counts, which
+        proves the rule and says nothing about whether the pipeline hands
+        it the run's `min_valid_fraction`. A pipeline that always passed
+        0.0 would pass every one of those tests. So: the same run at two
+        floors must disagree.
+        """
+        from lmdiff._validity import ACCURACY_BELOW_FLOOR, cell_accuracy
+
+        floored = self._floor_run(0.5).metadata["accuracy_by_variant"]["v"]
+        disabled = self._floor_run(0.0).metadata["accuracy_by_variant"]["v"]
+
+        assert cell_accuracy(floored["thin"]) is None, (
+            "2 of 10 probes attempted and the cell still reports — the "
+            "run's min_valid_fraction did not reach the accuracy path"
+        )
+        assert floored["thin"]["reason"] == ACCURACY_BELOW_FLOOR
+        assert cell_accuracy(disabled["thin"]) is not None, (
+            "min_valid_fraction=0.0 must restore the pre-floor behaviour, "
+            "exactly as it does for share"
+        )
+        # The floor is not a blanket suppression: the fully-attempted
+        # domain reports either way.
+        assert cell_accuracy(floored["wide"]) is not None
+        assert cell_accuracy(disabled["wide"]) is not None
+
+    def test_floor_applies_to_base_too(self):
+        """Base has no `domain_status` row, so nothing else would have
+        gated it."""
+        from lmdiff._validity import cell_accuracy
+
+        base = self._floor_run(0.5).metadata["base_accuracy"]
+        assert cell_accuracy(base["thin"]) is None
+        assert cell_accuracy(base["wide"]) is not None

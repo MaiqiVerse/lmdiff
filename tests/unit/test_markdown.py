@@ -127,7 +127,7 @@ class TestStructure:
         assert "## Where each variant acts biggest" in out
         assert "## How big is each move" in out
         assert "## Direction agreement" in out
-        assert "## Per-task accuracy" in out
+        assert "## Per-domain accuracy" in out
 
     def test_caveats_as_blockquotes(self):
         out = md_mod.render(_make_calibration_like())

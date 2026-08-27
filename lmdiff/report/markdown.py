@@ -268,6 +268,8 @@ def _build_cosine_table(variants: list[str], cosine: dict) -> list[str]:
 def _build_accuracy_table(
     variants: list[str], accuracy: dict, artifact_tasks: set,
 ) -> list[str]:
+    from lmdiff._validity import cell_accuracy, cell_support
+
     if not accuracy or not variants:
         return []
     tasks: list[str] = []
@@ -278,7 +280,12 @@ def _build_accuracy_table(
     if not tasks:
         return []
 
-    lines = ["## Per-task accuracy", ""]
+    lines = ["## Per-domain accuracy", "",
+             "Each cell is `accuracy (correct-scorable/attempted)`. "
+             "`n/a` means the cell could not be stated — either nothing "
+             "was judgeable, or the engine attempted too small a "
+             "fraction of the domain for the survivors to represent it.",
+             ""]
     header = "| variant | " + " | ".join(tasks) + " |"
     sep = "|---|" + "---|" * len(tasks)
     lines.append(header)
@@ -287,11 +294,15 @@ def _build_accuracy_table(
         row = accuracy.get(v) or {}
         cells: list[str] = []
         for t in tasks:
-            val = row.get(t)
+            cell = row.get(t)
+            val = cell_accuracy(cell)
             if val is None:
                 cells.append("n/a")
                 continue
+            support = cell_support(cell)
             text = _fmt_float(val, 2)
+            if support is not None:
+                text = f"{text} ({support[0]}/{support[1]})"
             if t in artifact_tasks:
                 text = f"{text}*"
             cells.append(text)
