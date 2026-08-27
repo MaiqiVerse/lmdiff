@@ -62,14 +62,30 @@ def _make_calibration_like() -> GeoResult:
         per_probe={v: {f"p{i}": cv[v][i] for i in range(n)} for v in variants},
         metadata={
             "max_new_tokens": 16,
+            # v0.4.5 keys accuracy by DOMAIN, matching probe_domains and
+            # every other per-cell quantity in a GeoResult. The
+            # deprecated path keyed it by lm-eval task name; that path is
+            # removed in v0.5.0.
             "accuracy_by_variant": {
-                "code": {"hellaswag": 0.53, "gsm8k": 0.0, "longbench_2wikimqa": 0.0},
-                "long": {"hellaswag": 0.61, "gsm8k": 0.0, "longbench_2wikimqa": 0.0},
-                "math": {"hellaswag": 0.48, "gsm8k": 0.01, "longbench_2wikimqa": 0.0},
-                "yarn": {"hellaswag": 0.55, "gsm8k": 0.04, "longbench_2wikimqa": 0.0},
+                "code": {"commonsense": 0.53, "math": 0.0, "long-context": 0.0},
+                "long": {"commonsense": 0.61, "math": 0.0, "long-context": 0.0},
+                "math": {"commonsense": 0.48, "math": 0.01, "long-context": 0.0},
+                "yarn": {"commonsense": 0.55, "math": 0.04, "long-context": 0.0},
             },
         },
         probe_domains=domains,
+        # v0.4.5: the accuracy-artifact caveat reads generativeness off
+        # probe_output_types rather than a hardcoded task list, so this
+        # fixture has to say that gsm8k / longbench were GENERATED and
+        # hellaswag was scored over supplied choices.
+        # The artifact caveat reads generativeness off this rather than
+        # a hardcoded task list (v0.4.5): commonsense/reasoning are
+        # scored over supplied choices, the rest are generated.
+        probe_output_types=tuple(
+            "multiple_choice" if d in ("commonsense", "reasoning")
+            else "generate_until"
+            for d in domains
+        ),
         avg_tokens_per_probe=tuple([8.0] * n),
         magnitudes_normalized={v: float(np.linalg.norm(cv[v]) / 4.0) for v in variants},
     )

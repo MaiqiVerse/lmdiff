@@ -294,17 +294,23 @@ class TestRunTaskMock:
 
         md = ModelDiff(Config(model="gpt2"), Config(model="distilgpt2"), probes)
 
-        mock_a = MagicMock()
-        mock_a.model_name = "gpt2"
-        gen_a = MagicMock()
-        gen_a.completions = [["2"], ["Paris"]]
-        mock_a.generate.return_value = gen_a
+        # Engine Protocol surface (v0.4.5): one call per prompt, `.text`.
+        def _engine(name: str, texts: list[str]):
+            eng = MagicMock()
+            eng.name = name
+            eng.model_name = name  # ModelDiff itself is still v0.2.x
+            queue = list(texts)
 
-        mock_b = MagicMock()
-        mock_b.model_name = "distilgpt2"
-        gen_b = MagicMock()
-        gen_b.completions = [["3"], ["Paris"]]
-        mock_b.generate.return_value = gen_b
+            def _gen(prompt, *, prefix_text="", **kw):
+                r = MagicMock()
+                r.text = queue.pop(0) if queue else ""
+                return r
+
+            eng.generate.side_effect = _gen
+            return eng
+
+        mock_a = _engine("gpt2", ["2", "Paris"])
+        mock_b = _engine("distilgpt2", ["3", "Paris"])
 
         with patch.object(md, "_engine_a", mock_a), \
              patch.object(md, "_engine_b", mock_b):

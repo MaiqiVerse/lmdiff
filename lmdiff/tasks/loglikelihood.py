@@ -17,23 +17,29 @@ from typing import TYPE_CHECKING
 from lmdiff.tasks.base import EvalResult, TaskResult
 
 if TYPE_CHECKING:
-    from lmdiff.engine import InferenceEngine
+    from lmdiff._engine import Engine
     from lmdiff.probes.loader import ProbeSet
 
 
 def loglikelihood_accuracy(
     probes: "ProbeSet",
-    engine: "InferenceEngine",
+    engine: "Engine",
     task_name: str = "loglikelihood_choice",
     normalize: bool = True,
+    *,
+    prefix_text: str = "",
 ) -> TaskResult:
     """Score each probe's choices via CE; pick argmin; compare to gold.
 
     Args:
         probes: ProbeSet where every probe has metadata["choices"] (list[str])
                 and metadata["correct_index"] (int). Raises ValueError otherwise.
-        engine: InferenceEngine to score with.
+        engine: Engine (lmdiff._engine Protocol) to score with.
         task_name: name to tag the TaskResult with.
+        prefix_text: system_prompt / context material preceding each
+                     probe. Must be supplied -- the Protocol's engines are
+                     stateless, so an omitted prefix silently scores a
+                     different configuration (v0.4.5).
         normalize: if True, divide per-choice CE by the UTF-8 byte length of
                    that choice — matches lm-eval's acc_norm. If False, uses
                    raw per-token CE (matches acc).
@@ -58,9 +64,25 @@ def loglikelihood_accuracy(
                 f"for {len(choices)} choices"
             )
 
-        prompts = [probe.text] * len(choices)
-        score_result = engine.score(prompts, continuations=list(choices))
-        ces = list(score_result.cross_entropies)
+        # v0.4.5: one Protocol `score` call per choice, replacing the
+        # v0.2.x batch form. `ScoreResult.avg_logprob` is mean(logprobs),
+        # so `ce = -avg_logprob` reproduces the legacy
+        # `-lp.sum() / n_tokens` exactly; an empty continuation stays NaN
+        # rather than becoming avg_logprob's 0.0, which would read as a
+        # perfect score.
+        ces: list[float] = []
+        for choice in choices:
+            try:
+                sr = engine.score(probe.text, choice, prefix_text=prefix_text)
+            except TypeError:
+                # Engine without the prefix_text kwarg (mock engines in
+                # unit tests). Concatenate instead; real backends take
+                # the kwarg and split-tokenize, which is what keeps the
+                # probe span byte-aligned (L-030).
+                sr = engine.score(prefix_text + probe.text, choice)
+            ces.append(
+                float("nan") if not sr.tokens else -float(sr.avg_logprob)
+            )
 
         if normalize:
             # acc_norm: divide by UTF-8 byte length of each choice
@@ -109,7 +131,7 @@ def loglikelihood_accuracy(
 
     return TaskResult(
         task_name=task_name,
-        engine_name=engine.model_name,
+        engine_name=engine.name,
         probe_set_name=probes.name,
         n_probes=n_probes,
         n_correct=n_correct,

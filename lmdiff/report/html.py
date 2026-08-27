@@ -485,6 +485,8 @@ def _build_cosine_table(variants: list[str], cosine: dict) -> str:
 def _build_accuracy_table(
     variants: list[str], accuracy: dict, artifact_tasks: set,
 ) -> str:
+    from lmdiff._validity import cell_accuracy, cell_support
+
     if not accuracy or not variants:
         return ""
     tasks: list[str] = []
@@ -500,11 +502,18 @@ def _build_accuracy_table(
         row = accuracy.get(v) or {}
         cells = []
         for t in tasks:
-            val = row.get(t)
+            cell = row.get(t)
+            val = cell_accuracy(cell)
+            support = cell_support(cell)
             artifact = t in artifact_tasks
-            text = (
-                _fmt_float(val, 2) if val is not None else "n/a"
-            )
+            if val is None:
+                text = "n/a"
+            elif support is None:
+                text = _fmt_float(val, 2)
+            else:
+                # The denominator travels with the number, always
+                # (v0.4.4 rule, applied to accuracy in v0.4.5).
+                text = f"{_fmt_float(val, 2)} ({support[0]}/{support[1]})"
             if artifact and val is not None:
                 cells.append(
                     f'<td><span class="cell-dim">{text}</span>'

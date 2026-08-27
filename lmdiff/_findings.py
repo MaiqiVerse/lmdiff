@@ -75,13 +75,30 @@ _SPECIALIZATION_PEAK_SHARE_THRESHOLD = 0.30
 #: statement from "not computed", and the reader needs to tell them
 #: apart. See ``docs/methodology/normalization.md``.
 _SPECIALIZATION_PEAK_MARGIN = 0.05
-_GENERATIVE_TASKS = frozenset({
-    "gsm8k",
-    "longbench_2wikimqa",
-    "longbench_hotpotqa",
-    "longbench_narrativeqa",
-    "longbench_qasper",
-})
+def _generative_cells(result: "GeoResult") -> set[str]:
+    """Which accuracy cells were produced by *generation*.
+
+    Was ``_GENERATIVE_TASKS``, a hardcoded frozenset of five lm-eval task
+    names — the third such list in the tree, after
+    ``KNOWN_TASK_DOMAINS.output_type`` and ``TASK_SCORINGS``. Since
+    v0.4.4 the probes carry the answer, and since v0.4.5 the GeoResult
+    carries it too, so it is derived rather than enumerated (v0.4.5).
+
+    A cell is generative iff any probe in it was queried with
+    ``generate_until``: only generated text can be truncated by
+    ``max_new_tokens``, which is what the caveat this feeds is about.
+
+    Empty for any pre-v8 save, which correctly disables the finding
+    rather than guessing.
+    """
+    domains = getattr(result, "probe_domains", ()) or ()
+    output_types = getattr(result, "probe_output_types", ()) or ()
+    if not domains or len(output_types) != len(domains):
+        return set()
+    return {
+        d for d, ot in zip(domains, output_types)
+        if d is not None and ot == "generate_until"
+    }
 _ACCURACY_ARTIFACT_MAX_NEW_TOKENS = 32
 _ACCURACY_ARTIFACT_THRESHOLD = 0.05
 
@@ -427,6 +444,8 @@ def _effective_max_new_tokens(meta: dict, task: str) -> int | None:
 
 def _extract_accuracy_findings(result: "GeoResult") -> list[Finding]:
     """AccuracyArtifactFinding (caveat) + BaseAccuracyMissingFinding (caveat)."""
+    from lmdiff._validity import cell_accuracy
+
     meta = result.metadata or {}
     acc_by_variant = meta.get("accuracy_by_variant") or {}
     if not isinstance(acc_by_variant, dict) or not acc_by_variant:
@@ -441,8 +460,9 @@ def _extract_accuracy_findings(result: "GeoResult") -> list[Finding]:
         if isinstance(per_task, dict):
             tasks_seen.update(per_task.keys())
 
+    generative = _generative_cells(result)
     for task in sorted(tasks_seen):
-        if task not in _GENERATIVE_TASKS:
+        if task not in generative:
             continue
         mnt = _effective_max_new_tokens(meta, task)
         if mnt is None or mnt > _ACCURACY_ARTIFACT_MAX_NEW_TOKENS:
@@ -451,14 +471,10 @@ def _extract_accuracy_findings(result: "GeoResult") -> list[Finding]:
         for per_task in acc_by_variant.values():
             if not isinstance(per_task, dict):
                 continue
-            v = per_task.get(task)
-            if v is None:
-                continue
-            try:
-                fv = float(v)
-            except (TypeError, ValueError):
-                continue
-            if fv != fv:  # NaN
+            # cell_accuracy reads both the v0.4.5 record and the bare
+            # float the deprecated path (and examples/*.json) produced.
+            fv = cell_accuracy(per_task.get(task))
+            if fv is None:
                 continue
             accs.append(fv)
         if not accs:
@@ -472,7 +488,8 @@ def _extract_accuracy_findings(result: "GeoResult") -> list[Finding]:
                 details={
                     "task": task,
                     "accuracy_by_variant": {
-                        k: v.get(task) for k, v in acc_by_variant.items()
+                        k: cell_accuracy(v.get(task))
+                        for k, v in acc_by_variant.items()
                         if isinstance(v, dict) and task in v
                     },
                     "max_new_tokens": mnt,
@@ -485,10 +502,17 @@ def _extract_accuracy_findings(result: "GeoResult") -> list[Finding]:
         )
 
     # BaseAccuracyMissingFinding — variants have accuracy data, base does not.
-    base_acc = meta.get("base_accuracy") or meta.get("accuracy_base")
+    # A base block whose every cell is suppressed is not base accuracy;
+    # it is the absence of it, wearing the right shape. Gate the claim
+    # on the quantity (L-039).
+    raw_base = meta.get("base_accuracy") or meta.get("accuracy_base") or {}
+    base_acc = any(
+        cell_accuracy(c) is not None for c in raw_base.values()
+    ) if isinstance(raw_base, dict) else bool(raw_base)
     variants_with_accuracy = [
         k for k, v in acc_by_variant.items()
-        if isinstance(v, dict) and v
+        if isinstance(v, dict)
+        and any(cell_accuracy(c) is not None for c in v.values())
     ]
     if variants_with_accuracy and not base_acc:
         findings.append(

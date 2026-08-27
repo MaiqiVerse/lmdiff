@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from lmdiff.engine import InferenceEngine
+    from lmdiff._engine import Engine
     from lmdiff.probes.loader import ProbeSet
 
 
@@ -162,25 +162,63 @@ class Task:
 
     def run(
         self,
-        engine: InferenceEngine,
-        pre_generated: Any = None,
+        engine: "Engine",
+        *,
+        outputs: list[str] | None = None,
+        prefix_text: str = "",
+        generate_kwargs: dict[str, Any] | None = None,
+        progress: bool | None = None,
     ) -> TaskResult:
         """Generate on each probe, evaluate, aggregate.
 
-        Pass pre_generated (a GenerationResult) to reuse outputs from a
-        prior engine.generate() call — required when pairing task accuracy
-        with BD under sampling decode, so both views share the same samples.
+        .. versionchanged:: 0.4.5
+           Speaks the ``Engine`` Protocol (``lmdiff._engine``) rather than
+           the v0.2.x ``InferenceEngine``. Three consequences:
+
+           * **Generation is a loop here rather than inside the engine.**
+             Both engines were always per-prompt loops at batch size 1 —
+             the old ``generate(prompts: list[str])`` was a convenience
+             wrapper, not batching — so this costs nothing. The progress
+             bar moved out with the loop.
+           * **``prefix_text`` and ``generate_kwargs`` must be passed.**
+             ``InferenceEngine`` resolved ``system_prompt`` / ``context``
+             / ``decode`` from its stored config; the Protocol's engines
+             are stateless. Omitting them does not raise — it measures a
+             *different configuration* than the caller named, silently.
+             Build both with ``lmdiff._prompting``.
+           * **``pre_generated`` is now ``outputs: list[str]``.** One
+             completion per probe, in probe order.
+
+        ``outputs`` reuses generations from elsewhere. Required when
+        pairing accuracy with a distance metric under sampling decode:
+        two independent ``generate()`` calls diverge, so accuracy and
+        distance would otherwise describe different samples (L-010). The
+        family pipeline uses it to score accuracy on the very outputs it
+        already produced for δ.
         """
-        if pre_generated is not None:
-            gen = pre_generated
-        else:
-            gen = engine.generate(
-                self.probes.texts, n_samples=1, max_new_tokens=self.max_new_tokens,
+        from lmdiff._progress import iterate as _progress_iter
+
+        if outputs is None:
+            gen_kwargs = dict(generate_kwargs or {})
+            gen_kwargs.setdefault("max_new_tokens", self.max_new_tokens)
+            outputs = [
+                engine.generate(text, prefix_text=prefix_text, **gen_kwargs).text
+                for text in _progress_iter(
+                    self.probes.texts,
+                    desc=f"{self.name}:generate",
+                    total=len(self.probes),
+                    enable=progress,
+                )
+            ]
+        elif len(outputs) != len(self.probes):
+            raise ValueError(
+                f"outputs has {len(outputs)} entries for "
+                f"{len(self.probes)} probes; they must align by index"
             )
 
         per_probe: list[EvalResult] = []
         for i, probe in enumerate(self.probes):
-            output = gen.completions[i][0]
+            output = outputs[i]
             evaluator = self._evaluator_for(probe)
 
             meta: dict[str, Any] = {}
@@ -231,7 +269,7 @@ class Task:
         n_scorable = n_probes - n_unscorable
         return TaskResult(
             task_name=self.name,
-            engine_name=engine.model_name,
+            engine_name=engine.name,
             probe_set_name=self.probes.name,
             n_probes=n_probes,
             n_correct=n_correct,

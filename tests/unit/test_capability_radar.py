@@ -152,24 +152,21 @@ class TestRunSingleMock:
     def test_three_domains(self):
         probes = _make_probes({"math": 5, "knowledge": 5, "code": 5})
 
-        def gen_side_effect(texts, n_samples=1, max_new_tokens=16):
+        # Engine Protocol surface (v0.4.5): one prompt per call, `.text`.
+        def gen_side_effect(prompt, *, prefix_text="", **kw):
             gen = MagicMock()
-            completions = []
-            for t in texts:
-                # Return correct answer for first 3 in each group
-                for domain in ["math", "knowledge", "code"]:
-                    if domain in t:
-                        idx = int(t.split()[-1])
-                        if idx < 3:
-                            completions.append([f"answer_{domain}_{idx}"])
-                        else:
-                            completions.append(["wrong"])
-                        break
-            gen.completions = completions
+            gen.text = "wrong"
+            for domain in ["math", "knowledge", "code"]:
+                if domain in prompt:
+                    idx = int(prompt.split()[-1])
+                    # Correct answer for the first 3 in each group.
+                    if idx < 3:
+                        gen.text = f"answer_{domain}_{idx}"
+                    break
             return gen
 
         engine = MagicMock()
-        engine.model_name = "mock_model"
+        engine.name = "mock_model"
         engine.generate.side_effect = gen_side_effect
 
         radar = CapabilityRadar(probes, evaluator=ContainsAnswer())

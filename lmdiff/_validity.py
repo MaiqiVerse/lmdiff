@@ -350,7 +350,121 @@ def filter_measured_cells(
     }
 
 
+# ── Accuracy cells (v0.4.5) ──────────────────────────────────────────
+#
+# Accuracy is a **single-engine** quantity, which is what separates it
+# from share and pdn. ``compute_domain_status`` thresholds *joint* base-
+# and-variant validity because a share is base-relative and cannot exist
+# without base coverage. An engine's own accuracy has no such
+# dependency: Yarn scoring 13 of 100 long-context probes is a real
+# full-coverage measurement even though the 4k-window base could not
+# attempt 91 of them.
+#
+# So the floor below is **not a second threshold**. It is
+# ``min_valid_fraction`` applied to the same underlying quantity — the
+# fraction of a domain's probes an engine could actually score —
+# differing only in requiring one engine to clear it rather than two.
+# On the Llama-2 4-variant calibration that reproduces
+# ``domain_status``'s ``out_of_range`` determination exactly and extends
+# it to base, which has no ``domain_status`` row at all. The three
+# ``variant_only`` cells keep their accuracy, and that is the point: a
+# report showing ``share: n/a`` beside ``accuracy: 0.130`` is stating
+# that share needs base and accuracy does not, rather than contradicting
+# itself.
+
+ACCURACY_BELOW_FLOOR = "below_min_valid_fraction"
+"""``reason`` on a cell the validity floor suppressed."""
+
+
+def accuracy_cell(
+    *,
+    n_correct: int,
+    n_scorable: int,
+    n_valid: int,
+    n_probes: int,
+    min_valid_fraction: float = DEFAULT_MIN_VALID_FRACTION,
+) -> dict:
+    """One accuracy cell: the number and everything it rests on.
+
+    v0.4.4 made it impossible to read an accuracy without its
+    denominator on every surface that had one. Accuracy on the family
+    pipeline had no surface at all then; this is the same rule applied
+    when it gained one, which is why the support counts travel *with*
+    the value rather than in a parallel structure that can drift
+    (L-035).
+
+    ``accuracy`` is ``None``, never ``0.0``, when the cell cannot be
+    stated — either nothing was judgeable, or the engine attempted too
+    small a fraction of the domain for the survivors to represent it.
+    Those are different claims from "the model got them wrong".
+    """
+    below = n_probes > 0 and (n_valid / n_probes) < min_valid_fraction
+    if below or n_scorable <= 0:
+        return {
+            "accuracy": None,
+            "n_correct": 0,
+            "n_scorable": n_scorable,
+            "n_valid": n_valid,
+            "n_probes": n_probes,
+            "reason": ACCURACY_BELOW_FLOOR if below else None,
+        }
+    return {
+        "accuracy": n_correct / n_scorable,
+        "n_correct": n_correct,
+        "n_scorable": n_scorable,
+        "n_valid": n_valid,
+        "n_probes": n_probes,
+        "reason": None,
+    }
+
+
+def cell_accuracy(cell: object) -> Optional[float]:
+    """Read the accuracy out of a cell, whatever shape it is in.
+
+    v0.4.5 cells are records. Results produced by the deprecated
+    ``run_family_experiment`` — including the committed
+    ``examples/*.json`` — carry a bare float, and a renderer must not
+    raise on one (the v0.4.2 ``to_html`` lesson). One reader, used by
+    every consumer.
+    """
+    if isinstance(cell, dict):
+        val = cell.get("accuracy")
+        return None if val is None else float(val)
+    if cell is None:
+        return None
+    try:
+        val = float(cell)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return None if val != val else val  # NaN reads as "not stated"
+
+
+def cell_support(cell: object) -> Optional[tuple[int, int]]:
+    """``(n_scorable, n_probes)`` for display — what the accuracy rests
+    on, out of the domain's full size.
+
+    Deliberately **not** ``(n_scorable, n_valid)``. CodeLlama scored 89
+    of long-context's 100 probes; rendering that as ``(89/89)`` is
+    true of the probes it attempted and hides the 11 it could not,
+    which is the denominator the reader actually needs. Showing a
+    denominator that is not the one the claim rests on is the failure
+    this whole family of fixes exists to remove (L-039).
+
+    ``n_valid`` stays in the record as the floor's audit trail —
+    ``n_valid / n_probes`` is what the threshold tested — but it is not
+    what a reader is shown.
+
+    ``None`` for the legacy bare-float shape, where the honest answer is
+    that no denominator was ever recorded."""
+    if not isinstance(cell, dict):
+        return None
+    if "n_scorable" not in cell or "n_probes" not in cell:
+        return None
+    return int(cell["n_scorable"]), int(cell["n_probes"])
+
+
 __all__ = [
+    "ACCURACY_BELOW_FLOOR",
     "DEFAULT_MIN_VALID_FRACTION",
     "PDN_AXIS_LABEL",
     "PDN_DESCRIPTION",
@@ -359,6 +473,9 @@ __all__ = [
     "MEASURED_STATUSES",
     "EngineValidity",
     "ProbeValidity",
+    "accuracy_cell",
+    "cell_accuracy",
+    "cell_support",
     "compute_domain_status",
     "filter_measured_cells",
     "is_measured",

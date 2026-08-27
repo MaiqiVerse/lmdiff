@@ -48,28 +48,26 @@ V01 = pathlib.Path(__file__).resolve().parents[2] / "lmdiff" / "probes" / "v01.j
 
 
 class _Gen:
-    """v0.2.x GenerationResult shape: completions[probe][sample]."""
+    """``GenerateResult`` shape: one prompt, one completion."""
 
-    def __init__(self, texts: list[str]) -> None:
-        self.completions = [[t] for t in texts]
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.tokens: list[int] = []
 
 
 class _Engine:
-    """Minimal stand-in for the engine surface ``Task.run`` uses.
+    """Minimal stand-in for the ``Engine`` Protocol surface ``Task.run``
+    uses: ``.name`` and a single-prompt ``generate`` (v0.4.5)."""
 
-    Deliberately the *legacy* surface. Porting ``Task`` to the ``Engine``
-    Protocol is tracked as a v0.5.0 blocker (PHASE_PLAN Z.4 item 6) and
-    is explicitly not commit 4.3's job — these tests pin scoring
-    behaviour, not engine compatibility.
-    """
-
-    model_name = "stub"
+    name = "stub"
 
     def __init__(self, outputs: list[str]) -> None:
-        self._outputs = outputs
+        self._outputs = list(outputs)
+        self.calls: list[dict] = []
 
-    def generate(self, prompts, n_samples=1, max_new_tokens=64, **kw):
-        return _Gen(self._outputs)
+    def generate(self, prompt, *, prefix_text="", **kw):
+        self.calls.append({"prompt": prompt, "prefix_text": prefix_text, **kw})
+        return _Gen(self._outputs[len(self.calls) - 1])
 
 
 # ── the registry ─────────────────────────────────────────────────────

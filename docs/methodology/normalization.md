@@ -175,6 +175,69 @@ variants move off `partial`:
 The long-context column becomes `None` for every variant, and each
 variant's remaining four domains renormalize to sum to 1.0.
 
+### The same floor, applied to accuracy (v0.4.5)
+
+When v0.4.5 restored per-domain accuracy to the live path, that quantity
+did not respect this floor — it had not existed to respect it. The floor
+now gates accuracy too, and the point worth being precise about is that
+**this is not a second threshold.** It is `min_valid_fraction`, the same
+constant with the same justification above, applied to the same
+underlying quantity: the fraction of a domain's probes an engine could
+actually score.
+
+What differs is how many engines have to clear it, and that follows from
+what the quantity means:
+
+| quantity | needs | floor tests |
+|---|---|---|
+| `share_per_domain`, pdn | base **and** variant — a share is base-relative and cannot exist without base coverage | valid-for-both fraction |
+| accuracy | **one** engine — a model's score on a probe does not depend on any other model | that engine's own valid fraction |
+
+On the Llama-2-7B 4-variant calibration this reproduces
+`compute_domain_status`'s `out_of_range` determination **exactly**, and
+extends it to base, which has no `domain_status` row at all:
+
+| engine | long-context valid | accuracy | `domain_status` |
+|---|---|---|---|
+| Llama-2-7B (base) | 9/100 | **suppressed** | *(no row)* |
+| llemma-7B (`math`) | 9/100 | **suppressed** | `out_of_range` |
+| CodeLlama-7B (`code`) | 89/100 | 0.146 (89/100) | `variant_only` |
+| LLaMA-2-32K (`long`) | 100/100 | 0.140 (100/100) | `variant_only` |
+| Yarn-128K (`yarn`) | 100/100 | 0.130 (100/100) | `variant_only` |
+
+No other cell in the run changes — every non-long-context cell is
+100/100 for every engine.
+
+The three `variant_only` rows are where the distinction earns its keep.
+Those cells report **no share** and **a real accuracy**, and that is not
+a contradiction: base cannot score 91 of those probes, so no
+base-relative quantity exists for them, while Yarn scoring 13 of its own
+100 is a complete measurement of Yarn. A report that showed
+`share: n/a` beside `accuracy: 0.130` and left the reader to reconcile
+them would be the defect; a report that shows both and means two
+different things by them is the correct output, provided it says which.
+That is what the support counts are for.
+
+**The counts travel with the value.** Every accuracy cell is a record —
+`accuracy`, `n_correct`, `n_scorable`, `n_valid`, `n_probes`, `reason` —
+so no surface can render the number without the denominator it rests on.
+`n_scorable / n_probes` is what a reader is shown: CodeLlama's
+`0.146 (89/100)` says 89 of the domain's hundred probes contributed.
+Rendering that as `(89/89)` would be true of the probes it attempted and
+would hide the eleven it could not, which is a denominator that is not
+the one the claim rests on — the failure this family of fixes exists to
+remove (L-039).
+
+`n_valid` stays in the record as the floor's audit trail: `n_valid /
+n_probes` is the ratio the threshold tested. `reason` is
+`"below_min_valid_fraction"` on a suppressed cell and `None` otherwise,
+so "the floor removed this" is distinguishable from "nothing here was
+judgeable" without re-deriving either.
+
+As with share, `min_valid_fraction=0.0` disables the floor, and the
+escape hatch means the same thing in both places.
+
+
 ## What moves when the formula moves
 
 A formula change does not stop at the formula. Two downstream constants

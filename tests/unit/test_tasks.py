@@ -132,11 +132,18 @@ class TestMultipleChoice:
 # ── Task.run ─────────────────────────────────────────────────────────────
 
 def _make_mock_engine(completions: list[str], name: str = "mock") -> MagicMock:
+    """Engine Protocol surface (v0.4.5): `.name` plus a single-prompt
+    `generate` returning an object with `.text`."""
     engine = MagicMock()
-    engine.model_name = name
-    gen = MagicMock()
-    gen.completions = [[c] for c in completions]
-    engine.generate.return_value = gen
+    engine.name = name
+    queue = list(completions)
+
+    def _gen(prompt, *, prefix_text="", **kw):
+        r = MagicMock()
+        r.text = queue.pop(0) if queue else ""
+        return r
+
+    engine.generate.side_effect = _gen
     return engine
 
 
